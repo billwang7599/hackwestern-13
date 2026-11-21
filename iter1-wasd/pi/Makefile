@@ -52,9 +52,11 @@ native: | build
 	clang $(CFLAGS) -pthread -o build/$(BIN) $(SRCS) $(QNX_LIBS)
 
 # Host build + protocol/watchdog/gesture/tip tests against -b stub, plus the
-# real uno backend talking to a fake Uno on a pseudo-terminal. stdlib only.
+# real uno backend talking to a fake Uno on a pseudo-terminal, then the
+# lidar_guard motor-gate tests (invalid/stale/replayed packets). stdlib only.
 test: host
 	python3 test_server.py build/$(BIN)_host
+	MOTOR_BINARY=build/$(BIN)_host python3 test_guard_gate.py
 
 
 deploy: build/$(BIN)

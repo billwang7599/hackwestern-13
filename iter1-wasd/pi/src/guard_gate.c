@@ -34,7 +34,7 @@ int guard_gate_init(int port) {
 int guard_gate_poll(void) {
     if (!enabled) return 1;
     unsigned char packet[32];
-    int denied_this_poll = 0;
+    int denied_this_poll = 0, invalid_this_poll = 0;
     /* Small fixed packets; bounded work even if a faulty sender floods us.
        Timestamp uses this host's CLOCK_MONOTONIC, so queued/replayed CLEAR
        packets cannot extend a lease. Localhost is a trust boundary, not auth. */
@@ -43,7 +43,7 @@ int guard_gate_poll(void) {
         if (n<0) break;
         uint64_t now=now_us();
         if (n!=13 || memcmp(packet,"GAT1",4) || packet[12]>1) {
-            permit=0; denied_this_poll=1; reason="guard_invalid"; continue;
+            permit=0; denied_this_poll=1; invalid_this_poll=1; reason="guard_invalid"; continue;
         }
         uint64_t sent=be64(packet+4);
         if (sent<=stamp || sent>now || now-sent>=GATE_TTL_US) continue;
@@ -51,10 +51,15 @@ int guard_gate_poll(void) {
         if (!permit) denied_this_poll=1;
         reason=permit ? "clear" : "guard_blocked";
     }
-    if (!stamp || now_us()-stamp>=GATE_TTL_US) {
+    int stale = !stamp || now_us()-stamp>=GATE_TTL_US;
+    if (stale) {
         permit=0; reason=stamp ? "guard_stale" : "guard_missing";
     }
-    if (denied_this_poll) { reason="guard_blocked"; return 0; }
+    /* Only a well-formed, fresh BLOCKED may read as "guard_blocked": tars_motor
+       lets an in-place TURN through on that reason, so an invalid packet or a
+       stale/missing guard must never be relabelled as blocked. */
+    if (invalid_this_poll) { reason="guard_invalid"; return 0; }
+    if (denied_this_poll) { if (!stale) reason="guard_blocked"; return 0; }
     if (permit) reason="clear";
     return permit;
 }
