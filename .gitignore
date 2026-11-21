@@ -40,3 +40,6 @@ voice/models/*.bin
 voice/models/*.part
 voice/third_party/whisper.cpp/
 voice/tests/clips/
+# goto
+goto/build/
+goto/models/

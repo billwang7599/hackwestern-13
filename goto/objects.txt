@@ -1,0 +1,25 @@
+# Objects TARS can "go to", shared by goto/ (detector + controller) and voice/.
+#
+#   canonical name: alias, alias, ...
+#
+# * The canonical names (left of ':') are the YOLO-World classes, in this
+#   order: goto/export_world.py feeds them to set_classes() and writes
+#   goto/models/labels.txt. Re-export after changing the canonical list.
+# * Aliases are other words people (or whisper) use, and also labels other
+#   detectors emit (COCO says "dining table", "bottle", "tv"). Detector labels
+#   go through the same map, so a COCO model works for the shared names too.
+# * Matching: lowercase, punctuation and "the/a/my/that..." dropped, a
+#   trailing plural "s" tried, then the longest alias inside the phrase
+#   ("the big trash can over there" -> trash can).
+# Adding an alias needs no re-export: restart goto (and the voice app).
+
+trash can: bin, trash, garbage, garbage can, trash bin, garbage bin, waste bin, wastebasket, waste basket, rubbish bin, recycling bin, recycle bin, dustbin, garbage pail
+chair: seat, stool, office chair
+person: me, human, someone, somebody, man, woman, guy, him, her, people, teammate, judge
+backpack: bag, back pack, rucksack, knapsack, school bag
+water bottle: bottle, flask, drink, water
+door: doorway, door way, exit, entrance
+table: desk, dining table, workbench, bench
+laptop: computer, notebook, macbook, pc
+cup: mug, coffee cup, glass, coffee
+box: cardboard box, package, parcel, carton, crate

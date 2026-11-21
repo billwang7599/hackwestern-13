@@ -68,7 +68,7 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 | MediaPipe gestures + follow mode | `main` | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
 | Teach-a-gesture on the spot | `main` | Mac tests pass. Back burner. |
 | Speech + intent classifier (`voice/`) | `main` | Mac tests pass (stop recall 100%, 107/109 realistic transcripts, 0 wrong moves; crowd chatter ~4/21). **Not built or run on QNX/Pi yet.** Next: `voice/qnx/mic_test` on the Pi. Use a close-talk mic or the Uno talk button on the demo floor. |
-| YOLO go-to-object (`goto/`) | `main` | C controller + C++ detector; Mac tests only. **Not built for QNX yet.** |
+| YOLO go-to-object (`goto/`: C `goto` + C++ `detect`) | `main` | Mac: 92/92 C unit (also under ASan/UBSan, parser fuzzed), 25/25 YOLO post, 34/34 socket+sim checks; 2D sim 40/40 random starts arrived (median 46 s, stops 0.49–0.58 m away); real `tars_motor_host -b stub` end to end; C++ `detect` + ONNX Runtime on the Mac matches ultralytics boxes to 0.1 px. **Not cross-compiled with qcc, camapi code never compiled, nothing run on the Pi.** |
 | Goalie / balancer experiments | `goalie/`, `balancer/` | Parked. Don't touch. |
 
 ## Hardware checks that gate everything (do these first)
@@ -83,6 +83,6 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 ## Next up
 
 - Merge `voice-stt` once its tests pass, with the `goto <object>` intent added.
-- `goto/` (branch `kothar/goto`): a YOLO detection interface (JSON lines: label, conf, box), the search-and-steer program, and the YOLO-World custom-vocabulary export.
+- `goto/`: build ONNX Runtime for QNX (qnx-ports, Linux/Docker host), cross-compile `goto` + `detect`, test camapi with the C270 (`detect --nomodel`), then tune `arrive_h_frac` on the real camera mount.
 - Demo script: "TARS, go to the trash can" → search → drive → stop on arrival → "TARS, stop".
 - Back burner: merge `learn-gesture`, and switch gesture turns to `TURN`/`MOVE`.
