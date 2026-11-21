@@ -31,7 +31,7 @@ void goto_cfg_defaults(goto_cfg *c)
     c->min_conf = 0.30;
     c->search_step_deg = 30.0;
     c->search_max_deg = 360.0;
-    c->search_speed = 1.0;
+    c->search_speed = 0.40;  /* <= tars_motor PIVOT_BLOCKED_MAX_SPEED: survives a mid-turn BLOCKED */
     c->settle_s = 0.35;            /* stepper stops dead; covers camera exposure + latency */
     c->look_frames = 4;
     c->confirm_frames = 2;
