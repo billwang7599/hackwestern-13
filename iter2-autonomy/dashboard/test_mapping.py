@@ -295,6 +295,30 @@ class MappingTests(unittest.TestCase):
             self.assertEqual(loaded.snapshot()['voxels'], 0)
             self.assertEqual(loaded.snapshot()['objects'], [])
 
+    def test_surface_color_fusion_is_visual_only_and_round_trips(self):
+        row = [12, 30, -40, 0, 0, 127, 200, 20, 40, 8]
+        self.mapper.update(frame(surfaces=[row]))
+        updated = row[:]
+        updated[6] = 100
+        self.mapper.update(frame(timestamp=2, surfaces=[updated]))
+        state = self.mapper.snapshot()
+        packed = mapping.base64.b64decode(state['surface_splats'])
+        self.assertEqual(mapping.SURFACE_RECORD.unpack(packed)[6], 175)
+        self.assertEqual(state['voxels'], 0)
+        self.assertEqual(set(state['grid']), {'0'})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'map.json'
+            self.mapper.save_path = path
+            self.assertTrue(self.mapper.command({'op': 'map_save'})['ok'])
+            loaded = mapping.Map(save_path=path, clock=self.clock)
+            self.assertTrue(loaded.command({'op': 'map_load'})['ok'])
+            loaded.update(frame(tracking='limited'))
+            self.assertEqual(loaded.snapshot()['surface_splats'], '')
+            loaded.update(frame(timestamp=2))
+            self.assertEqual(loaded.snapshot()['surface_splats'], state['surface_splats'])
+            loaded.update(frame(session='new'))
+            self.assertEqual(loaded.snapshot()['surface_splats'], '')
+
     def test_invalid_saved_map_rejected_without_destroying_current_map(self):
         with tempfile.TemporaryDirectory() as directory:
             self.mapper.save_path = Path(directory) / 'map.json'

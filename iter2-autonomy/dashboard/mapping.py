@@ -5,6 +5,7 @@ and obstacles, not a certified traversability map. Unknown cells are blocked.
 World axes are ARKit x/y/z (y up); grid rows increase with world z.
 """
 from collections import OrderedDict
+import base64
 import heapq
 import json
 import math
@@ -129,6 +130,23 @@ class _MeasuredRays:
         return False
 
 
+SURFACE_LIMIT = 8000
+SURFACE_RECORD = struct.Struct('<3h3b4B')
+
+
+def valid_surfaces(rows, limit):
+    return (isinstance(rows, list) and len(rows) <= limit and
+            all(isinstance(row, list) and len(row) == 10 and all(type(v) is int for v in row)
+                and all(abs(v) <= 30000 for v in row[:3])
+                and all(abs(v) <= 127 for v in row[3:6])
+                and 120**2 <= sum(v*v for v in row[3:6]) <= 130**2
+                and all(0 <= v <= 255 for v in row[6:9]) and 5 <= row[9] <= 16 for row in rows))
+
+
+def surface_key(row):
+    return tuple(v // 10 for v in row[:3])
+
+
 def validate_scene(value):
     """Validate all fields before an invalid packet can reset or change a map."""
     if not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != 1:
@@ -143,6 +161,8 @@ def validate_scene(value):
     floor = value.get('floor_y')
     if floor is not None and not _number(floor):
         raise ValueError('Invalid floor height')
+    if not valid_surfaces(value.get("surfaces", []), 512):
+        raise ValueError("Invalid visual surface samples")
     points, objects = value.get('points'), value.get('objects')
     if not isinstance(points, list) or len(points) > 1500 or not all(_vector(p, 3) for p in points):
         raise ValueError('Invalid scene points')
@@ -206,6 +226,7 @@ class Map:
 
     def _clear_geometry(self):
         self.grid = bytearray(SIZE * SIZE)
+        self.surfaces = OrderedDict()
         self.voxels = OrderedDict()
         self.estimated_voxels = OrderedDict()
         self.persistent_voxels = OrderedDict()
@@ -340,6 +361,16 @@ class Map:
     def _remember_cloud(self, scene, now):
         # Measured occupancy is unchanged. Calibrated inference only adds a
         # separate temporary blocking layer; it can never mark a cell free.
+        for row in scene.get('surfaces', []):
+            key = surface_key(row)
+            old = self.surfaces.get(key)
+            if old is not None and sum(a*b for a, b in zip(old[3:6], row[3:6])) > 12000:
+                row = row.copy()
+                row[6:9] = [(3*a+b+2)//4 for a, b in zip(old[6:9], row[6:9])]
+            self.surfaces[key] = row
+            self.surfaces.move_to_end(key)
+        while len(self.surfaces) > SURFACE_LIMIT:
+            self.surfaces.popitem(last=False)
         rays = _MeasuredRays(scene['pose'], scene['points'])
         for point in scene['points']:
             key = tuple(math.floor(c / RESOLUTION) for c in point)
@@ -706,6 +737,9 @@ class Map:
                     'origin': list(ORIGIN), 'size': SIZE, 'pose': list(self.pose),
                     'floor_y': display_floor, 'floor_assumed': floor_assumed,
                     'assumed_phone_height_m': ASSUMED_PHONE_HEIGHT,
+                    'surface_splats': base64.b64encode(b''.join(
+                        SURFACE_RECORD.pack(*row) for row in list(self.surfaces.values())
+                        [::max(1, math.ceil(len(self.surfaces)/1500))])).decode('ascii'),
                     'points3d': [[round((c+.5)*RESOLUTION, 3) for c in key] for key in list(self.voxels)[::max(1, math.ceil(len(self.voxels)/2000))]],
                     'estimated3d': [[round((c+.5)*RESOLUTION, 3) for c in key] for key, seen in self.estimated_voxels.items() if now-seen <= 30],
                     'active_estimated3d': [[round(v, 3) for v in point]
@@ -726,6 +760,7 @@ class Map:
     def _saved(self):
         return {'version': 1, 'session': self.session, 'floor_y': self.floor_y,
                 'grid': ''.join(str(v) for v in self.grid),
+                'surfaces': list(self.surfaces.values()),
                 'voxels': [list(k) for k in self.voxels],
                 'objects': [{k: obj[k] for k in ('id', 'label', 'position', 'confidence')}
                             for obj in self.objects.values()]}
@@ -746,6 +781,8 @@ class Map:
         if (not isinstance(voxels, list) or len(voxels) > MAX_VOXELS
                 or not all(isinstance(p, list) and len(p) == 3 and all(type(x) is int and abs(x) <= 10000 for x in p) for p in voxels)):
             raise ValueError('Invalid saved voxels')
+        if not valid_surfaces(value.get('surfaces', []), SURFACE_LIMIT):
+            raise ValueError('Invalid saved surfaces')
         objects = value.get('objects')
         if not isinstance(objects, list) or len(objects) > MAX_OBJECTS:
             raise ValueError('Invalid saved objects')
@@ -763,6 +800,7 @@ class Map:
 
     def _restore(self, value):
         self._clear_geometry()
+        self.surfaces.update((surface_key(row), row) for row in value.get('surfaces', []))
         self.grid = bytearray(int(c) for c in value['grid'])
         self.voxels = OrderedDict((tuple(p), None) for p in value['voxels'])
         self.floor_y = value['floor_y']

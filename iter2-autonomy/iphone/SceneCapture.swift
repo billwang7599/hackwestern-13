@@ -179,6 +179,41 @@ private struct SceneDepthGrid {
         return project(x: x, y: y, depth: samples[samples.count / 2])
     }
 
+    // Sample native, unrotated camera planes at the same normalized coordinates
+    // as ARKit scene depth. Geometry, normals and color come from one ARFrame.
+    func surfaceSamples(_ image: CVPixelBuffer) -> [[Int]] {
+        let format = CVPixelBufferGetPixelFormatType(image)
+        guard format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+              CVPixelBufferGetPlaneCount(image) == 2,
+              CVPixelBufferLockBaseAddress(image, .readOnly) == kCVReturnSuccess else { return [] }
+        defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
+        guard let yPlane = CVPixelBufferGetBaseAddressOfPlane(image, 0)?.assumingMemoryBound(to: UInt8.self),
+              let uvPlane = CVPixelBufferGetBaseAddressOfPlane(image, 1)?.assumingMemoryBound(to: UInt8.self) else { return [] }
+        let w = CVPixelBufferGetWidthOfPlane(image, 0), h = CVPixelBufferGetHeightOfPlane(image, 0)
+        let ys = CVPixelBufferGetBytesPerRowOfPlane(image, 0), uvs = CVPixelBufferGetBytesPerRowOfPlane(image, 1)
+        func byte(_ value: Float) -> Int { Int(min(255, max(0, value)).rounded()) }
+        var result = [[Int]]()
+        for y in stride(from: 1, to: height-2, by: max(1, height/16)) {
+            for x in stride(from: 1, to: width-2, by: max(1, width/24)) {
+                guard let d = depth(x: x, y: y, allowMedium: true),
+                      let dx = depth(x: x+2, y: y, allowMedium: true),
+                      let dy = depth(x: x, y: y+2, allowMedium: true),
+                      max(abs(dx-d), abs(dy-d)) < 0.05 else { continue }
+                let p = project(x: x, y: y, depth: d)
+                let cross = simd_cross(project(x: x+2, y: y, depth: dx)-p, project(x: x, y: y+2, depth: dy)-p)
+                guard simd_length(cross) > 1e-7, simd_length(p) < 300 else { continue }
+                let n = simd_normalize(cross)
+                let u = x*w/width, v = y*h/height, ci = (v/2)*uvs + (u/2)*2
+                let l = Float(yPlane[v*ys+u]), cb = Float(uvPlane[ci])-128, cr = Float(uvPlane[ci+1])-128
+                result.append([Int((100*p.x).rounded()), Int((100*p.y).rounded()), Int((100*p.z).rounded()),
+                               Int((127*n.x).rounded()), Int((127*n.y).rounded()), Int((127*n.z).rounded()),
+                               byte(l+1.402*cr), byte(l-0.344136*cb-0.714136*cr), byte(l+1.772*cb),
+                               Int(min(16, max(5, d*Float(width)/intrinsics.columns.0.x*5)).rounded())])
+            }
+        }
+        return result
+    }
+
     func points(limit: Int = 1500, allowMedium: Bool = false) -> [[Float]] {
         var points = [[Float]]()
         for y in stride(from: height / 48, to: height, by: max(1, height / 24)) {
@@ -1026,6 +1061,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
                 "tracking": tracking,
                 "pose": [t.columns.3.x, t.columns.3.y, t.columns.3.z, atan2(-t.columns.2.x, -t.columns.2.z)],
                 "floor_y": floor.map { $0 as Any } ?? NSNull(), "points": depth?.points(allowMedium: true) ?? [], "objects": objects,
+                "surfaces": depth?.surfaceSamples(frame.capturedImage) ?? [],
                 "depth_size": depth.map { [$0.width, $0.height] } ?? [],
                 "depth_intrinsics": depth.map { [$0.intrinsics.columns.0.x, $0.intrinsics.columns.1.y,
                                                 $0.intrinsics.columns.2.x, $0.intrinsics.columns.2.y] } ?? [],

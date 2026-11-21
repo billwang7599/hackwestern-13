@@ -5,10 +5,19 @@ import CoreFoundation
 /// A bounded visualization of the Pi's accumulated local map; no capture or control.
 struct PointCloudView: View {
     let map: [String: Any]
+    var compact = false
+    @State private var showSurfaces = true
     @State private var resetView = 0
 
     var body: some View {
-        let cloud = CloudSnapshot(map)
+        let cloud = CloudSnapshot(map, showSurfaces: showSurfaces)
+        if compact {
+            CloudSceneView(cloud: cloud, reset: resetView)
+                .overlay(alignment: .topTrailing) {
+                    Button(showSurfaces ? "Points" : "Surfaces") { showSurfaces.toggle() }
+                        .font(.caption).buttonStyle(.bordered).background(.thinMaterial, in: Capsule()).padding(4)
+                }
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("3D surroundings").font(.title2.bold())
@@ -55,6 +64,7 @@ struct PointCloudView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
+    }
 }
 
 private struct CloudPoint: Hashable {
@@ -79,6 +89,7 @@ private struct CloudObject: Equatable {
 
 private struct CloudSnapshot {
     let session: String
+    let splats: Data
     let measured: [CloudPoint]
     let estimated: [CloudPoint]
     let distant: [CloudPoint]
@@ -94,7 +105,11 @@ private struct CloudSnapshot {
     let tracking: String
     let live: Bool
 
-    init(_ map: [String: Any]) {
+    init(_ map: [String: Any], showSurfaces: Bool = true) {
+        if showSurfaces, let encoded = map["surface_splats"] as? String, encoded.utf8.count <= 26000,
+           let data = Data(base64Encoded: encoded), data.count.isMultiple(of: 13) {
+            splats = data
+        } else { splats = Data() }
         session = String((map["session"] as? String ?? "").prefix(128))
         measured = Self.points(map["points3d"], limit: 2000)
         estimated = Self.points(map["estimated3d"], limit: 1000)
@@ -178,6 +193,8 @@ private struct CloudSceneView: UIViewRepresentable {
     final class Coordinator {
         let scene = SCNScene()
         let camera = SCNNode()
+        private let surfaces = SCNNode()
+        private var previousSplats = Data()
         private let measured = SCNNode()
         private let estimated = SCNNode()
         private let distant = SCNNode()
@@ -200,7 +217,7 @@ private struct CloudSceneView: UIViewRepresentable {
         init() {
             camera.camera = SCNCamera()
             camera.camera?.zNear = 0.05; camera.camera?.zFar = 100; camera.camera?.fieldOfView = 60
-            for node in [camera, floorPlane, measured, estimated, distant, grid, marker, objectNodes] { scene.rootNode.addChildNode(node) }
+            for node in [camera, floorPlane, surfaces, measured, estimated, distant, grid, marker, objectNodes] { scene.rootNode.addChildNode(node) }
             let corners: [SCNVector3] = [SCNVector3(-0.18, -0.12, -0.4), SCNVector3(0.18, -0.12, -0.4),
                                        SCNVector3(0.18, 0.12, -0.4), SCNVector3(-0.18, 0.12, -0.4)]
             var lines = [SCNVector3]()
@@ -215,6 +232,11 @@ private struct CloudSceneView: UIViewRepresentable {
             let colorPose = cloud.pose.map { CloudPoint(x: $0[0], y: $0[1], z: $0[2]) }
             let moved = priorColorPose != colorPose
             SCNTransaction.begin(); SCNTransaction.animationDuration = 0
+            if newSession || previousSplats != cloud.splats {
+                surfaces.geometry = Self.surfaceGeometry(cloud.splats)
+                previousSplats = cloud.splats
+            }
+            measured.isHidden = !cloud.splats.isEmpty
             if newSession || moved || priorMeasured != cloud.measured {
                 measured.geometry = Self.points(cloud.measured, origin: colorPose, inferred: false)
                 priorMeasured = cloud.measured
@@ -295,6 +317,57 @@ private struct CloudSceneView: UIViewRepresentable {
                 root.addChildNode(SCNNode(geometry: lines([SCNVector3Zero, SCNVector3(0, floor - object.point.y, 0)], color: color.withAlphaComponent(0.4))))
             }
             return root
+        }
+
+        // One triangle mesh per snapshot. Three concentric rings approximate
+        // Gaussian opacity on each patch, oriented with the measured surface.
+        private static func surfaceGeometry(_ data: Data) -> SCNGeometry? {
+            guard !data.isEmpty else { return nil }
+            var vertices = [SCNVector3](), colors = [Float](), triangles = [UInt32]()
+            let sides = 8
+            let circle = (0..<sides).map { i -> SIMD2<Float> in
+                let a = Float(i)*2 * .pi / Float(sides)
+                return SIMD2(cos(a), sin(a))
+            }
+            for i in stride(from: 0, to: data.count, by: 13) {
+                func meters(_ j: Int) -> Float {
+                    Float(Int16(bitPattern: UInt16(data[i+j]) | UInt16(data[i+j+1]) << 8)) / 100
+                }
+                let p = SIMD3(meters(0), meters(2), meters(4))
+                func signed(_ j: Int) -> Float { Float(Int8(bitPattern: data[i+j])) }
+                let raw = SIMD3(signed(6), signed(7), signed(8))
+                guard simd_length(raw) > 1 else { continue }
+                let n = simd_normalize(raw)
+                let tangent = simd_normalize(simd_cross(n, abs(n.y) < 0.9 ? SIMD3(0,1,0) : SIMD3(1,0,0)))
+                let bitangent = simd_cross(n, tangent)
+                let radius = Float(data[i+12])/100
+                let base = UInt32(vertices.count)
+                let rgb = (9...11).map { Float(data[i+$0])/255 }
+                func vertex(_ point: SIMD3<Float>, _ alpha: Float) {
+                    vertices.append(SCNVector3(point)); colors.append(contentsOf: rgb); colors.append(alpha)
+                }
+                vertex(p, 1)
+                for (fraction, alpha): (Float, Float) in [(0.45,0.82), (0.75,0.36), (1,0)] {
+                    for c in circle { vertex(p + (c.x*tangent + c.y*bitangent)*radius*fraction, alpha) }
+                }
+                for j in 0..<sides {
+                    let a = base+1+UInt32(j), b = base+1+UInt32((j+1)%sides)
+                    triangles += [base,a,b]
+                    for r in 0..<2 {
+                        let x = a+UInt32(r*sides), y = b+UInt32(r*sides), step = UInt32(sides)
+                        triangles += [x,x+step,y, y,x+step,y+step]
+                    }
+                }
+            }
+            let colorSource = SCNGeometrySource(data: colors.withUnsafeBufferPointer { Data(buffer: $0) },
+                semantic: .color, vectorCount: vertices.count, usesFloatComponents: true,
+                componentsPerVector: 4, bytesPerComponent: 4, dataOffset: 0, dataStride: 16)
+            let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), colorSource],
+                                       elements: [SCNGeometryElement(indices: triangles, primitiveType: .triangles)])
+            let surface = material(.white)
+            surface.blendMode = .alpha
+            geometry.materials = [surface]
+            return geometry
         }
 
         private static func points(_ points: [CloudPoint], origin: CloudPoint?, inferred: Bool,
