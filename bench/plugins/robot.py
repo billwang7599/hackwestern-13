@@ -282,6 +282,11 @@ class RobotLink:
         self.links: dict[str, object] = {}
         self.goto_events: list[dict] = []
         self.glock = threading.Lock()
+        # listen("watch", fn): fn(tagged line) in mission_relay's WATCH format ("V {json}", "Y OK …").
+        # pi: every relay WATCH line. sim/usb: tars_voice's WATCH events as "V <json>" (the mission
+        # plugin polls goto itself there). listen("cam", fn): fn(RGB1 packet), pi only (relay CAM).
+        self.watch_listeners: list = []
+        self.frame_listeners: list = []
         if self.name == "pi":
             host, _, port = (t.get("relay") or "").partition(":")
             if not host:
@@ -293,6 +298,7 @@ class RobotLink:
                 c.link = _mission.RelayLink(host, port, ch, key, on_line=c.on_line, on_connect=c.on_connect)
                 self.links[d] = c.link
             self.links["watch"] = _mission.RelayLink(host, port, "WATCH", key, on_line=self._relay_watch)
+            self.links["cam"] = _mission.RelayLink(host, port, "CAM", key, on_frame=self._frame)
         else:
             for d in DESTS:
                 h, _, p = t[d].rpartition(":")
@@ -303,9 +309,14 @@ class RobotLink:
             h, _, p = t["goto"].rpartition(":")
             self.links["watch"] = DirectLink(h or "127.0.0.1", int(p), "watch", on_line=self._direct_watch,
                                              on_connect=lambda: self.links["watch"].send("WATCH"), start=False)
+            h, _, p = t["voice"].rpartition(":")    # tars_voice events (heard/sent/say), read-only
+            self.links["voicewatch"] = DirectLink(h or "127.0.0.1", int(p), "voicewatch",
+                                                  on_line=self._voice_watch,
+                                                  on_connect=lambda: self.links["voicewatch"].send("WATCH"),
+                                                  start=False)
             for l in self.links.values():    # wired up first, then connect (on_connect uses them)
                 l.start()
-        self.drive = HoldDrive(speed=0.5)
+        self.drive = HoldDrive(speed=float(getattr(bench.args, "speed", None) or 0.5))
         self.dlock = threading.Lock()
         self.key_seen = 0.0
         self.last_d = (0.0, 0.0)
@@ -328,6 +339,22 @@ class RobotLink:
     def _relay_watch(self, line: str) -> None:
         if line.startswith("E "):
             self._goto_event(line[2:].removeprefix("EVENT "))
+        self._to_listeners(self.watch_listeners, line)
+
+    def _voice_watch(self, line: str) -> None:
+        if line.startswith("{"):
+            self._to_listeners(self.watch_listeners, "V " + line)
+
+    def _frame(self, pkt: bytes) -> None:
+        self._to_listeners(self.frame_listeners, pkt)
+
+    @staticmethod
+    def _to_listeners(fns: list, arg) -> None:
+        for fn in list(fns):
+            try:
+                fn(arg)
+            except Exception as ex:          # a listener bug must not kill the reader
+                print(f"robot: watch listener failed: {type(ex).__name__}: {ex}", file=sys.stderr)
 
     def _goto_event(self, text: str) -> None:
         ev = {"t": time.time(), "text": text}
@@ -586,7 +613,15 @@ def goto_status() -> dict | None:
 
 
 def listen(dest: str, fn) -> None:
-    if _link and dest in _link.chans:
+    """dest motor/goto/voice: unsolicited lines on that channel. "watch": relay WATCH lines (pi)
+    or "V <json>" tars_voice events (sim/usb). "cam": RGB1 frame packets (pi only)."""
+    if not _link:
+        return
+    if dest == "watch":
+        _link.watch_listeners.append(fn)
+    elif dest == "cam":
+        _link.frame_listeners.append(fn)
+    elif dest in _link.chans:
         _link.chans[dest].listeners.append(fn)
 
 

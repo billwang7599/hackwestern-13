@@ -9,6 +9,10 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 syst
 header { display: flex; gap: 16px; align-items: baseline; padding: 8px 16px; border-bottom: 1px solid var(--line); }
 header h1 { margin: 0; font-size: 18px; }
 #target { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+.badge { font: 800 13px var(--mono); padding: 3px 10px; border-radius: 6px; letter-spacing: .05em; align-self: center; }
+.badge.sim { background: #12304a; color: #79c0ff; border: 1px solid #1f6feb; }
+.badge.real { background: #5a1414; color: #fff; border: 1px solid var(--bad); }
+body.real-robot header { border-bottom: 3px solid var(--bad); }
 .offline-note { display: none; color: var(--bad); }
 body.offline .offline-note { display: inline; }
 main#panels { flex: 1; display: grid; gap: 12px; padding: 12px;
