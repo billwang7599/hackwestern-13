@@ -1705,6 +1705,24 @@ int goto_sm_move_refused(goto_sm *s, double now, const char *why)
     return 1;
 }
 
+void goto_sm_guard_reason(goto_sm *s, const char *reason)
+{
+    snprintf(s->guard_reason, sizeof s->guard_reason, "%s", reason ? reason : "");
+}
+
+/* Why did the guard stop a drive? The ERR text when it names the reason ("guard_blocked",
+ * "guard_stale", ...), else (an epoch change: "guard epoch changed") the last STATUS
+ * guard_reason=. 1 only for a fresh guard_blocked. A server that never reports guard_reason=
+ * (old tars_motor, the Mac fake motor): 1, the behaviour before reasons existed. */
+static int guard_saw_obstacle(const goto_sm *s, const char *why)
+{
+    char r[24] = "";
+    if (why && !strncmp(why, "guard_", 6)) sscanf(why, "%23s", r);
+    else snprintf(r, sizeof r, "%s", s->guard_reason);
+    if (!r[0]) return 1;
+    return !strcmp(r, "guard_blocked");
+}
+
 void goto_sm_drive_refused(goto_sm *s, double now, const char *why)
 {
     s->now = now;
@@ -1715,10 +1733,12 @@ void goto_sm_drive_refused(goto_sm *s, double now, const char *why)
     snprintf(t, sizeof t, "guard_stop %s %.40s", target_name(s), why ? why : "-");
     emit(s, ACT_EVENT, 0, 0, t);
     /* lidar_guard stops ~0.6 m from anything straight ahead. If that's the target, centred
-     * and already big in the frame, we're docked: that's an arrival, not an obstacle. */
+     * and already big in the frame, we're docked: that's an arrival, not an obstacle. Only when
+     * the guard really saw something: a fresh guard_blocked. A stale/missing/invalid guard (a CPU
+     * hiccup, a dropped packet) says nothing about what's ahead: stop, look again, retry. */
     double need = goto_cfg_arrive_h(&s->cfg, target_name(s));
-    if (s->have_track && now - s->last_seen < 0.5 && fabs(s->last_bearing) <= s->cfg.realign_deg &&
-        s->ema_h >= 0.5 * need) {
+    if (guard_saw_obstacle(s, why) && s->have_track && now - s->last_seen < 0.5 &&
+        fabs(s->last_bearing) <= s->cfg.realign_deg && s->ema_h >= 0.5 * need) {
         arrived(s);
         return;
     }

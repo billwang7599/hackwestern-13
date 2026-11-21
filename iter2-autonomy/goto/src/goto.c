@@ -377,6 +377,8 @@ static void poll_status(void)
     if (kv(reply, "guard_epoch", v, sizeof v) == 0) {
         char gp[8] = "1";
         kv(reply, "guard_permit", gp, sizeof gp);
+        char gr[24];
+        if (kv(reply, "guard_reason", gr, sizeof gr) == 0) goto_sm_guard_reason(&sm, gr);
         goto_sm_guard(&sm, now_s(), atoi(gp) != 0, strtoull(v, NULL, 10));
         run_actions();
         if (!goto_sm_busy(&sm)) return;

@@ -300,6 +300,7 @@ typedef struct {
     double settle_since;
     /* lidar_guard via tars_motor STATUS */
     int guard_known, guard_ok;
+    char guard_reason[24];            /* STATUS guard_reason= (clear|guard_blocked|guard_stale|...); "" = never reported */
     unsigned long long guard_epoch, lease_epoch;
     /* SCAN */
     int scan_n;
@@ -322,6 +323,9 @@ void goto_sm_set_nav(goto_sm *s, nav_t *nav);
 /* STATUS guard_permit= / guard_epoch= (tars_motor with -g). An epoch change ends a leased
  * APPROACH leg: an old drive never resumes after the guard clears. */
 void goto_sm_guard(goto_sm *s, double now, int permit, unsigned long long epoch);
+/* STATUS guard_reason= (call before goto_sm_guard, so an epoch change sees the reason behind it).
+ * Only a fresh guard_blocked lets a guard stop at a big centred target count as docked. */
+void goto_sm_guard_reason(goto_sm *s, const char *reason);
 /* tars_motor refused a D/DL (ERR guard epoch changed / guard_blocked / ...) */
 void goto_sm_drive_refused(goto_sm *s, double now, const char *why);
 /* tars_motor refused a TURN/MOVE because of the guard (ERR guard_*). Map legs wait + re-plan;

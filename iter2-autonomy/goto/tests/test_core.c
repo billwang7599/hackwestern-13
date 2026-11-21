@@ -1346,6 +1346,73 @@ static void test_leased_approach(void)
     clear();
     goto_sm_drive_refused(&S, T, "guard epoch changed");
     CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "guard stop at a big centred target = docked (%s)", S.result);
+    /* Regression (full-stack visual-only): a STALE guard during the final approach counted as
+     * docked short of the bin. Only a fresh guard_blocked may; stale/missing/invalid -> S, LOOK
+     * again, approach again, bounded by nav_max_replans -> failed:blocked. */
+    static const char *not_obstacle[] = {"guard_stale", "guard_missing", "guard_invalid", "clear"};
+    for (int k = 0; k < 4; k++) {
+        reset_sm();
+        goto_sm_guard_reason(&S, "clear");
+        goto_sm_guard(&S, T, 1, 50);
+        start("trash can");
+        advance(0.1);
+        for (int i = 0; i < 2; i++) { advance(0.12); frame("trash can", 0.5, 0.2, 0.6); }
+        for (int i = 0; i < 3; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+        CHECK(S.st == ST_APPROACH, "approach, close + centred");
+        clear();
+        if (k < 3) {                                     /* DL refused naming the reason */
+            char why[64];
+            snprintf(why, sizeof why, "%s", not_obstacle[k]);
+            goto_sm_drive_refused(&S, T, why);
+        } else {                                         /* epoch moved on; STATUS now says clear */
+            goto_sm_guard_reason(&S, "clear");
+            goto_sm_guard(&S, T, 1, 51);
+        }
+        CHECK(count(ACT_STOP) >= 1 && S.st == ST_LOOK && strcmp(S.result, "arrived") && S.replans == 1,
+              "%s guard stop at the target is NOT docked: S, look again (%s, %s)", not_obstacle[k],
+              goto_state_name(S.st), S.result);
+        goto_sm_guard(&S, T, 1, 51);
+        for (int i = 0; i < 12 && S.st != ST_APPROACH; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+        CHECK(S.st == ST_APPROACH, "... and approaches again (%s)", goto_state_name(S.st));
+    }
+    /* a stale guard every time: bounded, then failed:blocked */
+    reset_sm();
+    goto_sm_guard_reason(&S, "clear");
+    goto_sm_guard(&S, T, 1, 60);
+    start("trash can");
+    for (int r = 0; r < 12 && S.st != ST_IDLE; r++) {
+        for (int i = 0; i < 12 && S.st != ST_APPROACH && S.st != ST_IDLE; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+        clear();
+        goto_sm_drive_refused(&S, T, "guard_stale");
+    }
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:blocked"), "stale guard every time -> failed:blocked (%s)", S.result);
+    /* a fresh guard_blocked (DL refused, or STATUS behind an epoch change) is still docked */
+    for (int k = 0; k < 2; k++) {
+        reset_sm();
+        goto_sm_guard_reason(&S, "clear");
+        goto_sm_guard(&S, T, 1, 70);
+        start("trash can");
+        advance(0.1);
+        for (int i = 0; i < 2; i++) { advance(0.12); frame("trash can", 0.5, 0.2, 0.6); }
+        for (int i = 0; i < 3; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+        clear();
+        if (k == 0) goto_sm_drive_refused(&S, T, "guard_blocked");
+        else { goto_sm_guard_reason(&S, "guard_blocked"); goto_sm_guard(&S, T, 0, 71); }
+        CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "fresh guard_blocked at the target = docked (%s)", S.result);
+    }
+    /* stop still wins mid-retry */
+    reset_sm();
+    goto_sm_guard_reason(&S, "clear");
+    goto_sm_guard(&S, T, 1, 80);
+    start("trash can");
+    advance(0.1);
+    for (int i = 0; i < 5; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+    goto_sm_drive_refused(&S, T, "guard_stale");
+    clear();
+    goto_sm_cancel(&S, T, "stop");
+    advance(1.0);
+    for (int i = 0; i < 6; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) >= 1 && !find(ACT_DRIVE), "CANCEL during the stale-guard wait: idle, S, no drive");
     /* no guard on the server: plain D */
     reset_sm();
     start("trash can");
