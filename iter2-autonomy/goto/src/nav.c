@@ -34,6 +34,7 @@ struct nav {
 
     /* pose */
     int   ark_ok, have_ark, have_dr, have_anchor, have_lost;
+    unsigned pose_seq;                  /* tracking-OK ARKit poses received (wraps) */
     float ark_x, ark_z, ark_yaw;
     float dr_x, dr_z, dr_yaw;
     float a_ark_x, a_ark_z, a_ark_yaw, a_dr_x, a_dr_z, a_dr_yaw;
@@ -135,6 +136,7 @@ int nav_cell(const nav_t *n, float x, float z)
 }
 
 unsigned nav_version(const nav_t *n) { return n ? n->version : 0; }
+unsigned nav_pose_seq(const nav_t *n) { return n ? n->pose_seq : 0; }
 
 /* ---- pose -------------------------------------------------------------- */
 
@@ -160,6 +162,7 @@ void nav_set_pose(nav_t *n, float x, float z, float yaw_rad, int tracking_ok)
     if (tracking_ok) {
         n->ark_x = x; n->ark_z = z; n->ark_yaw = yaw_rad;
         n->ark_ok = n->have_ark = 1;
+        n->pose_seq++;
         if (n->have_dr) take_anchor(n);
     } else {
         n->ark_ok = 0;

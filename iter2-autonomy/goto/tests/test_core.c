@@ -823,6 +823,18 @@ static void map_setup(void)
     crossed_occ = reverse_moves = legs = 0;
 }
 
+/* tars_motor says the leg is done; the phone's newest pose is still from BEFORE the move
+ * (link latency), the post-move poses arrive 50 ms apart afterwards, like the real LDR1 feed */
+static void leg_done_phone_lags(int id)
+{
+    goto_sm_move_status(&S, T, id, "done", "-");
+    for (int k = 0; k < 2; k++) {
+        T += 0.05;
+        nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
+        goto_sm_tick(&S, T);
+    }
+}
+
 /* execute queued TURN/MOVE legs on the fake robot until the SM stops issuing them */
 static int run_legs(int max)
 {
@@ -843,8 +855,7 @@ static int run_legs(int max)
         goto_sm_move_started(&S, T, ++id, 0.5);
         advance(0.3);
         frame(NULL, 0, 0, 0);                         /* the camera keeps streaming */
-        nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
-        goto_sm_move_status(&S, T, id, "done", "-");
+        leg_done_phone_lags(id);
     }
     return max;
 }
@@ -878,12 +889,75 @@ static int run_legs_ev(int max)
         goto_sm_move_started(&S, T, ++id, 0.5);
         advance(0.3);
         frame(NULL, 0, 0, 0);                         /* the camera keeps streaming */
-        nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
-        goto_sm_move_status(&S, T, id, "done", "-");
+        leg_done_phone_lags(id);
     }
     return max;
 }
 static void look_empty(int n) { for (int i = 0; i < n; i++) { advance(0.12); frame(NULL, 0, 0, 0); } }
+
+/* Regression (full-stack sim flake): when tars_motor says a leg is done, the phone's newest
+ * ARKit pose is still from before the move. Planning the next leg from it turned the robot by a
+ * stale heading (one whole 30 deg reveal step) and sent it ~25 deg off course. Every leg must
+ * start from the post-move pose; if no pose comes at all, carry on after nav_pose_fresh_s. */
+static void test_map_leg_waits_for_post_move_pose(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(0, 1.9, 3.0, 2.1, NAV_OCC);           /* wall, gap on the right: an L route */
+    put_robot(0.55, 0.55, 0);
+    add_inst(0.55, 3.45, MEM_FRESH);
+    start("trash can");
+    CHECK(S.st == ST_FOLLOW_PATH && S.path_n >= 2, "route with corners (%d)", S.path_n);
+    int id = 700, n_legs = 0, early = 0, bad_turn = 0, bad_move = 0;
+    for (int n = 0; n < 40; n++) {
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (!a && !m) break;
+        if (S.leg <= 1 && S.path_i < S.path_n) {          /* what the TRUE pose calls for */
+            double dx = S.path[S.path_i].x - PX, dz = S.path[S.path_i].z - PZ;
+            double b = -(atan2(dx, dz) - PYAW) * 180 / M_PI;
+            while (b > 180) b -= 360;
+            while (b < -180) b += 360;
+            if (a && fabs(a->a - b) > 1.0) bad_turn++;
+            if (m && fabs(m->a - hypot(dx, dz) * 1000) > 10) bad_move++;
+        }
+        if (a) PYAW -= a->a * M_PI / 180;
+        else { PX += m->a / 1000 * sin(PYAW); PZ += m->a / 1000 * cos(PYAW); }
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        goto_sm_move_status(&S, T, id, "done", "-");     /* phone pose still pre-move */
+        goto_sm_move_status(&S, T, id, "done", "-");     /* the next poll says done again */
+        if (find(ACT_TURN) || find(ACT_MOVE)) early++;
+        leg_done_phone_lags(id);
+        n_legs++;
+    }
+    CHECK(n_legs >= 4, "drove the route leg by leg (%d legs)", n_legs);
+    CHECK(early == 0, "no leg starts from the pre-move ARKit pose (%d did)", early);
+    CHECK(bad_turn == 0 && bad_move == 0, "every TURN/MOVE matches the true post-move pose (%d turns, %d moves off)",
+          bad_turn, bad_move);
+    CHECK(S.st == ST_LOOK, "route done -> LOOK (%s)", goto_state_name(S.st));
+
+    /* the phone goes quiet right as a leg ends: don't hang, carry on after nav_pose_fresh_s */
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(0, 1.9, 3.0, 2.1, NAV_OCC);
+    put_robot(0.55, 0.55, 0);
+    add_inst(0.55, 3.45, MEM_FRESH);
+    start("trash can");
+    const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+    if (a) PYAW -= a->a * M_PI / 180;
+    else if (m) { PX += m->a / 1000 * sin(PYAW); PZ += m->a / 1000 * cos(PYAW); }
+    clear();
+    goto_sm_move_started(&S, T, 800, 0.5);
+    advance(0.3);
+    goto_sm_move_status(&S, T, 800, "done", "-");
+    advance(C.nav_pose_fresh_s * 0.8);
+    int waited = !find(ACT_TURN) && !find(ACT_MOVE) && S.st == ST_FOLLOW_PATH;
+    advance(C.nav_pose_fresh_s * 0.4);
+    CHECK(waited && (find(ACT_TURN) || find(ACT_MOVE)), "no post-move pose: waits, then the next leg after nav_pose_fresh_s (%s)",
+          goto_state_name(S.st));
+}
 
 static void test_map_route_around_wall(void)
 {
@@ -1184,6 +1258,7 @@ int main(void)
     test_memory_file();
     test_memory_cfg();
     test_map_route_around_wall();
+    test_map_leg_waits_for_post_move_pose();
     test_map_gone_then_check_others();
     test_map_occluded_detour();
     test_map_no_route_fails();

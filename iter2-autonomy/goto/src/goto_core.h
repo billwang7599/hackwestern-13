@@ -292,6 +292,9 @@ typedef struct {
     double revealed_deg;
     int plan_wait;                    /* ST_PLAN: re-plan once the guard is CLEAR */
     int exploring, explores;          /* heading to a mapped cell nearer an unmapped goal, then re-plan */
+    int leg_settle;                   /* leg done, ARKit pose: wait for 2 poses taken after it ended */
+    unsigned settle_seq;
+    double settle_since;
     /* lidar_guard via tars_motor STATUS */
     int guard_known, guard_ok;
     unsigned long long guard_epoch, lease_epoch;

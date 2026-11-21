@@ -89,6 +89,10 @@ void   nav_set_robot_radius(nav_t *n, float metres);  /* footprint for inflation
 void nav_set_pose(nav_t *n, float x, float z, float yaw_rad, int tracking_ok);
 void nav_note_dr(nav_t *n, float dr_x, float dr_z, float dr_yaw_rad);   /* dead reckoning, its own frame, same yaw convention */
 int  nav_get_pose(const nav_t *n, float *x, float *z, float *yaw_rad);  /* NAV_POSE_* */
+/* Count of tracking-OK ARKit poses taken so far (wraps). A caller that just finished a
+ * move waits for this to advance before trusting the ARKit pose: the newest packet may
+ * have been measured before the move ended (link latency; DR is already current). */
+unsigned nav_pose_seq(const nav_t *n);
 
 /* One world point. y_above_floor = point y - floor y.
  * |h| <= 0.06 -> FREE if it was UNKNOWN (never clears an obstacle);

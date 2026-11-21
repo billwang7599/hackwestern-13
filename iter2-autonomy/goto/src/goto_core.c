@@ -928,6 +928,7 @@ static void emit_event(goto_sm *s, const char *what)
 static void set_state(goto_sm *s, goto_state st)
 {
     s->st = st;
+    s->leg_settle = 0;
     s->state_since = s->now;
 }
 
@@ -1785,6 +1786,14 @@ void goto_sm_tick(goto_sm *s, double now)
     case ST_MEM_TURN:
     case ST_MEM_MOVE:
     case ST_FOLLOW_PATH:
+        if (s->st == ST_FOLLOW_PATH && s->leg_settle) {   /* leg done: a post-move pose yet? */
+            if (nav_pose_seq(s->nav) - s->settle_seq >= 2 || nav_pose(s, NULL, NULL, NULL) != NAV_POSE_ARKIT ||
+                now - s->settle_since >= s->cfg.nav_pose_fresh_s) {
+                s->leg_settle = 0;
+                leg_done(s);
+            }
+            return;
+        }
         if (now > s->move_deadline) {
             goto_sm_fail(s, now, s->st == ST_MEM_MOVE || (s->st == ST_FOLLOW_PATH && s->leg == 1) ? "move timed out"
                                                                                                    : "turn timed out");
@@ -1850,11 +1859,23 @@ void goto_sm_move_started(goto_sm *s, double now, int move_id, double est_s)
 void goto_sm_move_status(goto_sm *s, double now, int move_id, const char *move, const char *why)
 {
     s->now = now;
-    if (!goto_sm_wants_status(s) || s->move_id < 0 || move_id != s->move_id) return;
+    if (!goto_sm_wants_status(s) || s->move_id < 0 || move_id != s->move_id || s->leg_settle) return;
     if (!strcmp(move, "running")) return;
     if (!strcmp(move, "done")) {
-        if (s->st == ST_FOLLOW_PATH) leg_done(s);
-        else start_look(s, now + s->cfg.settle_s);
+        if (s->st != ST_FOLLOW_PATH) { start_look(s, now + s->cfg.settle_s); return; }
+        /* The next leg / re-plan needs the pose AFTER this move. tars_motor's pose (DR) is
+         * already current, but the newest ARKit packet may have been measured before the
+         * move ended (and nav prefers ARKit while it's < nav_pose_fresh_s old): planning
+         * from it turns by a stale heading. Wait for 2 newer poses (the first may have been
+         * in flight); goto_sm_tick() finishes the leg. */
+        if (nav_pose(s, NULL, NULL, NULL) == NAV_POSE_ARKIT) {
+            s->leg_settle = 1;
+            s->settle_seq = nav_pose_seq(s->nav);
+            s->settle_since = now;
+            s->move_deadline = now + s->cfg.nav_pose_fresh_s + 1.0;
+            return;
+        }
+        leg_done(s);
         return;
     }
     if (s->st == ST_FOLLOW_PATH && why && (!strcmp(why, "lidar_guard") || !strcmp(why, "obstacle") ||
