@@ -44,7 +44,7 @@ def serve():
     print('Motor backend: ' + backend + (' (no physical motor output)' if backend == 'stub' else ''), flush=True)
     commands = {
         'usbmuxd': ['sudo', '-n', 'sh', str(USB / 'run-usbmuxd.sh')],
-        **{f'proxy{p}': [str(USB / 'install/bin/iproxy'), '-l', '-s', '127.0.0.1', f'{p}:{p}'] for p in (5557, 5558, 5559, 5561, 5562, 5563)},
+        **{f'proxy{p}': [str(USB / 'install/bin/iproxy'), '-l', '-s', '127.0.0.1', f'{p}:{p}'] for p in (5557, 5558, 5559, 5561, 5562, 5563, 5573)},
         **({'uno_bridge': ['sudo', '-n', sys.executable, str(USB / 'uno_bridge.py')]}
            if backend == 'uno' and device == str(STATE / 'uno-serial') else {}),
         'motor': motor_command,
@@ -72,7 +72,7 @@ def serve():
         admin.bind(ADDRESS)
         admin.listen(4)
         # Refuse to compete with an independently running proxy.
-        for port in (5555, 5557, 5558, 5559, 5561, 5562, 5563):
+        for port in (5555, 5557, 5558, 5559, 5561, 5562, 5563, 5573):
             with socket.socket() as probe:
                 if probe.connect_ex(('127.0.0.1', port)) == 0:
                     raise RuntimeError(f'Port {port} already in use; stop the existing proxy first')
