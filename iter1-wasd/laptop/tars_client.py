@@ -123,7 +123,7 @@ class Tars:
     def gestures(self) -> list[str]:
         return self.send("GESTURES").split()
 
-    # -- exact moves (stepper wheels) ----------------------------------------
+    # -- MOVE / TURN (stepper wheels: exact; DC wheels: timed) -----------------
     def _exact(self, verb: str, amount: float, speed: float | None, wait: bool,
                timeout: float | None) -> dict:
         r = self.send(f"{verb} {amount:.1f}" + (f" {speed:.2f}" if speed else "")).split()
@@ -134,6 +134,7 @@ class Tars:
         end = time.monotonic() + (timeout if timeout is not None else est_ms / 1000.0 * 2 + 3.0)
         time.sleep(min(0.05, est_ms / 1000.0))
         while time.monotonic() < end:
+            self.send("PING")          # MOVE/TURN need a keepalive within tars_motor's 500 ms deadman
             st = self.status()
             if int(st.get("move_id", -1)) != move_id:
                 info["move"] = "replaced"
@@ -161,6 +162,22 @@ class Tars:
         """Set (saved in the Uno's EEPROM) or read the wheel diameter and track width."""
         r = self.send("WHEELCAL" + (f" {diam_mm:.1f} {track_mm:.1f}" if diam_mm else "")).split()
         return float(r[0]), float(r[1])
+
+    def speed_cal(self, mm_s: float | None = None, deg_s: float | None = None) -> tuple[float, float] | None:
+        """DC wheels: read, or set (saved in the Uno's EEPROM), the speeds at D 1.
+        Returns (mm_s, deg_s), or None for stepper wheels. A set is applied once the Uno
+        confirms (WHEELS DC); this waits up to 1 s for that."""
+        if mm_s is None:
+            r = self.send("SPEEDCAL").split()
+            return (float(r[1]), float(r[2])) if r[0] == "dc" else None
+        self.send(f"SPEEDCAL {mm_s:.1f} {deg_s:.1f}")
+        end = time.monotonic() + 1.0
+        while time.monotonic() < end:
+            cur = self.speed_cal()
+            if cur and abs(cur[0] - mm_s) < 0.05 and abs(cur[1] - deg_s) < 0.05:
+                return cur
+            time.sleep(0.05)
+        raise TarsError("the Uno didn't confirm the new speeds (DC firmware flashed? Bluetooth unplugged?)")
 
     # -- on-robot UI ----------------------------------------------------------
     def led(self, pattern: int) -> None:

@@ -63,3 +63,6 @@ iter2-autonomy/goto/models/
 # goto object memory (written on the robot / by tests)
 iter2-autonomy/goto/memory.txt
 iter2-autonomy/goto/memory.txt.tmp
+
+# scratch (agents)
+.scratch/
