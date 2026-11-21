@@ -65,6 +65,7 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 | Area | Branch | State |
 |---|---|---|
 | Uno stepper firmware, `tars_motor`, WASD teleop, `docs/PI_TEST.md` | `stepper-wheels` (GitHub) | Mac tests pass. **Not run on hardware yet.** |
+| `pi/tars_bridge.py`: Python stand-in for `tars_motor`. **Bring-up/debug only** (test motors before the QNX build works); **not the demo path**, which is the native C `tars_motor` | `kothar/py-bridge` (local) | Passes all 240 `tars_motor` checks + 34 bridge checks + teleop 36/36 on Mac (stub + fake-Uno pty). **Not run on QNX/Pi/real Uno yet.** |
 | MediaPipe gestures + follow mode | `stepper-wheels` (GitHub) | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
 | Teach-a-gesture on the spot | `kothar/learn-gesture` (local only) | Mac tests pass. Not merged. |
 | Speech + intent classifier | `kothar/voice-stt` (local, in progress) | Being built. |
@@ -75,7 +76,8 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 ## Hardware checks that gate everything (do these first)
 
 1. Upload `uno/tars/tars.ino`, then type `M 100` in Serial Monitor. Both wheels should turn.
-2. Build and deploy `tars_motor` (needs Docker + SDP 8.0 in `~/qnx800`). Find the Uno's serial device name.
+2. Build and deploy the native C `tars_motor` (needs Docker + SDP 8.0 in `~/qnx800`). This is the demo path. Find the Uno's serial device name.
+   *Fallback while `qcc` isn't working:* `pi/tars_bridge.py` (docs/PI_TEST.md §1d). It's for bring-up and debugging only.
 3. WASD drive from a laptop (`laptop/teleop.py`).
 4. On the Pi: `apk search mediapipe`, and run the camera test.
 5. On the Pi: `voice/qnx/mic_test` to record 3 s from the USB mic and play it back. **If this fails, voice is off.**

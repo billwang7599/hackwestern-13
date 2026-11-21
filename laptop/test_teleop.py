@@ -3,6 +3,7 @@
 part 3, which needs pygame(-ce) and is skipped without it.
 
     python3 laptop/test_teleop.py        # needs pi/build/tars_motor_host (make -C pi host)
+    TARS_MOTOR_BIN=pi/tars_bridge.py python3 laptop/test_teleop.py   # same, Python bridge
 
 1. HoldDrive: scripted keydown/keyup -> exact D/S stream (mixing, arcs, cancel,
    20 Hz resend, release = S, focus loss, speed caps).
@@ -26,7 +27,8 @@ sys.path.insert(0, HERE)
 import teleop  # noqa: E402
 from teleop import HoldDrive  # noqa: E402
 
-BIN = os.path.join(HERE, "..", "pi", "build", "tars_motor_host")
+# TARS_MOTOR_BIN=../pi/tars_bridge.py runs the same tests against the Python bridge.
+BIN = os.environ.get("TARS_MOTOR_BIN") or os.path.join(HERE, "..", "pi", "build", "tars_motor_host")
 checks = failures = 0
 
 

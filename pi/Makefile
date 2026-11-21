@@ -6,6 +6,8 @@
 #   make test          host build + test_server.py (stub + fake-Uno pty)
 #   make deploy        scp binary to the Pi
 #   make run           ssh in and run it (Ctrl-C stops motors)
+#   make test-bridge   same tests against tars_bridge.py (Python bring-up/debug tool, NOT the demo path)
+#   make deploy-bridge / run-bridge   scp / ssh-run the Python bridge on the Pi
 #   make compdb        regenerate compile_commands.json for clangd (via bear)
 #
 # Override: make run PI_HOST=qnxuser@192.168.1.42  BACKEND=stub  UART=/dev/ser1
@@ -26,7 +28,7 @@ QNX_LIBS := -lsocket -lm
 
 REPO     := $(abspath ..)
 
-.PHONY: all host test deploy run compdb clean
+.PHONY: all host test test-bridge deploy deploy-bridge run-bridge run compdb clean
 
 all: build/$(BIN)
 
@@ -51,6 +53,17 @@ host: | build
 # real uno backend talking to a fake Uno on a pseudo-terminal. stdlib only.
 test: host
 	python3 test_server.py build/$(BIN)_host
+
+# Python drop-in for tars_motor (no QNX build needed): same tests + bridge-only tests.
+test-bridge:
+	python3 test_server.py ./tars_bridge.py
+	python3 test_bridge.py
+
+deploy-bridge:
+	scp tars_bridge.py $(PI_HOST):$(PI_DIR)/tars_bridge.py
+
+run-bridge:
+	ssh -t $(PI_HOST) 'python3 $(PI_DIR)/tars_bridge.py -p $(PORT)'
 
 deploy: build/$(BIN)
 	scp build/$(BIN) $(PI_HOST):$(PI_DIR)/$(BIN)

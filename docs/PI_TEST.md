@@ -4,6 +4,10 @@ For someone at the robot with a fresh clone who hasn't seen this repo before.
 Work top to bottom and tick things off. Each step says what you should see.
 If you don't see it, go to [Troubleshooting](#7-troubleshooting) before moving on.
 
+**Main path:** the native QNX `tars_motor` built with `qcc` (§1a). If the QNX
+toolchain isn't working yet, §1d has a Python bridge so you can test the motors
+over Wi-Fi in the meantime. It's for bring-up and debugging only, not the demo.
+
 **What you're testing:** a two-wheel rover. Each wheel is a **28BYJ-48 stepper
 on a ULN2003 board**, driven by an **Arduino Uno**. The Uno is plugged into a
 **Raspberry Pi 5 running QNX** over USB. On the Pi, `tars_motor` listens on TCP
@@ -65,7 +69,8 @@ make -C pi deploy PI_HOST=qnxuser@<pi-ip>
 
 **Optional first check with no hardware:** `make -C pi host && make -C pi test`
 builds a Mac/Linux version and runs the server tests (about a minute). It
-should end with `210/210 checks passed`.
+should end with `240/240 checks passed`. `make -C pi test-bridge` runs the same tests plus
+`pi/test_bridge.py` against the Python bridge.
 
 ### 1b. Uno firmware — on the laptop, Uno plugged into the laptop
 
@@ -93,6 +98,86 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt          # pygame-ce (+ anthropic, unused here)
 cd ..
 ```
+
+### 1d. Fallback: before your QNX toolchain works (Python bridge, bring-up/debug only)
+
+> **Not the demo path.** The robot runs the native QNX C `tars_motor` (§1a), and that's
+> the project's point. Use the bridge only to test the motors and wiring while
+> Docker/SDP/`qcc` aren't working yet, then switch to `tars_motor`.
+
+`pi/tars_bridge.py` is a single-file, standard-library-only Python version of
+`tars_motor`. It uses the same TCP port, protocol and Uno serial lines, and the
+same 500 ms watchdog, stop, tip-over and reconnect behaviour. QNX 8.0 ships
+Python 3, so you only copy one file. There's no Docker and no QNX SDP.
+
+```
+laptop teleop.py --Wi-Fi TCP :5555--> Pi (python3 tars_bridge.py) --USB serial--> Uno --> wheels
+```
+
+**0. Motors first, with no Pi (2 minutes).** Flash the Uno (§1b), keep it on the
+Mac's USB, wheels in the air, then in two terminals from the repo root:
+```sh
+python3 pi/tars_bridge.py                 # auto-finds /dev/cu.usbmodem* / cu.usbserial*
+python3 laptop/teleop.py localhost        # hold W/A/S/D (pip install pygame-ce first, see §1c)
+```
+Or check the protocol with no Uno at all: `python3 pi/tars_bridge.py --stub`.
+
+**1. Pi on Wi-Fi.** Use a **phone hotspot** (venue Wi-Fi usually has a captive
+portal or client isolation, and then the laptop can't reach the Pi). Put the
+laptop on the same hotspot. Before booting the QNX Quick Start (QSTI) image, put
+the SD card in the laptop and, on the FAT32 boot partition, edit or create
+`wpa_supplicant.conf`:
+```
+network={
+    ssid="YourHotspotName"
+    psk="hotspot-password"
+    key_mgmt=WPA-PSK
+}
+```
+Boot the Pi with no USB keyboard or mouse plugged in. Use 2.4 GHz /
+"Maximize Compatibility" on an iPhone hotspot if it doesn't join.
+Edits to this file also apply on later boots.
+
+**2. Find the Pi's IP.** Check the hotspot's connected-devices list, or with a
+screen/serial console on the Pi run `ifconfig bcm0` (bcm0 is the Wi-Fi
+interface; it should show an `inet` address). Then:
+```sh
+ssh qnxuser@<pi-ip>          # QSTI default user qnxuser (password qnxuser, see the QSTI docs)
+python3 --version            # expect Python 3.x
+```
+
+**3. Copy and run the bridge.** Plug the Uno into the Pi's blue USB port.
+```sh
+scp pi/tars_bridge.py qnxuser@<pi-ip>:/data/home/qnxuser/    # or: make -C pi deploy-bridge PI_HOST=qnxuser@<pi-ip>
+ssh qnxuser@<pi-ip> 'python3 /data/home/qnxuser/tars_bridge.py'
+```
+Expected:
+```
+[uno] opened /dev/serusb1 @115200
+[ctl] STOP (watchdog)                     <- normal: no client yet
+tars_motor: backend=uno dev=auto(/dev/serusb1) port=5555 watchdog=500ms prio=- (python bridge)
+tars_bridge: laptop -> python laptop/teleop.py 172.20.10.5
+[ctl] co-processor READY                  <- ~1.5 s later (opening the port reboots the Uno)
+```
+- The bridge auto-detects `/dev/serusb*`, `/dev/ttyACM*` and `/dev/ttyUSB*`. Use `-d /dev/xxx` to pick one (e.g. `-d /dev/ser1` for the header UART).
+- If it logs `no Uno serial port yet`, run `ls /dev/ser*` and see "No serial device on the Pi" in §7. It keeps retrying every second, so you can plug the Uno in afterwards.
+- If it logs `termios setup failed` / `could not set 115200`: set the port by hand
+  with `stty baud=115200 -edit < /dev/serusb1` and restart. A genuine Uno (CDC-ACM) usually works regardless of baud.
+- Ctrl-C stops the motors and exits. To keep it running after you log out:
+  `nohup python3 tars_bridge.py > /tmp/tars.log 2>&1 &`
+
+**4. Drive from the laptop** (wheels in the air first):
+```sh
+python3 laptop/tars_client.py <pi-ip>     # ping + STATUS: expect 'backend': 'uno', 'ready': 1
+python3 laptop/teleop.py <pi-ip>          # click the window, hold W/A/S/D, Space = stop
+```
+`wheel_cal.py` (§3 step 5) works the same way: `TARS_HOST=<pi-ip> python3 laptop/wheel_cal.py move 100`.
+
+**Bridge vs C `tars_motor`, and why the demo uses the C build:** the commands, replies and safety rules are the
+same (it passes the same 240-check test suite on a Mac). The only difference
+is that the bridge's control loop is a normal Python thread, not a real-time
+`SCHED_RR` one, so expect a few ms of timing jitter. That's fine for driving.
+Switch to the native C build (§1a) as soon as `qcc` works. After that, use the bridge only for debugging.
 
 ---
 
