@@ -73,6 +73,18 @@ for byte in Data("SAY one\nSAY two\n".utf8) { collected += k.feed(Data([byte])) 
 check(collected == [.line(Data("SAY one".utf8)), .line(Data("SAY two".utf8))], "byte-at-a-time framing")
 
 // queue policy
+var narrator = ActionNarrator()
+func telemetry(_ fields: [String: Any], keys: [String] = [], permit: Bool = true) -> [String: Any] {
+    ["motor": fields.merging(["connected":true]) { a, _ in a },
+     "safety":["permit":permit,"reason":"set_floor"], "keyboard":["keys":keys]]
+}
+let drive = telemetry(["output":[0.6,0.6]])
+check(narrator.update(drive)?.text == "Drive forward.", "native output is narrated")
+check(narrator.update(drive) == nil, "repeat heartbeat silent")
+check(narrator.update(telemetry(["output":[0,0]], keys:["W"], permit:false))?.priority == .urgent, "guard interrupts moving speech")
+let turn = telemetry(["move":"running","move_kind":"TURN","move_id":4,"move_req":-30.0])
+check(narrator.update(turn)?.text == "Turn left 30 degrees.", "exact turn from Pi")
+check(narrator.update(telemetry(["move":"aborted","move_why":"timeout"]))?.text == "Move aborted. timeout.", "aborted move described")
 var q = SpeechQueue()
 let n = { (s: String) in SpeechRequest(text: s, priority: .normal) }
 let u = { (s: String) in SpeechRequest(text: s, priority: .urgent) }

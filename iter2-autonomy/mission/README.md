@@ -156,4 +156,6 @@ API, but not clicked in a real browser), or with the real headless service.
 
 ### Wheel-less diagnostics
 
+The iPhone's **More controls → Speak actions** toggle voices changes in Pi-reported motor output, exact MOVE/TURN requests, guard-held manual input, and recent navigation events when a goto WATCH server is available. Speech and captions report commands. Wheel rotation requires independent observation. Audio is observational and does not switch the motor backend. For simulated actuation, use the existing stub backend.
+
 Open `laptop/actions.command` on the Mac for an SSH-only live action stream (or pass a different user@host). It tails the Pi user's `~/tars-{input,motor,nav}-actions.log` journals across creation and rotation. Input records include phone commands and keyboard transitions. Motor entries include command arguments and server replies, including refusals and repeated stop/drive requests. Navigation entries include planner events and dispatched motor commands. Each journal retains its active file and one 8 MiB rotation. Read-only STATUS/PING traffic is omitted. The standalone serial bench writes to the motor journal with client -1 and a serial TX result.

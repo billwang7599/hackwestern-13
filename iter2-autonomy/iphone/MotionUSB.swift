@@ -40,20 +40,29 @@ struct MotionUSBApp: App {
         }
     }
 
+    @AppStorage("speakRobotActions") private var speakActions = true
     @State private var controls = false
 
     private func feed(_ title: String, _ image: UIImage?, _ timestamp: Double) -> some View {
-        ZStack(alignment: .topLeading) {
-            Color.black
-            if let cg = image?.cgImage {
-                Image(uiImage: UIImage(cgImage: cg, scale: 1, orientation: .left))
-                    .resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
+        Color.black
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .overlay {
+                if let cg = image?.cgImage {
+                    GeometryReader { tile in
+                        Image(uiImage: UIImage(cgImage: cg, scale: 1, orientation: .left))
+                            .resizable().scaledToFill()
+                            .frame(width: tile.size.width, height: tile.size.height)
+                            .clipped()
+                    }
+                }
             }
-            TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-                Text(title + (image == nil ? " · waiting" : ProcessInfo.processInfo.systemUptime - timestamp > 2 ? " · stale" : ""))
-                    .font(.caption.bold()).padding(4).background(.black.opacity(0.65))
+            .overlay(alignment: .topLeading) {
+                TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                    Text(title + (image == nil ? " · waiting" : ProcessInfo.processInfo.systemUptime - timestamp > 2 ? " · stale" : ""))
+                        .font(.caption2.bold()).foregroundStyle(.white)
+                        .padding(.horizontal, 4).padding(.vertical, 2).background(.black.opacity(0.65))
+                }
             }
-        }.foregroundStyle(.white).clipped()
     }
 
     private func axes(_ key: String) -> String {
@@ -62,58 +71,90 @@ struct MotionUSBApp: App {
         return values.map { String(format: "%.1f", $0.doubleValue) }.joined(separator: "  ")
     }
 
+    private var motionReadout: some View {
+        Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 1) {
+            GridRow { Text("Accel m/s²"); Text(axes("accel_m_s2")) }
+            GridRow { Text("Gyro rad/s"); Text(axes("gyro_rad_s")) }
+        }
+        .font(.caption.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.75)
+        .accessibilityHint("Values in X, Y, Z order")
+    }
+
+    private var primaryControls: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Button(server.running ? "Stop" : "Start") {
+                    if server.running { server.stop(); camera.stop() }
+                    else { server.start(); if server.running { camera.start() } }
+                }.buttonStyle(.borderedProminent)
+                Button("Set floor") { camera.setFloor() }
+                Button { controls.toggle() } label: {
+                    Image(systemName: controls ? "xmark" : "slider.horizontal.3")
+                }.accessibilityLabel(controls ? "Close controls" : "More controls")
+            }
+            HStack(spacing: 4) {
+                Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
+                Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
+            }
+        }.buttonStyle(.bordered).controlSize(.small).font(.caption)
+    }
+
+    private var sensorColumn: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if !controls {
+                feed("YOLO", camera.qnxInspectionImage, camera.qnxInspectionTimestamp)
+                feed("LiDAR", camera.inspectionImage, camera.inspectionTimestamp)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
+                    motionReadout
+                    primaryControls
+                    let keyboard = pi.latestStatus["keyboard"] as? [String: Any]
+                    let key = (keyboard?["last_press"] as? [String])?.joined(separator: "+") ?? ""
+                    Text((pi.connected ? "Pi online" : "Pi offline") + " · " +
+                         (pi.connected && keyboard?["connected"] as? Bool == true ? "Keys " + (key.isEmpty ? "ready" : key) : "Keys offline"))
+                    TimelineView(.periodic(from: .now, by: 0.3)) { _ in
+                        let guardState = ObstaclePresentation(status: pi.latestStatus, connected: currentGuardConnection)
+                        Text(guardState.title).foregroundStyle(guardState.color).fontWeight(.bold)
+                    }
+                    if !speech.lastSpoken.isEmpty {
+                        Label(speech.lastSpoken, systemImage: "speaker.wave.2.fill").lineLimit(2)
+                    }
+                    Text(camera.roomTagStatus).lineLimit(2)
+                    if controls {
+                        Text(camera.status)
+                        Toggle("Speak actions", isOn: $speakActions)
+                        ManualDrivePanel(pi: pi)
+                        Button("Reset scan") { camera.resetMap() }
+                        ForEach(["start","stop"], id: \.self) { op in
+                            Button("Pi " + op + " streams") { pi.command(["op":op]) }
+                        }
+                    }
+                }.font(.caption2).padding(.horizontal, 3)
+                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             GeometryReader { g in
-                let side = g.size.width * 0.25
-                HStack(alignment: .top, spacing: 0) {
-                    VStack(spacing: 2) {
-                        feed("YOLO", camera.qnxInspectionImage, camera.qnxInspectionTimestamp)
-                        feed("LiDAR", camera.inspectionImage, camera.inspectionTimestamp)
-                    }.frame(width: side)
-                    PointCloudView(map: cloud, compact: true)
-                        .frame(width: g.size.width - 2 * side, height: g.size.height / 2)
-                        .clipped().accessibilityLabel("3D surroundings")
-                    VStack(alignment: .leading, spacing: 3) {
+                // The mount covers the middle half of the physical display below its midpoint.
+                let insets = g.safeAreaInsets
+                let quarter = (g.size.width + insets.leading + insets.trailing) / 4
+                let left = max(0, quarter - insets.leading)
+                let right = max(0, quarter - insets.trailing)
+                let top = (g.size.height + insets.bottom - insets.top) / 2
+                HStack(alignment: .top, spacing: 2) {
+                    sensorColumn.frame(width: left)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        PointCloudView(map: cloud, compact: true)
+                            .frame(maxWidth: .infinity).frame(height: top)
+                            .clipped().accessibilityLabel("3D surroundings")
                         SurroundingsView(map: pi.surroundings, connected: pi.connected, onCommand: pi.command, compact: true)
-                            .frame(maxHeight: .infinity).accessibilityLabel("Floor minimap")
-                        HStack {
-                            Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
-                            Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
-                        }.buttonStyle(.bordered).controlSize(.small)
-                        Text(camera.roomTagStatus).font(.caption2).lineLimit(1)
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 5) {
-                                let keys = pi.latestStatus["keyboard"] as? [String: Any]
-                                Text((pi.connected ? "Pi online" : "Pi offline") + " · " + (pi.connected && keys?["connected"] as? Bool == true ? "Keyboard " + ((keys?["last_press"] as? [String])?.joined() ?? "") : "Keyboard offline"))
-                                TimelineView(.periodic(from: .now, by: 0.3)) { _ in
-                                    let state = ObstaclePresentation(status: pi.latestStatus, connected: currentGuardConnection)
-                                    Text(state.title).foregroundStyle(state.color).fontWeight(.bold)
-                                }
-                                if !speech.lastSpoken.isEmpty {
-                                    Label(speech.lastSpoken, systemImage: "speaker.wave.2.fill").font(.caption)
-                                }
-                                Text("Accel m/s²   " + axes("accel_m_s2"))
-                                Text("Gyro rad/s   " + axes("gyro_rad_s"))
-                                HStack {
-                                    Button(server.running ? "Stop" : "Start") {
-                                        if server.running { server.stop(); camera.stop() }
-                                        else { server.start(); if server.running { camera.start() } }
-                                    }.buttonStyle(.borderedProminent)
-                                    Button("Set floor") { camera.setFloor() }.buttonStyle(.bordered)
-                                }
-                                Text(camera.status).font(.caption2)
-                                Button(controls ? "Hide controls" : "More controls") { controls.toggle() }
-                                if controls {
-                                    ManualDrivePanel(pi: pi)
-                                    Button("Reset scan") { camera.resetMap() }
-                                    ForEach(["start","stop"], id: \.self) { op in
-                                        Button("Pi " + op + " streams") { pi.command(["op":op]) }
-                                    }
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }.frame(height: g.size.height * (controls ? 0.73 : 0.46))
-                    }.padding(.horizontal, 4).frame(width: side)
+                            .frame(width: right).frame(maxHeight: .infinity)
+                            .clipped().accessibilityLabel("Floor minimap")
+                    }
                 }
             }
             .overlay {
@@ -122,17 +163,12 @@ struct MotionUSBApp: App {
                         let level = angle <= 1
                         let tint = level ? Color.mint : Color(hue: 0.23 * (1 - angle / 45),
                                                              saturation: 0.88, brightness: 0.92)
-                        GeometryReader { g in
-                            ZStack {
-                                tint.opacity(level ? 0.28 : 0.13)
-                                Rectangle().strokeBorder(tint, lineWidth: level ? 7 : 4)
-                                Label(level ? "Level · Set floor" : String(format: "Floor tilt  %.1f°", angle),
-                                      systemImage: level ? "checkmark.circle.fill" : "level")
-                                    .font(.headline.monospacedDigit()).foregroundStyle(.white)
-                                    .padding(.horizontal, 12).padding(.vertical, 6)
-                                    .background(.black.opacity(0.82), in: Capsule())
-                                    .position(x: g.size.width / 2, y: 25)
-                            }
+                        ZStack(alignment: .bottomTrailing) {
+                            tint.opacity(level ? 0.22 : 0.10)
+                            Rectangle().strokeBorder(tint, lineWidth: level ? 5 : 3)
+                            Text(level ? "Level" : String(format: "%.1f°", angle))
+                                .font(.caption.bold().monospacedDigit()).foregroundStyle(.white)
+                                .padding(4).background(.black.opacity(0.72), in: Capsule()).padding(5)
                         }
                     }
                 }.allowsHitTesting(false)
@@ -144,8 +180,11 @@ struct MotionUSBApp: App {
                 #endif
                 pi.start()
             }
+            .onChange(of: speakActions) { _, _ in speech.resetNarration() }
+            .onChange(of: pi.connected) { _, connected in if !connected { speech.resetNarration() } }
             .onReceive(pi.$latestStatus) { value in
                 guard pi.connected else { return }
+                if speakActions { speech.narrate(value) }
                 if let result = value["ai"] as? [String: Any], result["live"] as? Bool == true { if stereoMode { stereo.result(result) } else { camera.applyQNXResult(result) } }
                 if let result = value["depth"] as? [String: Any], result["live"] as? Bool == true { camera.applyQNXDepthResult(result) }
             }

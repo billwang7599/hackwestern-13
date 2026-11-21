@@ -154,6 +154,58 @@ struct SpeechQueue {
     mutating func pop() -> SpeechRequest? { pending.isEmpty ? nil : pending.removeFirst() }
     mutating func clear() { pending.removeAll() }
 }
+// Derived exclusively from Pi telemetry. A repeated status is a heartbeat.
+struct ActionNarrator {
+    private var previous = ""
+    private var moving = false
+
+    mutating func update(_ status: [String: Any]) -> SpeechRequest? {
+        let motor = status["motor"] as? [String: Any] ?? [:]
+        let keyboard = status["keyboard"] as? [String: Any] ?? [:]
+        let guardState = status["safety"] as? [String: Any] ?? [:]
+        let keys = keyboard["keys"] as? [String] ?? []
+        var key = keys.count == 1 ? ["W":"forward", "S":"reverse", "A":"left turn", "D":"right turn"][keys[0]] : nil
+        if key == nil, let drive = status["phone_drive"] as? [Double], drive.count == 2,
+           drive[0] != 0 || drive[1] != 0 {
+            if drive[0]*drive[1] <= 0 { key = drive[0] > drive[1] ? "right turn" : "left turn" }
+            else { key = drive[0]+drive[1] > 0 ? "forward" : "reverse" }
+        }
+        let output = motor["output"] as? [Double] ?? []
+        let wasMoving = moving
+        moving = false
+        var state = "idle", words = ""
+        if motor["connected"] as? Bool != true {
+            state = "offline"
+            if wasMoving || key != nil { words = "Motor connection lost." }
+        } else if motor["move"] as? String == "running",
+                  let kind = motor["move_kind"] as? String, let amount = motor["move_req"] as? Double,
+                  amount.isFinite, abs(amount) < 100000 {
+            moving = true
+            state = "move-\(motor["move_id"] ?? 0)"
+            if kind == "TURN" {
+                words = "Turn \(amount < 0 ? "left" : "right") \(Int(abs(amount).rounded())) degrees."
+            } else {
+                words = "Drive \(amount < 0 ? "backward" : "forward") \(Int((abs(amount)/10).rounded())) centimeters."
+            }
+        } else if let key, guardState["permit"] as? Bool != true {
+            let reason = (guardState["reason"] as? String ?? guardState["verdict"] as? String ?? "guard unavailable")
+                .replacingOccurrences(of: "_", with: " ").lowercased()
+            state = "blocked-\(key)-\(reason)"
+            words = "Requested \(key). Held: \(reason)."
+        } else if output.count == 2 && output.contains(where: { abs($0) > 0.01 }) {
+            moving = true
+            let l = output[0], r = output[1]
+            if l*r <= 0 { state = l > r ? "Turn right" : "Turn left" }
+            else { state = l+r > 0 ? "Drive forward" : "Drive backward" }
+            words = state + "."
+        } else if wasMoving {
+            words = motor["move"] as? String == "aborted" ? "Move aborted. \(motor["move_why"] ?? "")." : "Stop."
+        }
+        guard state != previous else { return nil }
+        previous = state
+        return words.isEmpty ? nil : SpeechRequest(text: words, priority: wasMoving && !moving ? .urgent : .normal)
+    }
+}
 // END SPEECH_LINK_PURE
 
 final class SpeechLink: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
@@ -161,6 +213,27 @@ final class SpeechLink: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
     @Published private(set) var lastSpokenAt: Date?
     @Published private(set) var clientCount = 0
     @Published private(set) var summary = "Speech link stopped"
+
+    private var lastNavEvent: Double?
+    private var narrator = ActionNarrator()
+    func narrate(_ status: [String: Any]) {
+        if let motor = status["motor"] as? [String: Any],
+           let id = motor["nav_event_id"] as? Double, id != lastNavEvent,
+           let event = motor["nav_event"] as? String {
+            lastNavEvent = id
+            let parts = event.components(separatedBy: " #")[0].split(separator: " ", maxSplits: 1)
+            if let first = parts.first {
+                let target = parts.count == 2 && parts[1] != "-" ? String(parts[1]) : ""
+                let descriptions = ["searching":"Searching for", "route":"Planning a route to",
+                    "detour":"Taking a detour toward", "occluded":"View blocked for",
+                    "scanning":"Starting a scan", "scanned":"Scan complete", "arrived":"Navigation reports arrival at"]
+                let phrase = descriptions[String(first)] ?? String(first).replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: ":", with: ". ")
+                enqueue(SpeechRequest(text: phrase + " " + target, priority: .normal))
+            }
+        }
+        if let request = narrator.update(status) { enqueue(request) }
+    }
+    func resetNarration() { narrator = ActionNarrator() }
 
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: (connection: NWConnection, framer: SpeechLineFramer)] = [:]

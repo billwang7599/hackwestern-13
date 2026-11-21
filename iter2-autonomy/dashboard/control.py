@@ -7,6 +7,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import queue
+import select
 import socket
 import threading
 import time
@@ -53,12 +54,16 @@ class ControlLink:
         self.port = port
         self.stop = threading.Event()
         self.lock = threading.Lock()
+        self.phone_drive = None
+        self.phone_drive_until = 0.0
         self.commands = queue.Queue(maxsize=16)
         self.latest = {}
         self.connected = False
 
     def publish(self, status):
         with self.lock:
+            if self.phone_drive and time.monotonic() < self.phone_drive_until:
+                status['phone_drive'] = self.phone_drive
             self.latest = status
 
     def run(self):
@@ -91,6 +96,11 @@ class ControlLink:
                             # A full queue closes this connection and clears drive intent.
                             log_input("phone", command)
                             self.commands.put_nowait(command)
+                            if command['op'] in ('drive', 'halt', 'stop'):
+                                with self.lock:
+                                    self.phone_drive = ([command['left'], command['right']]
+                                                        if command['op'] == 'drive' else None)
+                                    self.phone_drive_until = time.monotonic() + 0.5
             except (OSError, ValueError, queue.Full):
                 pass
             finally:
@@ -145,12 +155,40 @@ class MotorLink:
         self.received = 0.0
         self.connected = False
         self.error = 'Motor server not connected'
+        self.nav_event = ''
+        self.nav_event_time = 0.0
 
     def update(self, left, right, generation):
         with self.lock:
             self.requested = (left, right)
             self.generation = generation
             self.expires = time.monotonic() + 0.15
+
+    def watch_navigation(self):
+        # A read-only WATCH connection. No motor or guard calls on this thread.
+        while not self.stop.is_set():
+            try:
+                with socket.create_connection(('127.0.0.1', 5570), timeout=0.5) as sock:
+                    sock.sendall(b'WATCH\n')
+                    buf = b''
+                    while not self.stop.is_set():
+                        if not select.select([sock], [], [], 0.5)[0]:
+                            continue
+                        chunk = sock.recv(4096)
+                        if not chunk:
+                            break
+                        buf += chunk
+                        while b'\n' in buf:
+                            line, buf = buf.split(b'\n', 1)
+                            if line.startswith(b'EVENT '):
+                                with self.lock:
+                                    self.nav_event = line[6:262].decode('utf-8', 'replace').strip()
+                                    self.nav_event_time = time.monotonic()
+                        if len(buf) > 4096:
+                            break
+            except OSError:
+                pass
+            self.stop.wait(2)
 
     def desired(self):
         with self.lock:
@@ -182,6 +220,8 @@ class MotorLink:
     def snapshot(self):
         with self.lock:
             value = dict(self.latest)
+            if self.nav_event and time.monotonic() - self.nav_event_time < 2:
+                value.update(nav_event=self.nav_event, nav_event_id=self.nav_event_time)
             fresh = self.received and time.monotonic() - self.received < 0.4
             connected = self.connected and bool(fresh)
             value.update(connected=connected, requested=list(self.requested),
@@ -194,6 +234,7 @@ class MotorLink:
             return value
 
     def run(self):
+        threading.Thread(target=self.watch_navigation, daemon=True).start()
         while not self.stop.is_set():
             try:
                 with socket.create_connection(('127.0.0.1', self.port), timeout=0.2) as sock:
