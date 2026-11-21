@@ -203,6 +203,8 @@ def main():
                 key = C.c_int32.from_buffer(event, 20).value
                 repeat = C.c_uint8.from_buffer(event, 13).value
                 keyboard.event(kind, key, bool(repeat), C.c_uint8.from_buffer(event, 12).value)
+                if kind == 0x300 and key in (32, 27) and not repeat:
+                    motors.request_stop()
                 if kind == 0x300 and key == ord('f') and not repeat:
                     keyboard.stop()
                     keyboard.claimed = False
@@ -227,6 +229,7 @@ def main():
                     keyboard.claimed = False
                     drive.command({'op': 'halt'}, now)
                 if command['op'] in ('halt', 'stop'):
+                    motors.request_stop()
                     keyboard.stop()
                 if command['op'] == 'drive' and keyboard.claimed:
                     continue

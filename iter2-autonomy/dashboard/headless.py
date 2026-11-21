@@ -116,6 +116,7 @@ def main():
                     keyboard.take_phone_control()
                     drive.command({'op': 'halt'}, now)
                 if command['op'] in ('stop', 'halt'):
+                    motors.request_stop()
                     keyboard.drive.stop()
                     keyboard.armed = False
                 if command['op'] == 'drive' and keyboard.drive.claimed:
@@ -152,7 +153,10 @@ def main():
             left, right = drive.state(now, enabled and link.connected and permitted)
             native = motors.snapshot()
             was_claimed = keyboard.drive.claimed
-            keyboard_live = keyboard.sample(now, enabled and permitted and native.get('connected', False))
+            previous_mask = keyboard.previous
+            keyboard_live = keyboard.sample(enabled and permitted and native.get('connected', False))
+            if keyboard_live and keyboard.previous & 16 and not previous_mask & 16:
+                motors.request_stop()
             if was_claimed and not keyboard.drive.claimed:
                 drive.command({'op': 'halt'}, now)
                 left = right = 0
@@ -167,7 +171,7 @@ def main():
             motor_status['serial_device_present'] = os.path.exists(os.environ.get('TARS_MOTOR_DEVICE', ''))
             link.publish(dict(type='status', mode='headless', streaming=enabled,
                               keyboard_live=keyboard_live, keyboard_local=keyboard.drive.claimed,
-                              keyboard=keyboard.snapshot(now),
+                              keyboard=keyboard.snapshot(),
                               motion_hz=round(motion_hz, 1), camera_fps=round(camera_fps, 1),
                               samples=samples, gaps=gaps, frames=frames,
                               motion_live=enabled and age < 0.5,

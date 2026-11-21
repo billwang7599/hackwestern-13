@@ -7,7 +7,8 @@ from control import log_input
 from keyboard_drive import KeyboardDrive
 
 class HeadlessKeyboard:
-    def __init__(self):
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
         self.drive = KeyboardDrive()
         self.lock = threading.Lock()
         self.latest = (0, 0, 0)
@@ -39,8 +40,15 @@ class HeadlessKeyboard:
         finally:
             with self.lock: self.latest = (0, 0, 0)
 
-    def sample(self, now, permitted):
-        with self.lock: stamp, attached, mask = self.latest
+    def read(self):
+        # Snapshot the heartbeat before reading the clock. A map snapshot can
+        # take longer than a keyboard heartbeat between headless loop stages.
+        with self.lock:
+            stamp, attached, mask = self.latest
+            return self.clock(), stamp, attached, mask
+
+    def sample(self, permitted):
+        now, stamp, attached, mask = self.read()
         fresh = bool(attached and stamp and 0 <= now - stamp / 1e6 < .3)
         # Neutral report is required after attach, stale input, or a stop.
         if not fresh:
@@ -82,8 +90,8 @@ class HeadlessKeyboard:
         self.drive.claimed = False
         self.armed = False
 
-    def snapshot(self, now):
-        with self.lock: stamp, attached, mask = self.latest
+    def snapshot(self):
+        now, stamp, attached, mask = self.read()
         fresh = bool(attached and stamp and 0 <= now - stamp / 1e6 < .3)
         keys = [name for bit, name in ((1,'W'),(2,'S'),(4,'A'),(8,'D'),(16,'STOP'),(32,'F')) if mask & bit]
         return dict(connected=fresh, keys=keys if fresh else [], last_keys=self.last_keys, last_press=self.last_press,

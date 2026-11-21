@@ -3,8 +3,9 @@ from headless_keyboard import HeadlessKeyboard
 
 class HeadlessKeysTest(unittest.TestCase):
     def frame(self,k,t,mask,permit=True):
+        k.clock=lambda: t
         k.latest=(int(t*1e6),1,mask)
-        return k.sample(t,permit)
+        return k.sample(permit)
     def test_requires_neutral_and_release(self):
         k=HeadlessKeyboard()
         self.frame(k,10,1)
@@ -16,9 +17,21 @@ class HeadlessKeysTest(unittest.TestCase):
     def test_stale_does_not_restart_held_key(self):
         k=HeadlessKeyboard()
         self.frame(k,10,0); self.frame(k,10.1,1)
-        k.sample(10.5,True)
+        k.clock=lambda: 10.5
+        k.sample(True)
         self.frame(k,10.6,1)
         self.assertEqual(k.drive.state(True),(0,0))
+    def test_heartbeat_after_loop_start_keeps_held_key(self):
+        k = HeadlessKeyboard()
+        self.frame(k, 10, 0)
+        self.frame(k, 10.1, 1)
+        # The HID worker published during the 0.5 s mapping snapshot.
+        k.latest = (10_525_000, 1, 1)
+        k.clock = lambda: 10.53
+        self.assertTrue(k.sample(True))
+        self.assertEqual(k.drive.state(True), (.25, .25))
+        self.assertTrue(k.snapshot()['connected'])
+
     def test_guard_and_max_hold_require_release(self):
         for blocked in (True,False):
             k=HeadlessKeyboard()
@@ -42,22 +55,22 @@ class HeadlessKeysTest(unittest.TestCase):
         k.take_phone_control()
         self.frame(k,10.2,1)
         self.assertFalse(k.drive.claimed)
-        state=k.snapshot(10.2)
+        state=k.snapshot()
         self.assertEqual(state['keys'],['W'])
         self.assertEqual(state['last_press'],['W'])
         self.assertEqual(state['owner'],'phone')
         self.assertEqual(state['event_count'],1)
         self.frame(k,10.3,0)
-        self.assertEqual(k.snapshot(10.3)['last_press'],['W'])
-        self.assertEqual(k.snapshot(10.3)['last_keys'],['RELEASE'])
+        self.assertEqual(k.snapshot()['last_press'],['W'])
+        self.assertEqual(k.snapshot()['last_keys'],['RELEASE'])
 
     def test_disconnect_and_future_timestamp(self):
         k=HeadlessKeyboard()
         self.frame(k,10,0); self.frame(k,10.1,1)
         k.latest=(0,0,0)
-        self.assertFalse(k.sample(10.2,True))
+        self.assertFalse(k.sample(True))
         self.assertEqual(k.drive.state(True),(0,0))
         k.latest=(20000000,1,1)
-        self.assertFalse(k.sample(10.3,True))
+        self.assertFalse(k.sample(True))
 
 if __name__=='__main__': unittest.main()

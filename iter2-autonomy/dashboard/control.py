@@ -153,6 +153,7 @@ class MotorLink:
         self.generation = 0
         self.denied_generation = -1
         self.lease_generation = -1
+        self.stop_pending = False
         self.lease_epoch = 0
         self.expires = 0.0
         self.latest = {}
@@ -167,6 +168,11 @@ class MotorLink:
             self.requested = (left, right)
             self.generation = generation
             self.expires = time.monotonic() + 0.15
+
+    def request_stop(self):
+        with self.lock:
+            self.stop_pending = True
+            self.denied_generation = self.generation
 
     def watch_navigation(self):
         # A read-only WATCH connection. No motor or guard calls on this thread.
@@ -251,6 +257,7 @@ class MotorLink:
                                 raise ValueError('Missing/oversized motor response')
                             return response.decode('ascii').strip()
                         last_motion_state = None
+                        sent_drive = False
                         exchange('S')
                         initial = self.parse_status(exchange('STATUS'))
                         if not initial['guard_enabled']:
@@ -262,16 +269,24 @@ class MotorLink:
                         while not self.stop.is_set():
                             (left, right), generation = self.desired()
                             with self.lock:
+                                stop_now = self.stop_pending
+                                self.stop_pending = False
                                 if (left or right) and self.lease_generation != generation:
                                     self.lease_generation = generation
                                     self.lease_epoch = self.latest.get('guard_epoch', 0)
                                 epoch = self.lease_epoch
-                            command = f'DL {epoch} {left:.3f} {right:.3f}' if left or right else 'S'
-                            reply = exchange(command)
-                            with self.lock:
-                                self.error = None if reply.startswith('OK') else reply
-                                if not reply.startswith('OK'):
-                                    self.denied_generation = generation
+                            driving = bool(left or right) and not stop_now
+                            # S is global and holds other clients. Send it on an
+                            # explicit stop or release, then just observe while idle.
+                            starting_drive = driving and not sent_drive
+                            if driving or sent_drive or stop_now:
+                                command = f'DL {epoch} {left:.3f} {right:.3f}' if driving else 'S'
+                                reply = exchange(command)
+                                with self.lock:
+                                    self.error = None if reply.startswith('OK') else reply
+                                    if not reply.startswith('OK'):
+                                        self.denied_generation = generation
+                            sent_drive = driving
                             status = self.parse_status(exchange('STATUS'))
                             state = tuple(status[k] for k in ('inhibited', 'reason', 'move_id', 'move', 'move_why'))
                             if state != last_motion_state:
@@ -283,7 +298,9 @@ class MotorLink:
                                 raise ValueError('Native motor guard is disabled')
                             with self.lock:
                                 self.latest, self.received = status, time.monotonic()
-                                if status['inhibited'] and (left or right):
+                                # STATUS can still describe the idle watchdog tick
+                                # immediately after the first accepted DL refreshed it.
+                                if driving and status['inhibited'] and not (starting_drive and status['reason'] == 'watchdog'):
                                     self.denied_generation = generation
                             self.stop.wait(0.05)
                         exchange('S')
