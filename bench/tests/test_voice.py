@@ -156,7 +156,7 @@ def main() -> int:
     e2e_bad = []
     for text, want in cases:
         st, r = api("text", {"text": text, "mode": "mic"})     # e2e runs the robot mic (wake required)
-        real = [s for s in r["sent"] if not (s["to"] == "goto" and s["line"] == "CANCEL")]
+        real = [s for s in r["sent"] if not (s["to"] == "goto" and s["line"] in ("CANCEL", "STATUS"))]
         first = real[0]["line"] if real else None
         exp = "LED no" if want == "REJECT" else want
         if first != exp or (r["sent"] and "shadow" not in r["sent_source"]):
@@ -164,8 +164,8 @@ def main() -> int:
     check(not e2e_bad, f"all {len(cases)} test_e2e CASES: shadow tars_voice first line == e2e expectation "
                        f"({e2e_bad[:3]})")
     named = [("tars stop", [("motor", "S"), ("goto", "CANCEL"), ("motor", "BEEP 1")]),
-             ("move forward half a meter", [("goto", "CANCEL"), ("motor", "MOVE 500"), ("motor", "BEEP 1")]),
-             ("turn left", [("goto", "CANCEL"), ("motor", "TURN -30"), ("motor", "BEEP 1")]),
+             ("move forward half a meter", [("goto", "STATUS"), ("goto", "CANCEL"), ("motor", "MOVE 500"), ("motor", "BEEP 1")]),
+             ("turn left", [("goto", "STATUS"), ("goto", "CANCEL"), ("motor", "TURN -30"), ("motor", "BEEP 1")]),
              ("tars go to the trash can", [("goto", "GOTO trash can"), ("motor", "BEEP 1")])]
     for text, want in named:
         st, r = api("text", {"text": text, "mode": "ptt"})

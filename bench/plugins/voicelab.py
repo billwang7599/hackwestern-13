@@ -625,7 +625,8 @@ def _got(dec: dict) -> str:
 def _ok(row: dict, dec: dict) -> bool:
     """Same scoring as iter2-autonomy/voice/tests/test_intent.py test_realistic."""
     got, want = _got(dec), row["want"]
-    first = next((l for l in dec["lines"] if l != GOTO_PREFIX + "CANCEL"), "-")
+    # goto STATUS/CANCEL come before a manual move (voice asks if goto is busy, then cancels): not the command
+    first = next((l for l in dec["lines"] if l not in (GOTO_PREFIX + "CANCEL", GOTO_PREFIX + "STATUS")), "-")
     if first.startswith(GOTO_PREFIX):
         first = first[len(GOTO_PREFIX):]
     want_lines = row["cmd"]
