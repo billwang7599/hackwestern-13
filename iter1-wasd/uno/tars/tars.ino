@@ -2,11 +2,17 @@
  * TARS: Arduino Uno wheel/arm/sensor/IO co-processor.
  *
  *   Pi 5 (QNX tars_motor -b uno) --USB serial 115200 8N1--> this Uno
- *     WHEEL_TYPE = WHEELS_STEPPER (default):
- *       -> ULN2003 #W0 -> 28BYJ-48 left wheel
- *       -> ULN2003 #W1 -> 28BYJ-48 right wheel
- *     WHEEL_TYPE = WHEELS_DC (the old build):
- *       -> H-bridge ch A/B -> left/right DC gearmotor
+ *     CAR = CAR_SM11 (default): Kuman SM11 smart car kit, DC TT gearmotors on the
+ *       kit's L298N-style board (EN + IN1/IN2 per side), kit button/LED/buzzer.
+ *       !! UNPLUG THE KIT'S BLUETOOTH MODULE: it sits on D0/D1, which is the USB
+ *       !! serial link to the Pi. With it plugged in the Pi's commands get garbled.
+ *       Pin map + sources: docs/PI_TEST.md "Kuman SM11".
+ *     CAR = CAR_CUSTOM: choose WHEEL_TYPE / DRIVER_TYPE yourself:
+ *       WHEEL_TYPE = WHEELS_STEPPER (the custom default):
+ *         -> ULN2003 #W0 -> 28BYJ-48 left wheel
+ *         -> ULN2003 #W1 -> 28BYJ-48 right wheel
+ *       WHEEL_TYPE = WHEELS_DC:
+ *         -> H-bridge ch A/B -> left/right DC gearmotor
  *     -> ULN2003 #0/#1 -> 28BYJ-48 arms (ARM_COUNT, see the pin map)
  *     <- accelerometer (I2C: ADXL345 / GY-291, or MPU6050 / GY-521) -> tip + bump
  *     <- TEACH push button, -> status LED, -> buzzer (on-robot UI, no laptop)
@@ -20,18 +26,27 @@
  *     D <l> <r>            drive, floats in [-1, 1] = fraction of max wheel speed.
  *                          Must be resent < 200 ms (watchdog); the Pi sends it
  *                          every 20 ms tick. Stepper wheels ramp (WHEEL_ACCEL_SPS2).
- *     M <mm> [speed]       stepper only: drive straight <mm> (+ fwd, - back,
- *                          clamped +-MOVE_MAX_MM), speed = fraction of max (0.1..1).
+ *                          DC: |d| maps to duty DC_MIN_DUTY..DC_MAX_DUTY (the speed
+ *                          cap), with a DC_KICK_MS kick from rest.
+ *     M <mm> [speed]       drive straight <mm> (+ fwd, - back, clamped
+ *                          +-MOVE_MAX_MM), speed = fraction of max (0.1..1).
  *                          Self-terminating -> "DONE M <mm>".
- *     R <deg> [speed]      stepper only: spin in place <deg>, + = clockwise seen
- *                          from above (turn RIGHT), - = left. Clamped +-TURN_MAX_DEG.
- *                          -> "DONE R <deg>".
+ *                          DC (no encoders): TIMED open loop at D 1 for
+ *                          |mm| / mm_s (see V); speed is accepted but ignored.
+ *     R <deg> [speed]      spin in place <deg>, + = clockwise seen from above
+ *                          (turn RIGHT), - = left. Clamped +-TURN_MAX_DEG.
+ *                          -> "DONE R <deg>". DC: timed, |deg| / deg_s.
  *                          During M/R: "D 0 0" lines are keepalives (ignored);
  *                          a non-zero D, S, a new M/R, tip-over, or (if the Pi was
  *                          streaming D when the move began) 500 ms of serial
  *                          silence abort it -> "ABORT <M|R> <done> <why>".
+ *                          DC reports the amount it was TOLD to do (by time), not
+ *                          what the floor did: the Pi re-plans from the iPhone pose.
  *     K [diam_mm track_mm] stepper only: set + save (EEPROM) wheel diameter and
  *                          track width; no args = print them.
+ *     V [mm_s deg_s]       DC only: set + save (EEPROM) the speeds measured at D 1
+ *                          (straight mm/s, spin deg/s); no args = print them.
+ *                          Answered with a WHEELS line. Stepper builds ignore it.
  *     S                    stop wheels NOW, abort any M/R, halt arms
  *     A <arm> <deg> [dps]  arm 0|1 to absolute angle (only arms < ARM_COUNT)
  *     H / Z / X            arms home / zero here / halt
@@ -40,17 +55,22 @@
  *     B <n>                n short beeps (0 = silence, max 9), non-blocking
  *     ?                    print a "# ..." status line (bench debugging)
  *   Uno -> Pi
+ *     WHEELS DC <mm_s> <deg_s>   DC builds: at boot (before READY) and after V.
+ *                          tars_motor uses it for pose + move estimates. Stepper
+ *                          builds never send it (the Pi assumes steppers).
  *     READY                once after boot (mid-run = the Uno rebooted)
  *     T <deg>              tipped (repeated every TIP_REPEAT_MS while tipped)
  *     B <mg>               bump (at most one per 250 ms)
  *     DONE <M|R> <amount>  exact move finished (mm or deg actually moved)
- *     ABORT <M|R> <amount> <why>   why = stop|drive|replaced|tipped|link|nosteppers
+ *     ABORT <M|R> <amount> <why>   why = stop|drive|replaced|tipped|link
  *     BTN TEACH            TEACH button short press (released before 2 s)
  *     BTN FORGET           TEACH button held 2 s (sent while still held)
  *     # ...                diagnostics. The Pi ignores lines starting with '#'.
  *
  * Bench test: Serial Monitor at 115200, line ending "Newline". Try "M 100",
- * "R 90", "R -90", "K", "L 2", "B 3", "?". "D 0.5 0.5" only runs 200 ms.
+ * "R 90", "R -90", "K" (or "V" on DC), "L 2", "B 3", "?". "D 0.5 0.5" only runs 200 ms.
+ * NOT compiled for AVR yet (no arduino-cli on the dev Mac): only the host tests
+ * in iter1-wasd/uno/test have built it.
  */
 
 #include <Arduino.h>
@@ -63,9 +83,43 @@
 // CONFIG: edit this block on the bench. Everything else should not need changes.
 // =============================================================================
 
-// ---- What drives the wheels ---------------------------------------------------
+// ---- Which robot ----------------------------------------------------------------
+//   CAR_SM11   : Kuman SM11 kit (the default). Sets WHEEL_TYPE, DRIVER_TYPE, pins.
+//   CAR_CUSTOM : the hand-built TARS; pick WHEEL_TYPE / DRIVER_TYPE below
+//                (default: 28BYJ-48 stepper wheels).
+// Passing -DWHEEL_TYPE=... or -DDRIVER_TYPE=... (the host tests do) means CUSTOM.
 #define WHEELS_DC      1
 #define WHEELS_STEPPER 2
+#define DRIVER_2PWM    1
+#define DRIVER_EN_IN   2
+#define CAR_CUSTOM     0
+#define CAR_SM11       1
+#ifndef CAR
+#if defined(WHEEL_TYPE) || defined(DRIVER_TYPE)
+#define CAR CAR_CUSTOM
+#else
+#define CAR CAR_SM11
+#endif
+#endif
+#if CAR == CAR_SM11
+#if (defined(WHEEL_TYPE) && WHEEL_TYPE != WHEELS_DC) || (defined(DRIVER_TYPE) && DRIVER_TYPE != DRIVER_EN_IN)
+#error "CAR_SM11 is DC wheels on an EN+IN driver; use CAR=CAR_CUSTOM for anything else"
+#endif
+#ifndef WHEEL_TYPE
+#define WHEEL_TYPE  WHEELS_DC
+#endif
+#ifndef DRIVER_TYPE
+#define DRIVER_TYPE DRIVER_EN_IN
+#endif
+#ifndef ARM_COUNT
+#define ARM_COUNT   0          // no free pins worth having: the kit's sensors use them
+#endif
+#if ARM_COUNT != 0
+#error "CAR_SM11 has no pins for arms (ARM_COUNT 0)"
+#endif
+#endif
+
+// ---- What drives the wheels (CAR_CUSTOM) ------------------------------------------
 #ifndef WHEEL_TYPE
 #define WHEEL_TYPE WHEELS_STEPPER
 #endif
@@ -87,8 +141,6 @@
 // ---- DC motor driver type (WHEELS_DC only) ------------------------------------
 //   DRIVER_2PWM  : L9110S / HG7881, DRV8833 (tie nSLEEP high), MX1508.
 //   DRIVER_EN_IN : L298N (REMOVE the ENA/ENB jumpers), TB6612FNG (tie STBY high).
-#define DRIVER_2PWM  1
-#define DRIVER_EN_IN 2
 #ifndef DRIVER_TYPE
 #define DRIVER_TYPE  DRIVER_2PWM
 #endif
@@ -96,7 +148,23 @@
 const uint8_t NO_PIN = 255;
 
 // ---- Pins ---------------------------------------------------------------------
-#if WHEEL_TYPE == WHEELS_STEPPER
+#if CAR == CAR_SM11
+// Kuman SM11 stock wiring, from github.com/mbof/sm11 sm11_pinout.h (Motor(enable,
+// go, back): go HIGH = forward). Left EN on D10 is why the Servo library (Timer1 =
+// D9/D10 PWM) kills left speed control: we don't use the servo.
+//   D2 IR receiver, D4 right LED, A0/A1 ultrasonic trig/echo, A2/A3 line sensors:
+//   left plugged in, unused. A4/A5 IR proximity sensors: UNPLUG them if you fit an
+//   MPU6050/ADXL345 (A4/A5 are I2C SDA/SCL); without one, tip/bump is just off.
+const uint8_t PIN_L_EN  = 10;   // ENA/ENB: Timer1 PWM, 490 Hz
+const uint8_t PIN_L_IN1 = 8;    // left "go"
+const uint8_t PIN_L_IN2 = 9;    // left "back"
+const uint8_t PIN_R_EN  = 5;    // Timer0 PWM, 980 Hz (the sides differ: see DC_*_GAIN)
+const uint8_t PIN_R_IN1 = 6;    // right "go"
+const uint8_t PIN_R_IN2 = 7;    // right "back"
+const uint8_t PIN_BUTTON = 13;  // the kit's push button ("KEY", to GND): TEACH button
+const uint8_t PIN_LED    = 3;   // the kit's left LED (D13 is the button, can't be an output)
+const uint8_t PIN_BUZZER = 12;  // the kit's buzzer: active, HIGH = on (no tone(), no Timer2)
+#elif WHEEL_TYPE == WHEELS_STEPPER
 const uint8_t PIN_WHEEL[2][4] = {
   {8, 9, 10, 11},               // left wheel:  ULN2003 #W0 IN1..IN4
   {4, 5, 6, 7},                 // right wheel: ULN2003 #W1 IN1..IN4
@@ -158,12 +226,40 @@ const float    TURN_MAX_DEG     = 360.0f;
 const uint16_t MOVE_LINK_MS     = 500;     // Pi went silent mid-move -> abort
 
 // ---- DC drive tuning (WHEELS_DC only) --------------------------------------------
-const bool  LEFT_INVERT  = false;
-const bool  RIGHT_INVERT = false;
+// D l r: |d| in (DRIVE_DEADBAND, 1] -> duty DC_MIN_DUTY .. DC_MAX_DUTY (linear).
+//   DC_MIN_DUTY: lowest duty that keeps a ROLLING wheel turning (TT motors stall below).
+//   DC_MAX_DUTY: the SPEED CAP. D 1 = this duty. Everything above the Uno (goto gains,
+//     the 0.55-0.6 m lidar_guard stop zone, pet/vision D values) was tuned for the
+//     ~41 mm/s steppers; see docs/PI_TEST.md "Kuman SM11" for why the cap is
+//     ~150 mm/s and how to check it with "V" after wheel_cal.py.
+//   DC_KICK_*: from rest (or reversing) a wheel gets DC_KICK_DUTY for DC_KICK_MS to
+//     break static friction, then its real duty. S / watchdog / tip end a kick at once.
+// DC_*_GAIN: trim a side that runs faster (the SM11's two EN pins have different PWM
+//   frequencies, 490 vs 980 Hz). < 1 slows that side. Check with "M 1000" on the floor.
+#if CAR == CAR_SM11
+const bool  LEFT_INVERT   = false;   // flip if "D 0.5 0.5" turns that wheel backwards
+const bool  RIGHT_INVERT  = false;
+const float DC_MIN_DUTY   = 0.30f;
+const float DC_MAX_DUTY   = 0.45f;
+const float DC_KICK_DUTY  = 0.80f;
+const uint16_t DC_KICK_MS = 40;
+#else
+const bool  LEFT_INVERT   = false;
+const bool  RIGHT_INVERT  = false;
+const float DC_MIN_DUTY   = 0.0f;    // custom DC builds: the old linear 0..1 map, no kick
+const float DC_MAX_DUTY   = 1.0f;
+const float DC_KICK_DUTY  = 0.0f;
+const uint16_t DC_KICK_MS = 0;
+#endif
+const float DC_LEFT_GAIN  = 1.0f;
+const float DC_RIGHT_GAIN = 1.0f;
+// DC M/R timing: speeds at D 1 until "V <mm_s> <deg_s>" saves measured ones.
+const float DC_MM_S_DEFAULT  = 150.0f;
+const float DC_DEG_S_DEFAULT = 120.0f;
 const float DRIVE_DEADBAND = 0.03f;  // |d| below this -> off (both wheel types)
-const float DRIVE_MIN_DUTY = 0.0f;
 const bool  BRAKE_ON_STOP  = true;
 const uint16_t DRIVE_WATCHDOG_MS = 200;
+const bool  LED_INVERT    = false;   // true if the LED lights when its pin is LOW
 
 // ---- Arms (28BYJ-48 + ULN2003) --------------------------------------------------
 const float    ARM_STEPS_PER_REV = 4096.0f;
@@ -346,31 +442,163 @@ void motorWrite(uint8_t ch, float duty, bool brake) {
 #endif
 }
 
-static float shape(float d, bool invert) {
+// D fraction -> signed duty: deadband, then DC_MIN_DUTY..DC_MAX_DUTY, then side gain.
+static float shape(float d, bool invert, float gain) {
   d = clampf(d, -1, 1);
   float mag = d < 0 ? -d : d;
   if (mag < DRIVE_DEADBAND) return 0.0f;
-  float out = DRIVE_MIN_DUTY + (1.0f - DRIVE_MIN_DUTY) * mag;
+  float out = (DC_MIN_DUTY + (DC_MAX_DUTY - DC_MIN_DUTY) * mag) * gain;
+  if (out > 1.0f) out = 1.0f;
   if (d < 0) out = -out;
   return invert ? -out : out;
 }
 
-void driveSet(float l, float r) {
-  float ol = shape(l, LEFT_INVERT), orr = shape(r, RIGHT_INVERT);
-  motorWrite(0, ol, BRAKE_ON_STOP);
-  motorWrite(1, orr, BRAKE_ON_STOP);
-  driveActive = ol != 0.0f || orr != 0.0f;
+static float    dcDuty[2];               // steady signed duty per channel (0 = braked)
+static bool     dcKicking[2];
+static uint32_t dcKickStartMs[2];
+
+// Set channel ch to signed duty. From rest or on a reversal: kick first.
+static void dcApply(uint8_t ch, float duty) {
+  float prev = dcDuty[ch];
+  dcDuty[ch] = duty;
+  if (duty == 0.0f) {
+    dcKicking[ch] = false;
+    motorWrite(ch, 0.0f, BRAKE_ON_STOP);
+    return;
+  }
+  bool fromRest = prev == 0.0f || (prev > 0) != (duty > 0);
+  if (DC_KICK_MS > 0 && fromRest) {
+    float mag = duty < 0 ? -duty : duty;
+    float k = mag > DC_KICK_DUTY ? mag : DC_KICK_DUTY;
+    dcKicking[ch] = true;
+    dcKickStartMs[ch] = millis();
+    motorWrite(ch, duty > 0 ? k : -k, false);
+  } else if (!dcKicking[ch]) {
+    motorWrite(ch, duty, false);
+  }
 }
 
+static void dcKickPoll() {
+  for (uint8_t ch = 0; ch < 2; ch++) {
+    if (dcKicking[ch] && (uint32_t)(millis() - dcKickStartMs[ch]) >= DC_KICK_MS) {
+      dcKicking[ch] = false;
+      motorWrite(ch, dcDuty[ch], BRAKE_ON_STOP);
+    }
+  }
+}
+
+static void dcSet(float l, float r) {
+  dcApply(0, shape(l, LEFT_INVERT, DC_LEFT_GAIN));
+  dcApply(1, shape(r, RIGHT_INVERT, DC_RIGHT_GAIN));
+}
+
+// ---- DC exact moves: timed, open loop (no encoders) ----
+static char     moveKind = 0;            // 0 = velocity mode, 'M' or 'R' = timed move
+static float    moveReq = 0;
+static uint32_t moveStartMs = 0;
+static uint32_t moveDurMs = 0;
+static bool     moveLinkGuard = false;
+static float    dcMmS = DC_MM_S_DEFAULT;
+static float    dcDegS = DC_DEG_S_DEFAULT;
+
+struct DcCal { uint16_t magic; float mmS, degS; };
+const uint16_t DC_CAL_MAGIC = 0x7DC1;     // != the stepper's WHEEL_CAL magic
+const int      DC_CAL_ADDR  = 0;
+static bool dcCalOk(float mmS, float degS) { return mmS >= 20 && mmS <= 2000 && degS >= 20 && degS <= 2000; }
+
+static void dcCalPrint() {
+  Serial.print(F("WHEELS DC "));
+  Serial.print(dcMmS, 1);
+  Serial.print(F(" "));
+  Serial.println(dcDegS, 1);
+}
+
+// Amount "done" so far, by time, signed like the request.
+static float moveDone() {
+  uint32_t el = millis() - moveStartMs;
+  if (el >= moveDurMs) return moveReq;
+  return moveReq * (float)el / (float)moveDurMs;
+}
+
+static void moveFinish(bool ok, const char *why) {
+  if (!moveKind) return;
+  float done = ok ? moveReq : moveDone();
+  char kind = moveKind;
+  moveKind = 0;
+  dcApply(0, 0.0f);                       // brake first: done or aborted
+  dcApply(1, 0.0f);
+  Serial.print(ok ? F("DONE ") : F("ABORT "));
+  Serial.print(kind);
+  Serial.print(F(" "));
+  if (ok) {
+    Serial.println(done, 1);
+  } else {
+    Serial.print(done, 1);
+    Serial.print(F(" "));
+    Serial.println(why);
+  }
+}
+
+static void moveAbort(const char *why) { moveFinish(false, why); }
+
+static void moveStart(char kind, float amount, float speed) {
+  (void)speed;                            // DC: one speed (D 1), the one V calibrated
+  if (moveKind) moveFinish(false, "replaced");
+  if (kind == 'M') amount = clampf(amount, -MOVE_MAX_MM, MOVE_MAX_MM);
+  else amount = clampf(amount, -TURN_MAX_DEG, TURN_MAX_DEG);
+  float rate = kind == 'M' ? dcMmS : dcDegS;
+  float mag = amount < 0 ? -amount : amount;
+  driveActive = false;
+  moveKind = kind;
+  moveReq = amount;
+  moveStartMs = millis();
+  moveDurMs = (uint32_t)(mag / rate * 1000.0f + 0.5f);
+  moveLinkGuard = dEver && (uint32_t)(millis() - lastDMs) < 1000;   // same rule as steppers
+  if (moveDurMs == 0) { moveFinish(true, ""); return; }
+  float s = amount < 0 ? -1.0f : 1.0f;
+  if (kind == 'M') dcSet(s, s);
+  else dcSet(s, -s);                      // R +: left fwd, right back = clockwise
+}
+
+void driveSet(float l, float r) {
+  bool nonzero = !(fabsf(l) < DRIVE_DEADBAND && fabsf(r) < DRIVE_DEADBAND);
+  if (moveKind) {
+    if (!nonzero) return;                 // keepalive during a timed move
+    moveAbort("drive");
+  }
+  dcSet(l, r);
+  driveActive = dcDuty[0] != 0.0f || dcDuty[1] != 0.0f;
+}
+
+// Immediate stop (S, watchdog, tip): abort a move, brake both sides, end any kick.
 void driveStop() {
-  motorWrite(0, 0.0f, BRAKE_ON_STOP);
-  motorWrite(1, 0.0f, BRAKE_ON_STOP);
+  moveAbort("stop");
+  dcApply(0, 0.0f);
+  dcApply(1, 0.0f);
   driveActive = false;
 }
 
-static void moveAbort(const char *) {}
-static void wheelsPoll() {}
+static void wheelsPoll() {
+  if (moveKind) {
+    if ((uint32_t)(millis() - moveStartMs) >= moveDurMs) moveFinish(true, "");
+    else if (moveLinkGuard && (uint32_t)(millis() - lastLineMs) > MOVE_LINK_MS) moveAbort("link");
+  }
+  dcKickPoll();
+}
+
+static void dcCalLoad() {
+  DcCal c;
+  EEPROM.get(DC_CAL_ADDR, c);
+  if (c.magic == DC_CAL_MAGIC && dcCalOk(c.mmS, c.degS)) { dcMmS = c.mmS; dcDegS = c.degS; }
+  else { dcMmS = DC_MM_S_DEFAULT; dcDegS = DC_DEG_S_DEFAULT; }
+}
+
 static void wheelsSetup() {
+  moveKind = 0;
+  moveReq = 0;
+  moveLinkGuard = false;
+  for (uint8_t i = 0; i < 2; i++) { dcDuty[i] = 0; dcKicking[i] = false; }
+  dcCalLoad();
 #if DRIVER_TYPE == DRIVER_EN_IN
   pinMode(PIN_L_EN, OUTPUT);
   pinMode(PIN_R_EN, OUTPUT);
@@ -694,7 +922,7 @@ void ioPoll() {
     bool on = ledPattern == 1 ||
               (ledPattern == 2 && (now / LED_SLOW_MS) % 2 == 0) ||
               (ledPattern == 3 && (now / LED_FAST_MS) % 2 == 0);
-    digitalWrite(PIN_LED, on ? HIGH : LOW);
+    digitalWrite(PIN_LED, on != LED_INVERT ? HIGH : LOW);
   }
   // buzzer
   if (beepsLeft) {
@@ -714,7 +942,7 @@ void ioPoll() {
 
 static void ioSetup() {
   if (PIN_BUTTON != NO_PIN) pinMode(PIN_BUTTON, INPUT_PULLUP);
-  if (PIN_LED != NO_PIN) { pinMode(PIN_LED, OUTPUT); digitalWrite(PIN_LED, LOW); }
+  if (PIN_LED != NO_PIN) { pinMode(PIN_LED, OUTPUT); digitalWrite(PIN_LED, LED_INVERT ? HIGH : LOW); }
   if (PIN_BUZZER != NO_PIN) { pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW); }
   btnRaw = btnStable = btnLongSent = false;
   btnChangeMs = btnDownMs = 0;
@@ -763,7 +991,12 @@ static void printStatus() {
   Serial.print(F(" move "));
   if (moveKind) Serial.println(moveKind); else Serial.println(F("-"));
 #else
-  Serial.println(F(" wheels dc"));
+  Serial.print(F(" wheels dc "));
+  Serial.print(dcDuty[0], 2);
+  Serial.print(F(" "));
+  Serial.print(dcDuty[1], 2);
+  Serial.print(F(" move "));
+  if (moveKind) Serial.println(moveKind); else Serial.println(F("-"));
 #endif
 }
 
@@ -790,14 +1023,24 @@ void handleLine(char *line) {
     case 'M':
     case 'R':
       if (n < 1 || n > 2) return;
-#if WHEEL_TYPE == WHEELS_STEPPER
       if (tipped) {
         Serial.print(F("ABORT ")); Serial.print(cmd); Serial.println(F(" 0.0 tipped"));
         return;
       }
       moveStart(cmd, v[0], n == 2 ? v[1] : 1.0f);
-#else
-      Serial.print(F("ABORT ")); Serial.print(cmd); Serial.println(F(" 0.0 nosteppers"));
+      break;
+    case 'V':
+#if WHEEL_TYPE == WHEELS_DC
+      if (n == 2) {
+        if (!dcCalOk(v[0], v[1])) return;
+        dcMmS = v[0];
+        dcDegS = v[1];
+        DcCal c = {DC_CAL_MAGIC, dcMmS, dcDegS};
+        EEPROM.put(DC_CAL_ADDR, c);
+      } else if (n != 0) {
+        return;
+      }
+      dcCalPrint();
 #endif
       break;
     case 'K':
@@ -1077,6 +1320,8 @@ void setup() {
   }
 #if WHEEL_TYPE == WHEELS_STEPPER
   wheelCalPrint();
+#else
+  dcCalPrint();                           // tells tars_motor these are DC wheels
 #endif
   Serial.println(F("READY"));
 }

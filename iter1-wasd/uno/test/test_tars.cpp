@@ -83,6 +83,23 @@ static int enIn(int en, int in1, int in2) {
 static int motorL() { return enIn(PIN_L_EN, PIN_L_IN1, PIN_L_IN2); }
 static int motorR() { return enIn(PIN_R_EN, PIN_R_IN1, PIN_R_IN2); }
 #endif
+// Steady-state reading of motorL()/motorR() for "D d" (no invert, gain 1): the same
+// 0..255 scale for every build. DC builds map |d| to DC_MIN_DUTY..DC_MAX_DUTY.
+static int pwmOf(float d) {
+  d = d < -1 ? -1 : d > 1 ? 1 : d;
+  if (fabsf(d) < DRIVE_DEADBAND) return 0;
+#if WHEEL_TYPE == WHEELS_STEPPER
+  return (int)lround(d * 255.0f);
+#else
+  float s = shape(d, false, 1.0f);
+  int p = (int)(fabsf(s) * 255.0f + 0.5f);
+  return s < 0 ? -p : p;
+#endif
+}
+static const int P50 = pwmOf(0.5f);
+static void run(uint32_t ms);
+// DC builds kick a wheel from rest for DC_KICK_MS: wait it out before reading the steady duty.
+static void settle() { if (WHEEL_TYPE == WHEELS_DC && DC_KICK_MS > 0) run(DC_KICK_MS + 1); }
 static int wcoils(int w) {
 #if WHEEL_TYPE == WHEELS_STEPPER
   int c = 0;
@@ -154,23 +171,26 @@ static void test_boot() {
 static void test_drive() {
   puts("drive");
   boot(false);
-  send("D 0.5 -0.5\n");
-  CHECK(motorL() == 128 && motorR() == -128);
-  send("D 2 -3\n");
-  CHECK(motorL() == 255 && motorR() == -255);
+  send("D 0.5 -0.5\n"); settle();
+  CHECK(motorL() == P50 && motorR() == -P50);
+  send("D 2 -3\n"); settle();
+  CHECK(motorL() == pwmOf(1) && motorR() == pwmOf(-1));
   send("D 0.01 -0.02\n");
   CHECK(motorL() == 0 && motorR() == 0);
   CHECK(!driveActive);
-  send("d 0.3 0.3\r");
-  CHECK(motorL() == 77 && motorR() == 77);
-  send("D -1 1\r\n");
-  CHECK(motorL() == -255 && motorR() == 255);
+  send("d 0.3 0.3\r"); settle();
+  CHECK(motorL() == pwmOf(0.3f) && motorR() == pwmOf(0.3f));
+  send("D -1 1\r\n"); settle();
+  CHECK(motorL() == pwmOf(-1) && motorR() == pwmOf(1));
+#if CAR == CAR_CUSTOM
+  CHECK(pwmOf(0.5f) == 128 && pwmOf(1) == 255 && pwmOf(0.3f) == 77);   // the old linear map
+#endif
 }
 
 static void test_malformed() {
   puts("malformed");
   boot(false);
-  send("D 0.4 0.4\n");
+  send("D 0.4 0.4\n"); settle();
   int l = motorL();
   const char *bad[] = {"D 0.9\n", "D 0.9 0.9 0.9 0.9\n", "DX 1 1\n", "D a b\n", "D 0.9 0.9x\n",
                        "D nan 0.9\n", "D 0.900000000000000000000000000000000000000000 1\n",
@@ -179,7 +199,7 @@ static void test_malformed() {
   CHECK(arms[0].target == 0 && arms[1].target == 0);
   // a split line still works
   send("D 0."); send("2 0.2\n");
-  CHECK(motorL() == 51);
+  CHECK(motorL() == pwmOf(0.2f));
 }
 
 static void test_watchdog() {
@@ -187,12 +207,12 @@ static void test_watchdog() {
   boot(false);
   send("D 0.5 0.5\n");
   run(150);
-  CHECK(motorL() == 128);
+  CHECK(motorL() == P50);
   run(100);
   CHECK(motorL() == 0 && motorR() == 0);
   // fed every 50 ms -> keeps running
   for (int i = 0; i < 20; i++) { send("D 0.5 0.5\n"); run(50); }
-  CHECK(motorL() == 128);
+  CHECK(motorL() == P50);
   // junk doesn't feed it
   for (int i = 0; i < 5; i++) { send("D junk\n"); run(50); }
   CHECK(motorL() == 0);
@@ -296,7 +316,7 @@ static void test_tip() {
   tilt(60);
   send("D 0.5 0.5\n");
   run(120);                                // filter + hold not done yet
-  CHECK(!tipped && motorL() == 128);
+  CHECK(!tipped && motorL() == P50);
   CHECK(Serial.out.find("T ") == std::string::npos);
   send("D 0.5 0.5\n");
   run(150);
@@ -319,8 +339,8 @@ static void test_tip() {
   run(500);
   CHECK(!tipped);
   CHECK(Serial.out.find("# upright\r\n") != std::string::npos);
-  send("D 0.5 0.5\n");
-  CHECK(motorL() == 128);
+  send("D 0.5 0.5\n"); settle();
+  CHECK(motorL() == P50);
 
   // a short tilt glitch (100 ms) is not a tip
   boot(true);
@@ -389,7 +409,7 @@ static void test_no_mpu() {
   mock_mpu.present = false;               // wire falls out mid-run
   send("D 0.5 0.5\n");
   run(100);
-  CHECK(motorL() == 128);
+  CHECK(motorL() == P50);
   send("A 0 10 60\n");
   run(300);
   CHECK(arms[0].pos == (ARM_COUNT ? degSteps(10) : 0));
@@ -430,8 +450,8 @@ static void test_overflow() {
   std::string longline(80, '1');
   send(("D " + longline + " 1\n").c_str());
   CHECK(motorL() == 0);
-  send("D 0.5 0.5\n");
-  CHECK(motorL() == 128);
+  send("D 0.5 0.5\n"); settle();
+  CHECK(motorL() == P50);
 }
 
 
@@ -680,14 +700,248 @@ static void test_wheel_cal() {
 #endif
 
 #if WHEEL_TYPE == WHEELS_DC
-static void test_dc_no_moves() {
-  puts("dc: M/R refused");
+static bool braked(int ch) {        // both bridge inputs equal and the motor not driven
+#if DRIVER_TYPE == DRIVER_EN_IN
+  int en = ch ? PIN_R_EN : PIN_L_EN, a = ch ? PIN_R_IN1 : PIN_L_IN1, b = ch ? PIN_R_IN2 : PIN_L_IN2;
+  return lvl(en) == 255 && lvl(a) == 255 && lvl(b) == 255;   // L298N: EN high, IN1 = IN2 = fast stop
+#else
+  int a = ch ? PIN_R_IN1 : PIN_L_IN1, b = ch ? PIN_R_IN2 : PIN_L_IN2;
+  return lvl(a) == 255 && lvl(b) == 255;
+#endif
+}
+static const int KICK = (int)(DC_KICK_DUTY * 255.0f + 0.5f);
+static const long SETTLE = DC_KICK_MS > 0 ? DC_KICK_MS + 1 : 0;   // what settle() runs
+
+static void test_dc_speed() {
+  puts("dc: duty map, speed cap, kick");
+  boot(false);
+  // |d| -> DC_MIN_DUTY..DC_MAX_DUTY, monotonic, D 1 = the cap
+  int prev = 0;
+  bool mono = true;
+  for (int i = 1; i <= 20; i++) { int p = pwmOf(i / 20.0f); if (p < prev) mono = false; prev = p; }
+  CHECK(mono);
+  CHECK(pwmOf(1) == (int)(DC_MAX_DUTY * 255.0f + 0.5f));
+  CHECK(pwmOf(0.031f) == (int)((DC_MIN_DUTY + (DC_MAX_DUTY - DC_MIN_DUTY) * 0.031f) * 255.0f + 0.5f));
+  CHECK(pwmOf(0.02f) == 0);
+  send("D 5 5\n"); settle();
+  CHECK(motorL() == pwmOf(1) && motorR() == pwmOf(1));      // never above the cap
+  send("S\n");
+  if (DC_KICK_MS == 0) {
+    send("D 0.3 0.3\n");
+    CHECK(motorL() == pwmOf(0.3f));                          // custom builds: no kick
+    send("S\n");
+    return;
+  }
+  // from rest: kick, then the real duty after DC_KICK_MS
+  send("D 0.3 0.3\n");
+  CHECK(motorL() == KICK && motorR() == KICK);
+  run(DC_KICK_MS - 3);
+  send("D 0.3 0.3\n");                                       // a repeat doesn't restart the kick
+  CHECK(motorL() == KICK);
+  run(4);
+  CHECK(motorL() == pwmOf(0.3f) && motorR() == pwmOf(0.3f));
+  // speeding up in the same direction: no kick
+  send("D 0.6 0.6\n");
+  CHECK(motorL() == pwmOf(0.6f));
+  // reversing one side: that side kicks backwards, the other doesn't
+  send("D -0.6 0.6\n");
+  CHECK(motorL() == -KICK && motorR() == pwmOf(0.6f));
+  run(DC_KICK_MS + 1);
+  CHECK(motorL() == pwmOf(-0.6f));
+  // S in the middle of a kick: braked at once, and the kick never comes back
+  send("S\n");
+  send("D 0.3 0.3\n");
+  CHECK(motorL() == KICK);
+  send("S\n");
+  CHECK(motorL() == 0 && motorR() == 0 && braked(0) && braked(1));
+  run(DC_KICK_MS + 20);
+  CHECK(motorL() == 0 && braked(0));
+  // watchdog during a kick
+  send("D 0.3 0.3\n");
+  run(250);
+  CHECK(motorL() == 0 && !driveActive && braked(0));
+}
+
+static void test_dc_moves() {
+  puts("dc: timed M / R");
+  boot(false);
+  CHECK(contains("WHEELS DC 150.0 120.0\r\n"));
+  CHECK(Serial.out.find("WHEELS DC") < Serial.out.find("READY"));   // the Pi learns before READY
+  Serial.out.clear();
+  send("M 300\n");                                           // 300 / 150 mm/s = 2.0 s
+  CHECK(moveKind == 'M' && moveDurMs == 2000);
+  settle();
+  CHECK(motorL() == pwmOf(1) && motorR() == pwmOf(1));       // forward at the cap
+  CHECK(!driveActive);
+  long t = runUntil("DONE", 4000);
+  CHECK(contains("DONE M 300.0\r\n"));
+  CHECK(t + SETTLE >= 1999 && t + SETTLE <= 2002);         // 2.0 s from the M
+  CHECK(moveKind == 0 && braked(0) && braked(1));
+  run(300);
+  CHECK(braked(0) && braked(1));                             // stays stopped, no watchdog games
+
+  Serial.out.clear();
+  send("R 90\n");                                            // 90 / 120 deg/s = 750 ms
+  settle();
+  CHECK(motorL() == pwmOf(1) && motorR() == pwmOf(-1));      // + = clockwise: left fwd, right back
+  t = runUntil("DONE", 2000);
+  CHECK(contains("DONE R 90.0\r\n") && t + SETTLE >= 749 && t + SETTLE <= 752);
+  Serial.out.clear();
+  send("r -45 0.5\n");                                       // speed accepted, DC runs at D 1 anyway
+  settle();
+  CHECK(motorL() == pwmOf(-1) && motorR() == pwmOf(1) && moveDurMs == 375);
+  runUntil("DONE", 2000);
+  CHECK(contains("DONE R -45.0\r\n"));
+  Serial.out.clear();
+  send("M -150\n");
+  settle();
+  CHECK(motorL() == pwmOf(-1) && motorR() == pwmOf(-1));
+  runUntil("DONE", 2000);
+  CHECK(contains("DONE M -150.0\r\n") && braked(0));
+
+  // zero-length, clamps, replace
+  Serial.out.clear();
+  send("M 0\n");
+  CHECK(contains("DONE M 0.0\r\n") && moveKind == 0 && braked(0));
+  send("M 5000\n");
+  CHECK(moveReq == 1000.0f && moveDurMs == 6667);
+  run(100);
+  send("R -1000\n");
+  CHECK(contains("ABORT M 15.0 replaced\r\n"));
+  CHECK(moveKind == 'R' && moveReq == -360.0f && moveDurMs == 3000);
+  send("S\n");
+  CHECK(contains("ABORT R ") && contains(" stop\r\n") && braked(0) && braked(1));
+  // malformed
+  Serial.out.clear();
+  const char *bad[] = {"M\n", "M 1 2 3\n", "M x\n", "R\n", "MX 10\n", "M 10 abc\n"};
+  for (const char *b : bad) { send(b); CHECK(moveKind == 0); }
+  CHECK(Serial.out.empty());
+}
+
+static void test_dc_aborts() {
+  puts("dc: M/R aborts (S, D, link, tip) and keepalives");
   boot(false);
   Serial.out.clear();
-  send("M 100\n");
-  send("R 30\n");
-  CHECK(contains("ABORT M 0.0 nosteppers\r\n") && contains("ABORT R 0.0 nosteppers\r\n"));
-  CHECK(motorL() == 0);
+  // S mid-move brakes AT ONCE (same loop) and reports how far it got by time
+  send("M 300\n");
+  run(500);
+  CHECK(motorL() == pwmOf(1));
+  send("S\n");
+  CHECK(motorL() == 0 && motorR() == 0 && braked(0) && braked(1));
+  CHECK(contains("ABORT M ") && contains(" stop\r\n") && moveKind == 0);
+  float a = lastAmount("ABORT M ");
+  CHECK(a > 74 && a < 76);                                   // 500 ms of 2000 ms
+  run(2000);
+  CHECK(braked(0) && !contains("DONE"));                     // the old timer never fires
+
+  // S during the start kick
+  Serial.out.clear();
+  send("R 90\n");
+  CHECK(motorL() == KICK || DC_KICK_MS == 0);
+  send("S\n");
+  CHECK(braked(0) && braked(1) && contains("ABORT R 0.0 stop"));
+  run(DC_KICK_MS + 10);
+  CHECK(braked(0) && braked(1));
+
+  // typed on the bench (no D stream): no link abort; D 0 0 is a keepalive;
+  // a non-zero D aborts and takes over
+  boot(false);
+  Serial.out.clear();
+  send("R 90\n");
+  run(600);
+  CHECK(moveKind == 'R');
+  send("D 0 0\n");
+  run(50);
+  CHECK(moveKind == 'R' && !contains("ABORT") && motorL() == pwmOf(1));
+  send("D 0.5 0.5\n");
+  CHECK(contains("ABORT R ") && contains(" drive\r\n") && moveKind == 0);
+  settle();
+  CHECK(motorL() == P50 && motorR() == P50 && driveActive);
+  send("S\n");
+
+  // Pi streaming D: the move runs to DONE while D 0 0 keeps coming, aborts when it stops
+  boot(false);
+  for (int i = 0; i < 5; i++) { send("D 0 0\n"); run(20); }
+  Serial.out.clear();
+  send("M 150\n");
+  CHECK(moveLinkGuard);
+  long t = 0;
+  while (!contains("DONE") && t < 3000) { send("D 0.000 0.000\n"); run(20); t += 20; }
+  CHECK(contains("DONE M 150.0") && t >= 980 && t <= 1020);
+  Serial.out.clear();
+  send("M 300\n");
+  run(300);
+  CHECK(moveKind == 'M');
+  run(600);                                                  // Pi went quiet
+  CHECK(contains(" link\r\n") && moveKind == 0 && braked(0) && braked(1));
+  a = lastAmount("ABORT M ");
+  CHECK(a > 70 && a < 80);                                   // aborted ~501 ms after the last line
+
+  // tip mid-move
+  boot(true);
+  run(50);
+  Serial.out.clear();
+  send("M 300\n");
+  run(500);
+  tilt(60);
+  run(400);
+  CHECK(tipped && contains(" tipped\r\n") && moveKind == 0 && braked(0));
+  CHECK(Serial.out.find("ABORT M") < Serial.out.find("T "));
+  Serial.out.clear();
+  send("M 10\n");
+  CHECK(contains("ABORT M 0.0 tipped") && moveKind == 0 && braked(0));
+}
+
+static void test_dc_cal() {
+  puts("dc: V speed calibration in EEPROM");
+  boot(false);
+  CHECK(dcMmS == DC_MM_S_DEFAULT && dcDegS == DC_DEG_S_DEFAULT);
+  Serial.out.clear();
+  send("V\n");
+  CHECK(Serial.out == "WHEELS DC 150.0 120.0\r\n");
+  send("V 200 90\n");
+  CHECK(contains("WHEELS DC 200.0 90.0\r\n") && dcMmS == 200.0f && dcDegS == 90.0f);
+  Serial.out.clear();
+  send("V 5 90\n"); send("V 200\n"); send("V 200 90 1\n"); send("V 200 3000\n");
+  CHECK(Serial.out.empty() && dcMmS == 200.0f && dcDegS == 90.0f);   // bad values ignored
+  send("K 70 120\n"); send("K\n");
+  CHECK(Serial.out.empty());                                 // K is stepper-only
+  boot(false, -1, true);                                     // reboot keeps EEPROM
+  CHECK(dcMmS == 200.0f && dcDegS == 90.0f && contains("WHEELS DC 200.0 90.0"));
+  Serial.out.clear();
+  send("M 300\n");
+  CHECK(moveDurMs == 1500);
+  send("R 90\n");
+  CHECK(moveDurMs == 1000);
+  send("S\n");
+  boot(false);                                               // erased EEPROM -> defaults
+  CHECK(dcMmS == 150.0f && dcDegS == 120.0f);
+  // a stepper build's K record in EEPROM (other magic) is not read as DC speeds
+  struct { uint16_t magic; float d, t; } k = {0x7A12, 300.0f, 400.0f};
+  EEPROM.put(0, k);
+  boot(false, -1, true);
+  CHECK(dcMmS == 150.0f && dcDegS == 120.0f);
+}
+#endif
+
+#if CAR == CAR_SM11
+static void test_sm11_pins() {
+  puts("sm11: kit pin map");
+  // github.com/mbof/sm11 sm11_pinout.h
+  CHECK(PIN_L_EN == 10 && PIN_L_IN1 == 8 && PIN_L_IN2 == 9);
+  CHECK(PIN_R_EN == 5 && PIN_R_IN1 == 6 && PIN_R_IN2 == 7);
+  CHECK(PIN_BUZZER == 12 && PIN_BUTTON == 13 && PIN_LED == 3);
+  CHECK(!BUZZER_PASSIVE);                                    // no tone() -> Timer2 free
+  CHECK(ARM_COUNT == 0 && DRIVER_TYPE == DRIVER_EN_IN && WHEEL_TYPE == WHEELS_DC);
+  // EN pins must be hardware PWM: D5/D6 Timer0, D9/D10 Timer1, D3/D11 Timer2
+  for (int p : {(int)PIN_L_EN, (int)PIN_R_EN}) CHECK(p == 5 || p == 6 || p == 9 || p == 10 || p == 3 || p == 11);
+  // the cap is a real cap and the minimum sits under it
+  CHECK(DC_MAX_DUTY < 1.0f && DC_MIN_DUTY > 0.0f && DC_MIN_DUTY < DC_MAX_DUTY && DC_KICK_DUTY > DC_MAX_DUTY);
+  boot(false);
+  CHECK(mock_pin_mode[13] == INPUT_PULLUP && mock_pin_mode[3] == OUTPUT && mock_pin_mode[12] == OUTPUT);
+  CHECK(braked(0) && braked(1));                             // boots braked
+  // untouched kit pins: IR D2, right LED D4, ultrasonic/line A0-A3
+  for (int p : {2, 4, 14, 15, 16, 17}) CHECK(mock_pin_mode[p] == -1);
 }
 #endif
 
@@ -801,7 +1055,14 @@ int main() {
   g_sensor = 0;
   test_wheel_aborts();
 #else
-  test_dc_no_moves();
+  test_dc_speed();
+  test_dc_moves();
+  test_dc_cal();
+  g_sensor = 0;
+  test_dc_aborts();
+#endif
+#if CAR == CAR_SM11
+  test_sm11_pins();
 #endif
 #if ARM_COUNT == 1
   test_one_arm();
@@ -814,7 +1075,7 @@ int main() {
     test_bump();
     test_no_mpu();
   }
-  printf("%d/%d checks passed  [wheels=%s arms=%d driver=%d]\n", checks - failures, checks,
-         WHEEL_TYPE == WHEELS_STEPPER ? "stepper" : "dc", ARM_COUNT, DRIVER_TYPE);
+  printf("%d/%d checks passed  [car=%s wheels=%s arms=%d driver=%d]\n", checks - failures, checks,
+         CAR == CAR_SM11 ? "sm11" : "custom", WHEEL_TYPE == WHEELS_STEPPER ? "stepper" : "dc", ARM_COUNT, DRIVER_TYPE);
   return failures ? 1 : 0;
 }
