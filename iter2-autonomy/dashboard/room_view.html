@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TARS · Room view</title>
+<style>
+*{box-sizing:border-box}
+:root{color-scheme:dark;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#eaf1f1;background:#0b1013;font-variant-numeric:tabular-nums}
+body,h1,h2{margin:0}
+main{height:100vh;height:100dvh;padding:8px;display:grid;gap:6px;grid-template-columns:minmax(0,1.6fr) minmax(365px,1fr);grid-template-rows:auto minmax(0,1fr) auto auto;grid-template-areas:"header header" "scene floor" "scene objects" "scene motion"}
+header,.bar,.tools,.legend{display:flex;align-items:center}
+header{grid-area:header;gap:14px;padding:1px 4px 4px}
+h1{font-size:18px;letter-spacing:-.04em}h2{font-size:14px;letter-spacing:-.015em}
+#live{margin-left:auto;color:#edbf78;font-size:12px}#live.ok{color:#76e4bb}
+#stats,.muted,.legend{font-size:12px;color:#a6b7bc}
+section{min-width:0;min-height:0;border:1px solid #334046;border-radius:7px;overflow:hidden;background:#151d21}
+.scene{grid-area:scene}.floor{grid-area:floor}.objects{grid-area:objects}.motion{grid-area:motion}
+.map{display:grid;grid-template-rows:auto minmax(0,1fr);position:relative}
+.bar{min-height:30px;padding:4px 9px;justify-content:space-between;gap:6px;border-bottom:1px solid #2d393e}
+.tools{gap:4px}
+button{font:inherit;font-size:12px;color:#c4d3d5;cursor:pointer;border:1px solid #3a494e;border-radius:4px;background:#1b272c;padding:3px 7px}
+button[aria-pressed=true]{color:#0c2c25;background:#a1dfc8;border-color:#a1dfc8}
+button:hover{border-color:#89b4b5}button:focus-visible{outline:2px solid #a1dfc8}
+canvas{display:block;width:100%;height:100%;min-height:0;min-width:0;background:#10181c;touch-action:none}
+.legend{position:absolute;bottom:6px;right:8px;gap:6px;background:#10181cdd;border-radius:4px;padding:3px 5px;pointer-events:none;font-size:11px}
+.legend[hidden]{display:none}.ramp{width:60px;height:4px;border-radius:3px;background:linear-gradient(90deg,#ff1919,#ffff19,#19ff19,#19ffff,#1919ff,#ba19ff)}
+.key{display:inline-block;width:7px;height:7px;border-radius:2px}.free{background:#33675e}.blocked{background:#e6a760}.inferred{background:#9d78c1}
+.tablewrap{max-height:28vh;overflow:auto;overscroll-behavior:contain}
+table{width:100%;border-collapse:separate;border-spacing:0}
+td,th{font-size:12px;line-height:1.25;padding:4px 7px;white-space:nowrap;text-align:right}
+th{color:#a5b8bd;font-weight:500;background:#172126;position:sticky;top:0}
+th:first-child,td:first-child{text-align:left}
+tbody tr+tr td{border-top:1px solid #263237}
+.motion td{font-size:14px}.motion td:first-child{font-size:12px}
+@media(max-width:740px){
+ main{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:auto minmax(0,1.35fr) minmax(0,1fr) auto;grid-template-areas:"header header" "scene scene" "floor objects" "motion motion";padding:4px;gap:4px}
+ .bar{padding:3px 5px}.objects{display:flex;flex-direction:column}.tablewrap{max-height:none;min-height:0}
+ .floor .legend{display:none}header{gap:7px}#stats{font-size:10px}
+}
+@media(max-height:550px) and (min-width:741px){.tablewrap{max-height:22vh}td,th{padding-block:2px}}
+</style>
+<main>
+<header><h1>Room view</h1><span id="stats"></span><span id="live">Connecting…</span></header>
+<section class="map scene">
+  <div class="bar"><h2>3D map</h2><div class="tools">
+    <button id="points" aria-pressed="true">Points</button><button id="surface" aria-pressed="false">Surfaces</button>
+    <button id="reset" title="Recenter 3D map" aria-label="Recenter 3D map">Recenter</button>
+  </div></div>
+  <canvas id="scene" title="Drag to orbit · two-finger pan · pinch to zoom" aria-label="3D surroundings"></canvas>
+  <div class="legend" id="depth-key" title="Distance from the phone">0 m<i class="ramp"></i>20 m+</div>
+</section>
+<section class="map floor">
+  <div class="bar"><h2>Floor map</h2><div class="tools"><button id="floor-reset">Recenter</button><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in">+</button></div></div>
+  <canvas id="floor" title="Drag or two-finger pan · pinch to zoom" aria-label="Floor occupancy and planned path"></canvas>
+  <div class="legend"><i class="key free"></i>Free<i class="key blocked"></i>Blocked<i class="key inferred"></i>Inferred</div>
+</section>
+<section class="objects"><div class="bar"><h2>Objects <span id="object-count" class="muted"></span></h2><span class="muted">Room · m · Y up</span></div>
+<div class="tablewrap"><table><thead><tr><th>Object</th><th>X</th><th>Y</th><th>Z</th><th>Conf.</th><th>Seen</th></tr></thead><tbody id="objects"></tbody></table></div></section>
+<section class="motion"><div class="bar"><h2>Motion</h2><span id="imu-state" class="muted">Waiting</span></div>
+<table><thead><tr><th>Phone axes</th><th>X</th><th>Y</th><th>Z</th></tr></thead><tbody>
+<tr><td>Accel (m/s²)</td><td id="ax">—</td><td id="ay">—</td><td id="az">—</td></tr>
+<tr><td>Gyro (rad/s)</td><td id="gx">—</td><td id="gy">—</td><td id="gz">—</td></tr></tbody></table></section>
+</main>
+<script src="/room_controls.js"></script>
+<script>
+'use strict';
+const el=id=>document.getElementById(id), scene=el('scene'), floor=el('floor');
+let room={}, patches=[], mode='points', yaw=.58, pitch=.48, zoom=9, span=8;
+const scenePan={x:0,y:0}, floorPan={x:0,y:0};
+function canvas(c){const w=c.clientWidth,h=c.clientHeight,r=Math.min(devicePixelRatio||1,2);if(c.width!==Math.round(w*r)||c.height!==Math.round(h*r)){c.width=Math.round(w*r);c.height=Math.round(h*r)}const g=c.getContext('2d');g.setTransform(r,0,0,r,0,0);g.clearRect(0,0,w,h);return [g,w,h]}
+function unpack(s){if(!s)return [];const bytes=Uint8Array.from(atob(s),ch=>ch.charCodeAt(0)),view=new DataView(bytes.buffer),out=[];
+for(let i=0;i+13<=bytes.length;i+=13){out.push({p:[0,2,4].map(k=>view.getInt16(i+k,true)/100),n:[6,7,8].map(k=>view.getInt8(i+k)/127),rgb:Array.from(bytes.slice(i+9,i+12)),r:bytes[i+12]/100})}return out}
+function label(g,x,y,text){g.font='12px system-ui';g.lineWidth=3;g.strokeStyle='#101619';g.strokeText(text,x,y);g.fillStyle='#effaf3';g.fillText(text,x,y)}
+function sceneCoords(v,p,cy,sy,cp,sp) {
+    const x=v[0]-p[0], y=v[1]-(room.floor_y??p[1])-.6, z=v[2]-p[2];
+    const depth=x*sy+z*cy;
+    return [x*cy-z*sy,-y*cp+depth*sp,y*sp+depth*cp];
+}
+function draw3(){const [g,w,h]=canvas(scene),p=room.pose||[0,0,0,0],scale=Math.min(w,h)/zoom,cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+function project(v){const [x,y,d]=sceneCoords(v,p,cy,sy,cp,sp);return [w/2+(scenePan.x+x)*scale,h/2+(scenePan.y+y)*scale,d]}
+function dots(list, kind, r) {
+    const live = room.publisher_live && room.tracking_live;
+    const memory = kind === 'memory';
+    const opacity = memory ? (live ? .8 : .4) : kind === 'inferred' ? (live ? .45 : .2) : (live ? 1 : .45);
+    for (const [i,v] of (list || []).entries()) {
+        const weight = room.distant_confidence?.[i];
+        g.globalAlpha = opacity * (memory ? Math.max(.08, Math.min(1, weight ?? .25)) : 1);
+        if (room.pose) {
+            const fraction = Math.min(1,Math.hypot(v[0]-p[0],v[1]-p[1],v[2]-p[2])/20);
+            const hue = memory ? .72 + .08*fraction : .78*fraction;
+            // HSV at full brightness, converted to CSS HSL.
+            g.fillStyle = 'hsl('+ (360*hue) +' 100% '+ (memory ? 72.5 : 55) +'%)';
+        } else {
+            g.fillStyle = '#999';
+        }
+        const [x,y] = project(v);
+        g.fillRect(x-r,y-r,2*r,2*r);
+    }
+    g.globalAlpha = 1;
+}
+if(mode==='surface'&&patches.length){const visible=patches.map(b=>[b,project(b.p)]).sort((a,b)=>a[1][2]-b[1][2]);
+for(const [b,[x,y]] of visible){const [nx,ny,nz]=b.n,t=nx*sy+nz*cy,dx=nx*cy-nz*sy,dy=-ny*cp+t*sp,ratio=Math.abs(ny*sp+t*cp),rad=Math.max(1,b.r*scale);g.save();g.translate(x,y);g.rotate(Math.atan2(dy,dx)+Math.PI/2);g.scale(rad,rad*Math.max(.12,ratio));const grad=g.createRadialGradient(0,0,0,0,0,1);grad.addColorStop(0,'rgb('+b.rgb+')');grad.addColorStop(.7,'rgba('+b.rgb+',.78)');grad.addColorStop(1,'rgba('+b.rgb+',0)');g.fillStyle=grad;g.fillRect(-1,-1,2,2);g.restore()}}
+else dots(room.points3d,'measured',2);
+dots(room.estimated3d,'inferred',1.5);dots(room.distant3d,'memory',1);
+for(const o of room.objects||[]){const [x,y]=project(o.position);label(g,x,y,o.label)}
+if(room.pose){const [x,y]=project(p);label(g,x,y,'◆ Robot')}
+}
+function drawFloor(){const [g,w,h]=canvas(floor),p=room.pose||[0,0,0,0],sc=Math.min(w,h)/span,X=x=>w/2+(floorPan.x+x-p[0])*sc,Y=z=>h/2+(floorPan.y+z-p[2])*sc;
+const colors=['','#33675e','#e6a760','#9d78c1'],n=room.size,res=room.resolution,grid=room.grid||'',org=room.origin||[0,0];
+for(let i=0;i<grid.length;i++){const color=colors[Number(grid[i])];if(color){g.fillStyle=color;g.fillRect(X(org[0]+(i%n)*res),Y(org[1]+Math.floor(i/n)*res),res*sc+.4,res*sc+.4)}}
+if(room.path?.length){g.beginPath();g.moveTo(X(p[0]),Y(p[2]));for(const pt of room.path)g.lineTo(X(pt[0]),Y(pt[pt.length-1]));g.strokeStyle='#83c9ff';g.lineWidth=2;g.stroke()}
+for(const o of room.objects||[])label(g,X(o.position[0]),Y(o.position[2]),o.label);
+if(room.pose){g.save();g.translate(X(p[0]),Y(p[2]));g.rotate(-p[3]);g.fillStyle='#fff';g.beginPath();g.moveTo(0,9);g.lineTo(-6,-5);g.lineTo(6,-5);g.closePath();g.fill();g.restore()}
+label(g,12,h-12,span.toFixed(1)+' m');}
+function redraw(){draw3();drawFloor()}
+for(const id of ['surface','points'])el(id).onclick=()=>{mode=id;el('depth-key').hidden=id==='surface'&&patches.length>0;for(const k of ['surface','points'])el(k).setAttribute('aria-pressed',String(k===mode));draw3()};
+const sceneView=bindMap(scene,scenePan,()=>zoom,v=>zoom=v,1.5,35,draw3,(dx,dy)=>{
+    yaw-=dx*.01;
+    pitch=Math.max(-1.4,Math.min(1.4,pitch+dy*.01));
+});
+const floorView=bindMap(floor,floorPan,()=>span,v=>span=v,2,30,drawFloor);
+// Frame in projected meters, with room for labels around the bounding box.
+function fitMap(canvas, coordinates, pan, min, max) {
+    let left=Infinity, right=-Infinity, top=Infinity, bottom=-Infinity;
+    for (const [x,y] of coordinates) {
+        left=Math.min(left,x); right=Math.max(right,x);
+        top=Math.min(top,y); bottom=Math.max(bottom,y);
+    }
+    const w=canvas.clientWidth, h=canvas.clientHeight;
+    const extent=Math.max((right-left)/w,(bottom-top)/h)*Math.min(w,h);
+    pan.x=-(left+right)/2;
+    pan.y=-(top+bottom)/2;
+    return Math.min(max,Math.max(min,extent*1.23));
+}
+function fitScene() {
+    yaw=.58; pitch=.48; zoom=9; scenePan.x=scenePan.y=0;
+    if (!room.pose) return;
+    const positions=[room.pose,...(room.points3d||[]),...(room.objects||[]).map(o=>o.position)];
+    if (positions.length===1) return;
+    const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+    zoom=fitMap(scene,positions.map(v=>sceneCoords(v,room.pose,cy,sy,cp,sp)),scenePan,1.5,35);
+}
+function fitFloor() {
+    span=8; floorPan.x=floorPan.y=0;
+    if (!room.pose || !room.grid || !room.origin) return;
+    const [x,,z]=room.pose, step=room.resolution, coords=[[0,0]];
+    for (let i=0;i<room.grid.length;i++) {
+        if (room.grid[i]==='0') continue;
+        const dx=room.origin[0]+(i%room.size)*step-x, dz=room.origin[1]+Math.floor(i/room.size)*step-z;
+        coords.push([dx,dz],[dx+step,dz+step]);
+    }
+    for (const obj of room.objects||[]) coords.push([obj.position[0]-x,obj.position[2]-z]);
+    if (coords.length>1) span=fitMap(floor,coords,floorPan,2,30);
+}
+let framedSession;
+el('reset').onclick=()=>{fitScene();draw3()};
+el('floor-reset').onclick=()=>{fitFloor();drawFloor()};
+el('plus').onclick=()=>floorView(1.4);
+el('minus').onclick=()=>floorView(1/1.4);
+window.onresize=redraw;
+async function update() {
+    try {
+        const response = await fetch('/map.json', {cache:'no-store',signal:AbortSignal.timeout(4000)});
+        if (!response.ok) throw Error();
+        room = await response.json();
+        patches = unpack(room.surface_splats);
+        if (room.pose && room.points3d?.length && framedSession !== (room.session ?? 'current')) {
+            fitScene();
+            fitFloor();
+            framedSession = room.session ?? 'current';
+        }
+        const live = room.publisher_live && room.tracking_live;
+        el('live').textContent = live ? '● Pi live' : room.frames ? '● Scan paused' : '● Awaiting scan';
+        el('live').className = live ? 'ok' : '';
+        el('stats').textContent = (room.voxels || 0).toLocaleString()+' voxels · '+patches.length.toLocaleString()+' surfaces';
+        el('object-count').textContent = (room.objects || []).length;
+        el('depth-key').hidden = mode === 'surface' && patches.length > 0;
+        renderTelemetry(room);
+        redraw();
+    } catch {
+        room.publisher_live = false;
+        renderTelemetry(room);
+        el('live').textContent = '● Pi offline';
+        el('live').className = '';
+        redraw();
+    } finally {
+        setTimeout(update,500);
+    }
+}
+update();
+</script></html>

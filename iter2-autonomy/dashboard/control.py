@@ -56,6 +56,7 @@ class ControlLink:
         self.lock = threading.Lock()
         self.phone_drive = None
         self.phone_drive_until = 0.0
+        self.room_published = 0.0
         self.commands = queue.Queue(maxsize=16)
         self.latest = {}
         self.connected = False
@@ -65,8 +66,11 @@ class ControlLink:
             if self.phone_drive and time.monotonic() < self.phone_drive_until:
                 status['phone_drive'] = self.phone_drive
             self.latest = status
+            self.room_published = time.monotonic()
 
     def run(self):
+        from room_view import serve_room
+        threading.Thread(target=serve_room, args=(self, self.stop), daemon=True).start()
         while not self.stop.is_set():
             try:
                 with socket.create_connection(('127.0.0.1', self.port), timeout=2) as sock:

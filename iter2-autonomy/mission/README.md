@@ -159,3 +159,9 @@ API, but not clicked in a real browser), or with the real headless service.
 The iPhone's **More controls → Speak actions** toggle voices changes in Pi-reported motor output, exact MOVE/TURN requests, guard-held manual input, and recent navigation events when a goto WATCH server is available. Speech and captions report commands. Wheel rotation requires independent observation. Audio is observational and does not switch the motor backend. For simulated actuation, use the existing stub backend.
 
 Open `laptop/actions.command` on the Mac for an SSH-only live action stream (or pass a different user@host). It tails the Pi user's `~/tars-{input,motor,nav}-actions.log` journals across creation and rotation. Input records include phone commands and keyboard transitions. Motor entries include command arguments and server replies, including refusals and repeated stop/drive requests. Navigation entries include planner events and dispatched motor commands. Each journal retains its active file and one 8 MiB rotation. Read-only STATUS/PING traffic is omitted. The standalone serial bench writes to the motor journal with client -1 and a serial TX result.
+
+### Wireless room viewer
+
+Open `laptop/room-view.command` to forward the Pi's loopback-only viewer over SSH, then open **http://127.0.0.1:5580/** on that laptop. The phone uses its normal USB sensor link. The Mac needs network reachability to the Pi and SSH access. Only the browser draws locally. Room fusion, occupancy, object memory and path planning remain on the robot.
+
+The page reads `/map.json` twice per second. It shows measured and inferred points, colored surface patches, the floor grid, robot pose, object labels and the current path preview. A suspended scan keeps its last geometry with a tracking-paused indicator. Closing the viewer has no effect on the robot.
