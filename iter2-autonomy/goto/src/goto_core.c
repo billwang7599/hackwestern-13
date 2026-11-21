@@ -68,6 +68,11 @@ void goto_cfg_defaults(goto_cfg *c)
     c->nav_max_replans = 6;
     c->nav_guard_wait_s = 0.5;
     c->nav_reveal_deg = 30.0;
+    c->nav_guard_stop_m = 0.6;     /* lidar_guard.cpp: forward <= 0.6, |side| < 0.45, phone LiDAR 60 deg */
+    c->nav_guard_half_w = 0.45;
+    c->nav_guard_hfov_deg = 60.0;
+    c->nav_escape_mm = 300.0;
+    c->nav_move_max_mm = 1000.0;
     snprintf(c->memory_path, sizeof c->memory_path, "memory.txt");
     c->n_arrive_over = 1;
     snprintf(c->arrive_over_label[0], sizeof c->arrive_over_label[0], "person");
@@ -117,6 +122,9 @@ int goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen)
         {"nav_pose_fresh_s", &c->nav_pose_fresh_s, 0}, {"nav_turn_min_deg", &c->nav_turn_min_deg, 0},
         {"nav_leg_min_mm", &c->nav_leg_min_mm, 0}, {"nav_max_replans", &c->nav_max_replans, 0},
         {"nav_guard_wait_s", &c->nav_guard_wait_s, 0}, {"nav_reveal_deg", &c->nav_reveal_deg, 0},
+        {"nav_guard_stop_m", &c->nav_guard_stop_m, 0}, {"nav_guard_half_w", &c->nav_guard_half_w, 0},
+        {"nav_guard_hfov_deg", &c->nav_guard_hfov_deg, 0}, {"nav_escape_mm", &c->nav_escape_mm, 0},
+        {"nav_move_max_mm", &c->nav_move_max_mm, 0},
     };
     char line[256];
     while (fgets(line, sizeof line, f)) {
@@ -1121,15 +1129,24 @@ static void face_goal(goto_sm *s)
     else start_look(s, s->now);
 }
 
+static int guard_escape(goto_sm *s, double b_wp);
+
+/* a path leg's MOVE: at most tars_motor's MOVE limit (it clamps longer ones and reports DONE) */
+static double leg_move_mm(const goto_sm *s, double d)
+{
+    return s->cfg.nav_move_max_mm > 0 && d > s->cfg.nav_move_max_mm ? s->cfg.nav_move_max_mm : d;
+}
+
 static void next_leg(goto_sm *s)
 {
     while (s->path_i < s->path_n) {
         double b, d;
         rel_to(s, s->path[s->path_i].x, s->path[s->path_i].z, &b, &d);
         if (d < s->cfg.nav_leg_min_mm) { s->path_i++; continue; }
+        if (guard_escape(s, b)) return;
         s->leg_mm = d;
         if (fabs(b) > s->cfg.nav_turn_min_deg) { s->leg = 0; start_leg(s, ACT_TURN, b); }
-        else { s->leg = 1; start_leg(s, ACT_MOVE, d); }
+        else { s->leg = 1; start_leg(s, ACT_MOVE, leg_move_mm(s, d)); }
         return;
     }
     if (s->exploring) {                         /* explore hop done: the phone has seen more, re-plan */
@@ -1208,6 +1225,91 @@ static int foot_clear(goto_sm *s, double px, double pz)
 {
     nav_pt_t tmp[2];
     return nav_plan_ring(s->nav, (float)px, (float)pz, (float)px, (float)pz, 0.0f, 0.11f, tmp, 2) >= 0;
+}
+
+/* lidar_guard's stop zone, predicted from the map: no OCC cell with 0 < forward <= stop and
+ * |side| < half_w inside the phone LiDAR's cone, for the robot at (x,z) facing h (nav frame:
+ * forward = (sin h, cos h)). Half a cell of slack on each test (an obstacle is anywhere in its
+ * cell). The real guard sees what the phone sees; this sees what the map holds. */
+static int guard_zone_clear(const goto_sm *s, double x, double z, double h)
+{
+    const double m = 0.5 * NAV_RES;
+    double stop = s->cfg.nav_guard_stop_m, hw = s->cfg.nav_guard_half_w;
+    double ta = s->cfg.nav_guard_hfov_deg >= 180 ? 1e9 : tan(RAD(s->cfg.nav_guard_hfov_deg / 2));
+    int cx, cz;
+    if (stop <= 0 || !nav_world_to_cell((float)x, (float)z, &cx, &cz)) return 1;
+    int r = (int)ceil((stop + m) / NAV_RES);
+    double fx = sin(h), fz = cos(h);
+    for (int i = -r; i <= r; i++)
+        for (int k = -r; k <= r; k++) {
+            if (nav_cell_at(s->nav, cx + i, cz + k) != NAV_OCC) continue;
+            double dx = NAV_ORIGIN_X + (cx + i + 0.5) * NAV_RES - x, dz = NAV_ORIGIN_Z + (cz + k + 0.5) * NAV_RES - z;
+            double f = fx * dx + fz * dz, side = fabs(fz * dx - fx * dz);
+            if (f > -m && f <= stop + m && side < hw + m && side < f * ta + m) return 0;
+        }
+    return 1;
+}
+
+/* map mode, guard just stopped a visual APPROACH: the remembered spot is more than stop + 0.2 m
+ * away and an OCC cell in the guard's zone (current heading) is >= 0.35 m from that spot, so the
+ * guard stopped on something in front of the target, not on the target */
+static int occluder_in_zone(const goto_sm *s)
+{
+    double x, z, yaw;
+    if (!s->map_mode || !s->nav || !nav_pose(s, &x, &z, &yaw)) return 0;
+    double stop = s->cfg.nav_guard_stop_m, hw = s->cfg.nav_guard_half_w, m = 0.5 * NAV_RES;
+    if (stop <= 0 || hypot(s->goal_x - x, s->goal_z - z) <= stop + 0.2) return 0;
+    double ta = s->cfg.nav_guard_hfov_deg >= 180 ? 1e9 : tan(RAD(s->cfg.nav_guard_hfov_deg / 2));
+    int cx, cz;
+    if (!nav_world_to_cell((float)x, (float)z, &cx, &cz)) return 0;
+    int r = (int)ceil((stop + m) / NAV_RES);
+    double fx = sin(yaw), fz = cos(yaw);
+    for (int i = -r; i <= r; i++)
+        for (int k = -r; k <= r; k++) {
+            if (nav_cell_at(s->nav, cx + i, cz + k) != NAV_OCC) continue;
+            double wx = NAV_ORIGIN_X + (cx + i + 0.5) * NAV_RES, wz = NAV_ORIGIN_Z + (cz + k + 0.5) * NAV_RES;
+            double dx = wx - x, dz = wz - z, f = fx * dx + fz * dz, side = fabs(fz * dx - fx * dz);
+            if (f > -m && f <= stop + m && side < hw + m && side < f * ta + m &&
+                hypot(wx - s->goal_x, wz - s->goal_z) >= 0.35) return 1;
+        }
+    return 0;
+}
+
+/* A path leg would start with an obstacle in the guard's zone (typically: the guard just stopped
+ * us 0.6 m from a box, and A* hugs the box with short legs that each face it), so tars_motor would
+ * refuse its MOVE ("ERR guard_blocked") and every re-plan would end the same way (seen in the
+ * bench's demo_detour with lidar_guard's real zone: 7 re-plans, failed:blocked). Instead pivot to
+ * the heading nearest the waypoint's whose zone stays clear for a nav_escape_mm step, with that
+ * step observed free and ending where the robot fits, drive it, then re-plan from there.
+ * Pivots stay within +-180 deg (tars_motor's BLOCKED pivot rule) and use search_speed (<= 0.40).
+ * At most 8 per GOTO; after that (or with no such heading) the old behaviour: re-plans, then
+ * failed:blocked. Never touches a stop: it only picks which TURN/MOVE to ask for. */
+static int guard_escape(goto_sm *s, double b_wp)
+{
+    double x, z, yaw;
+    if (s->cfg.nav_escape_mm <= 0 || s->escapes >= 8 || !nav_pose(s, &x, &z, &yaw)) return 0;
+    if (guard_zone_clear(s, x, z, yaw - RAD(b_wp))) return 0;
+    double r = s->cfg.nav_escape_mm / 1000.0;
+    for (int k = 1; k <= 36; k++) {                 /* 10, -10, 20, -20 ... from the waypoint's bearing */
+        double b = b_wp + ((k + 1) / 2) * (k % 2 ? 10.0 : -10.0);
+        if (fabs(b) > 180.0) continue;
+        double h = yaw - RAD(b), ex = x + r * sin(h), ez = z + r * cos(h);
+        int ok = 1;
+        for (double p = 0; p <= r + 1e-9 && ok; p += 0.1)
+            ok = guard_zone_clear(s, x + p * sin(h), z + p * cos(h), h);
+        if (!ok || !guard_zone_clear(s, ex, ez, h)) continue;
+        if (nav_line_clear_ex(s->nav, (float)x, (float)z, (float)ex, (float)ez, 0.0f) != 1) continue;
+        if (!foot_clear(s, ex, ez)) continue;
+        s->escapes++;
+        char t[96];
+        snprintf(t, sizeof t, "escape %s #%d %.0f", target_name(s), s->mem_id, b);
+        emit(s, ACT_EVENT, 0, 0, t);
+        s->leg_mm = s->cfg.nav_escape_mm;
+        if (fabs(b) > s->cfg.nav_turn_min_deg) { s->leg = 4; start_leg(s, ACT_TURN, b); }
+        else { s->leg = 5; start_leg(s, ACT_MOVE, s->leg_mm); }
+        return 1;
+    }
+    return 0;
 }
 
 /* Something stands inside the robot's own footprint square (< ~0.45 m away: a person or a board
@@ -1470,17 +1572,23 @@ static void leg_done(goto_sm *s)
 {
     switch (s->leg) {
     case 0: {
-        double d;
-        rel_to(s, s->path[s->path_i].x, s->path[s->path_i].z, NULL, &d);
+        double b, d;
+        rel_to(s, s->path[s->path_i].x, s->path[s->path_i].z, &b, &d);
         if (d < s->cfg.nav_leg_min_mm) { s->path_i++; next_leg(s); return; }
+        if (guard_escape(s, b)) return;            /* the turn landed facing something */
         s->leg = 1;
         s->leg_mm = d;
-        start_leg(s, ACT_MOVE, d);
+        start_leg(s, ACT_MOVE, leg_move_mm(s, d));
         return;
     }
-    case 1: s->path_i++; next_leg(s); return;
+    case 1:
+        /* a leg longer than tars_motor's MOVE limit only went part of the way: the rest from
+         * where we are now (next_leg re-measures it), same waypoint */
+        if (s->leg_mm > leg_move_mm(s, s->leg_mm) + 1.0) { next_leg(s); return; }
+        s->path_i++; next_leg(s); return;
     case 2: start_look(s, s->now + s->cfg.settle_s); return;
-    default: do_plan(s); return;                    /* 3: reveal turn done */
+    case 4: s->leg = 5; start_leg(s, ACT_MOVE, s->leg_mm); return;   /* escape: pivoted, now the step */
+    default: do_plan(s); return;                    /* 3: reveal turn done, 5: escape step done */
     }
 }
 
@@ -1663,6 +1771,7 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->path_n = s->path_i = 0;
     s->revealed_deg = 0;                       /* each GOTO may look around once more */
     s->reveal_have_yaw = 0;
+    s->escapes = 0;
     if (mem_try_next(s)) return;
     if (s->recall) { start_look(s, now); goto_sm_fail(s, now, "not remembered"); return; }
     start_look(s, now);                        /* look before turning: it may be in view */
@@ -1760,6 +1869,20 @@ void goto_sm_drive_refused(goto_sm *s, double now, const char *why)
      * the guard really saw something: a fresh guard_blocked. A stale/missing/invalid guard (a CPU
      * hiccup, a dropped packet) says nothing about what's ahead: stop, look again, retry. */
     double need = goto_cfg_arrive_h(&s->cfg, target_name(s));
+    /* ... unless the map says what stopped us isn't the target: the remembered spot is still well
+     * beyond the guard's reach (a real dock: centre <= ~0.75 m) and the map holds an obstacle in the guard's zone clearly away from
+     * it (the board in front of the bin, seen with lidar_guard's real 60 deg zone: "docked" 0.95 m
+     * from the bin). Then re-plan to the approach ring, which steps clear of it first. */
+    if (occluder_in_zone(s)) {               /* any guard stop: thin things flicker in the map */
+        snprintf(t, sizeof t, "guard_occluder %s #%d", target_name(s), s->mem_id);
+        emit(s, ACT_EVENT, 0, 0, t);
+        if (++s->replans > (int)s->cfg.nav_max_replans) { goto_sm_fail(s, now, "blocked"); return; }
+        s->have_track = 0;
+        s->vantage = 0;
+        set_state(s, ST_PLAN);
+        s->plan_wait = 1;
+        return;
+    }
     if (guard_saw_obstacle(s, why) && s->have_track && now - s->last_seen < 0.5 &&
         fabs(s->last_bearing) <= s->cfg.realign_deg && s->ema_h >= 0.5 * need) {
         arrived(s);
@@ -2008,7 +2131,7 @@ void goto_sm_tick(goto_sm *s, double now)
             return;
         }
         if (now > s->move_deadline) {
-            goto_sm_fail(s, now, s->st == ST_MEM_MOVE || (s->st == ST_FOLLOW_PATH && s->leg == 1) ? "move timed out"
+            goto_sm_fail(s, now, s->st == ST_MEM_MOVE || (s->st == ST_FOLLOW_PATH && (s->leg == 1 || s->leg == 5)) ? "move timed out"
                                                                                                    : "turn timed out");
             return;
         }

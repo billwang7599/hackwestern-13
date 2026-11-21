@@ -62,6 +62,14 @@ typedef struct {
     double nav_max_replans;   /* re-plans (guard denial, map change) per GOTO, then FAILED blocked */
     double nav_guard_wait_s;  /* after a guard-aborted leg: wait this long (and for CLEAR) before re-planning */
     double nav_reveal_deg;    /* robot's own footprint not mapped yet: turn this much to reveal floor, re-plan */
+    /* lidar_guard's stop zone, as goto predicts it from its map (mirror of lidar_guard.cpp, NOT
+     * the guard's thresholds: changing these never changes what the guard stops) */
+    double nav_guard_stop_m;  /* BLOCKED if an obstacle is this close ahead ... */
+    double nav_guard_half_w;  /* ... and less than this to the side ... */
+    double nav_guard_hfov_deg;/* ... and inside the phone's LiDAR cone (>= 180: the whole rectangle) */
+    double nav_escape_mm;     /* a path leg would start with an obstacle in that zone: pivot to the nearest
+                                 heading that's clear and drive this far, then re-plan (0 = off) */
+    double nav_move_max_mm;   /* tars_motor's MOVE limit (wheels.h MOVE_MAX_MM): longer legs go in pieces */
     /* per-object arrive override, e.g. person is tall: arrive_h.person = 0.85 */
     int    n_arrive_over;
     char   arrive_over_label[16][32];
@@ -295,6 +303,7 @@ typedef struct {
     double revealed_deg;
     int reveal_have_yaw;              /* reveal_yaw = ARKit yaw when the current reveal TURN started */
     double reveal_yaw;
+    int escapes;                      /* guard-zone escape steps this GOTO (leg 4 = its TURN, 5 = its MOVE) */
     int plan_wait;                    /* ST_PLAN: re-plan once the guard is CLEAR */
     int exploring, explores;          /* heading to a mapped cell nearer an unmapped goal, then re-plan */
     int leg_settle;                   /* leg done, ARKit pose: wait for 2 poses taken after it ended */

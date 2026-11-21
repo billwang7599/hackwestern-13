@@ -981,7 +981,7 @@ static void test_map_leg_waits_for_post_move_pose(void)
             while (b > 180) b -= 360;
             while (b < -180) b += 360;
             if (a && fabs(a->a - b) > 1.0) bad_turn++;
-            if (m && fabs(m->a - hypot(dx, dz) * 1000) > 10) bad_move++;
+            if (m && fabs(m->a - fmin(hypot(dx, dz) * 1000, C.nav_move_max_mm)) > 10) bad_move++;   /* tars_motor's MOVE limit */
         }
         if (a) PYAW -= a->a * M_PI / 180;
         else { PX += m->a / 1000 * sin(PYAW); PZ += m->a / 1000 * cos(PYAW); }
@@ -1301,6 +1301,126 @@ static void test_map_reveal_measured(void)
     CHECK(had_event("reveal trash can #1", EV) && S.st == ST_FOLLOW_PATH && S.leg == 3, "next GOTO: reveal again (%s)", EV);
     C = (goto_cfg){0};
     goto_cfg_defaults(&C);
+}
+
+/* the fake robot's lidar_guard (lidar_guard.cpp, no slack): an OCC cell centre at 0 < forward
+ * <= 0.6 m, |side| < 0.45 m, inside the phone's 60 deg cone -> BLOCKED */
+static int fake_guard_blocked(void)
+{
+    for (int ix = 0; ix < NAV_SIZE; ix++)
+        for (int iz = 0; iz < NAV_SIZE; iz++) {
+            if (nav_cell_at(N, ix, iz) != NAV_OCC) continue;
+            double dx = NAV_ORIGIN_X + (ix + 0.5) * NAV_RES - PX, dz = NAV_ORIGIN_Z + (iz + 0.5) * NAV_RES - PZ;
+            double f = sin(PYAW) * dx + cos(PYAW) * dz, side = fabs(cos(PYAW) * dx - sin(PYAW) * dz);
+            if (f > 0 && f <= 0.6 && side < 0.45 && side < f * tan(M_PI / 6)) return 1;
+        }
+    return 0;
+}
+
+/* run legs; a MOVE that starts with something in the guard's zone is refused like tars_motor
+ * does (ERR guard_blocked). Returns how many MOVEs were refused. */
+static int run_legs_guarded(int max, int *moves)
+{
+    int id = 900, refused = 0;
+    for (int n = 0; n < max; n++) {
+        grab_events();
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (!a && !m) break;
+        if (m && !a && fake_guard_blocked()) {
+            refused++;
+            clear();
+            goto_sm_move_refused(&S, T, "guard_blocked");
+            goto_sm_guard_reason(&S, "guard_blocked");
+            for (int k = 0; k < 10 && !find(ACT_TURN) && !find(ACT_MOVE); k++) {
+                advance(0.5);
+                nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
+            }
+            continue;
+        }
+        if (a) PYAW -= a->a * M_PI / 180;
+        else {
+            if (moves) (*moves)++;
+            double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            PX = nx; PZ = nz;
+        }
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        leg_done_phone_lags(id);
+    }
+    grab_events();
+    return refused;
+}
+
+/* Regression (bench demo_detour with lidar_guard's real zone): the guard stopped the robot 0.6 m
+ * from a box across the route. A* hugs the box with short legs, each facing it, so every MOVE
+ * was refused (ERR guard_blocked) and 7 re-plans later: failed:blocked. Now goto pivots to a
+ * heading whose guard zone is clear and steps out first. */
+static void box_ahead_setup(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    set_free_rect(0.8, 1.6, 2.2, 1.9, NAV_OCC);        /* the box: face 0.6 m ahead, 1.4 m wide */
+    put_robot(1.45, 1.0, 0);
+    add_inst(1.45, 3.6, MEM_FRESH);
+}
+
+static void test_map_guard_escape(void)
+{
+    /* before: escape off = the old behaviour */
+    C.nav_escape_mm = 0;
+    box_ahead_setup();
+    EV[0] = 0;
+    start("trash can");
+    int moves = 0, refused = run_legs_guarded(40, &moves);
+    CHECK(refused >= 2, "escape off: MOVEs refused by the guard again and again (%d refused, events %.160s)", refused, EV);
+    goto_sm_cancel(&S, T, "x");
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+
+    /* after */
+    box_ahead_setup();
+    EV[0] = 0;
+    start("trash can");
+    moves = 0;
+    refused = run_legs_guarded(60, &moves);
+    CHECK(had_event("escape trash can #1", EV), "escape: pivot clear of the guard zone first (%.160s)", EV);
+    CHECK(refused == 0, "no MOVE ever refused by the guard (%d)", refused);
+    CHECK(crossed_occ == 0, "never drove through the box");
+    CHECK(S.st == ST_LOOK && PZ > 2.4, "got round the box and reached the spot (%s, z=%.2f)", goto_state_name(S.st), PZ);
+    CHECK(S.escapes <= 8, "escapes bounded (%d)", S.escapes);
+    goto_sm_cancel(&S, T, "x");
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+}
+
+/* tars_motor clamps MOVE to 1000 mm (wheels.h MOVE_MAX_MM) and reports DONE: a 2.5 m leg used to
+ * count as reached after 1 m, and the robot LOOKed from 1.5 m short */
+static void test_map_long_leg_in_pieces(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(1.0, 0.5, 0);
+    add_inst(1.0, 3.9, MEM_FRESH);
+    start("trash can");
+    int id = 950, big = 0, n = 0;
+    for (; n < 30; n++) {
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (!a && !m) break;
+        if (m && m->a > 1000.5) big++;
+        double amt = m ? fmin(m->a, 1000.0) : 0;          /* what tars_motor really drives */
+        if (a) PYAW -= a->a * M_PI / 180;
+        else { PX += amt / 1000 * sin(PYAW); PZ += amt / 1000 * cos(PYAW); }
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        leg_done_phone_lags(id);
+    }
+    CHECK(big == 0, "no MOVE over tars_motor's 1000 mm limit (%d)", big);
+    CHECK(S.st == ST_LOOK && fabs(PZ - 3.9) < 1.0 && PZ > 2.8, "LOOKs from the end of the route, not 1.5 m short (z=%.2f)", PZ);
 }
 
 static void test_map_stop_mid_path(void)
@@ -1623,6 +1743,8 @@ int main(void)
     test_map_occluder_inside_footprint();
     test_map_no_route_fails();
     test_map_reveal_measured();
+    test_map_guard_escape();
+    test_map_long_leg_in_pieces();
     test_map_stop_mid_path();
     test_map_guard_and_replan();
     test_leased_approach();
