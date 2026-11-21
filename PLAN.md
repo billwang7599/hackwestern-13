@@ -2,6 +2,7 @@
 
 Shared plan for humans and coding agents. **Read [AGENTS.md](AGENTS.md) before changing code.**
 Update the status table when you finish something.
+Design for voice + YOLO + iPhone LiDAR fusion and the GOTO state machine: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Priorities (set by the team, 2026-11-21)
 

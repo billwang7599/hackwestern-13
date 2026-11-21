@@ -1,6 +1,7 @@
 # AGENTS.md: rules for coding agents (and humans) in this repo
 
 Read [PLAN.md](PLAN.md) first. It has the architecture, the CPU budget and the current status.
+The sensor-fusion design, state machine and port map are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Ground rules
 
