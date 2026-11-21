@@ -195,6 +195,9 @@ class Motor:
             self.p.wait(3)
         except subprocess.TimeoutExpired:
             self.p.kill()
+        # keep tars_motor's log on disk next to goto's (build/fs_goto_<port>.log), for post-mortems
+        with open(os.path.join(BUILD, f"fs_motor_{self.port}.log"), "w") as f:
+            f.write("\n".join(self.log) + "\n")
 
 
 # ------------------------------------------------------------------ fake sensors
