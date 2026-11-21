@@ -416,6 +416,10 @@ static int motor_ready(conn *c)
     return 1;
 }
 
+/* last good detection line, for DETS (mission control draws the boxes; it doesn't detect) */
+static char last_det[LINE_MAX_] = "{}";
+static double last_det_t = -1;
+
 static void handle_ctl(conn *c, char *line)
 {
     char cmd[16] = "", reply[4096];
@@ -456,6 +460,54 @@ static void handle_ctl(conn *c, char *line)
         snprintf(reply, sizeof reply, "%s recall %s\n", goto_sm_busy(&sm) ? "OK" : "ERR not remembered:", objs.obj[t]);
         send_str(c->fd, reply);
         run_actions();
+    } else if (!strcasecmp(cmd, "NAV") && !strcasecmp(arg, "ROUTE")) {
+        /* the route goto is following, in the nav (ARKit) frame, metres; i = next waypoint */
+        size_t o = (size_t)snprintf(reply, sizeof reply, "OK route=");
+        int n = sm.map_mode ? sm.path_n : 0;
+        for (int i = 0; i < n && i < 64 && o < sizeof reply - 32; i++)
+            o += (size_t)snprintf(reply + o, sizeof reply - o, "%s%.2f,%.2f", i ? ";" : "", sm.path[i].x, sm.path[i].z);
+        snprintf(reply + o, sizeof reply - o, "%s i=%d\n", n ? "" : "-", n ? sm.path_i : 0);
+        send_str(c->fd, reply);
+    } else if (!strcasecmp(cmd, "NAV") && !strcasecmp(arg, "GRID")) {
+        /* the planner's grid, run-length coded over the bounding box of known cells:
+         * "OK grid v=<version> size=200 res=0.10 origin=-10.00,-10.00 box=ix0,iz0,w,h rle=<cell>x<n>,..."
+         * cells 0 unknown, 1 free, 2 occupied; rows of the box go z-major (iz outer, ix inner). */
+        int x0 = NAV_SIZE, z0 = NAV_SIZE, x1 = -1, z1 = -1;
+        for (int iz = 0; iz < NAV_SIZE; iz++)
+            for (int ix = 0; ix < NAV_SIZE; ix++)
+                if (nav_cell_at(nav, ix, iz) != NAV_UNKNOWN) {
+                    if (ix < x0) x0 = ix;
+                    if (ix > x1) x1 = ix;
+                    if (iz < z0) z0 = iz;
+                    if (iz > z1) z1 = iz;
+                }
+        size_t cap = 16 + (size_t)NAV_SIZE * NAV_SIZE * 8, o;
+        char *g = malloc(cap);
+        if (!g) { send_str(c->fd, "ERR out of memory\n"); return; }
+        o = (size_t)snprintf(g, cap, "OK grid v=%u size=%d res=%.2f origin=%.2f,%.2f box=", nav_version(nav),
+                             NAV_SIZE, NAV_RES, NAV_ORIGIN_X, NAV_ORIGIN_Z);
+        if (x1 < 0) o += (size_t)snprintf(g + o, cap - o, "- rle=-");
+        else {
+            o += (size_t)snprintf(g + o, cap - o, "%d,%d,%d,%d rle=", x0, z0, x1 - x0 + 1, z1 - z0 + 1);
+            int run_v = -1, run_n = 0, first = 1;
+            for (int iz = z0; iz <= z1; iz++)
+                for (int ix = x0; ix <= x1; ix++) {
+                    int v = nav_cell_at(nav, ix, iz);
+                    if (v == run_v) { run_n++; continue; }
+                    if (run_n) { o += (size_t)snprintf(g + o, cap - o, "%s%dx%d", first ? "" : ",", run_v, run_n); first = 0; }
+                    run_v = v; run_n = 1;
+                }
+            o += (size_t)snprintf(g + o, cap - o, "%s%dx%d", first ? "" : ",", run_v, run_n);
+        }
+        snprintf(g + o, cap - o, "\n");
+        send_str(c->fd, g);
+        free(g);
+    } else if (!strcasecmp(cmd, "DETS")) {
+        /* last detection frame goto accepted (JSON as the detector sent it) and its age in s */
+        snprintf(reply, sizeof reply, "OK age=%.2f %s\n",
+                 last_det_t < 0 ? -1.0 : (now_s() - last_det_t) / time_scale,
+                 strlen(last_det) < sizeof reply - 40 ? last_det : "{}");   /* never a cut-off line */
+        send_str(c->fd, reply);
     } else if (!strcasecmp(cmd, "NAV")) {
         float x = 0, z = 0, yaw = 0;
         int src = nav ? nav_get_pose(nav, &x, &z, &yaw) : NAV_POSE_NONE;
@@ -535,7 +587,9 @@ static void handle_det_line(conn *c, char *line)
     (void)c;
     goto_frame f;
     if (!line[0]) return;
-    if (goto_parse_frame(line, &f) < 0) {
+    int bad = goto_parse_frame(line, &f) < 0;
+    if (!bad) { snprintf(last_det, sizeof last_det, "%s", line); last_det_t = now_s(); }
+    if (bad) {
         static double last_warn;
         if (now_s() - last_warn > 5 * time_scale) { logf_("bad detection line: %.80s", line); last_warn = now_s(); }
         return;

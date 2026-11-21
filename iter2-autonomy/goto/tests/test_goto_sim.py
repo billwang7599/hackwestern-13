@@ -26,6 +26,7 @@ import os
 import random
 import re
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -506,6 +507,50 @@ def drive_scene(exe: str, scale: float, seed: int, dist: float, bearing_deg: flo
         m.close()
 
 
+def test_mission_cmds(exe: str) -> None:
+    """DETS / NAV ROUTE / NAV GRID: read-only views for the laptop mission control."""
+    print("mission control views (DETS, NAV ROUTE, NAV GRID)")
+    m = FakeMotor()
+    nav_port = free_port()
+    g = Goto(exe, m.port, extra=["-n", str(nav_port)])
+    try:
+        check(g.cmd("DETS") == "OK age=-1.00 {}", "DETS before any detection")
+        check(g.cmd("NAV ROUTE") == "OK route=- i=0", "NAV ROUTE when idle")
+        r = g.cmd("NAV GRID")
+        check(r.startswith("OK grid v=") and r.endswith("box=- rle=-"), f"NAV GRID empty map ({r[:60]})")
+        det = json.dumps({"w": 640, "h": 480, "dets": [{"label": "chair", "conf": 0.8, "box": [10, 20, 110, 220]}]})
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.sendto(det.encode(), ("127.0.0.1", g.det_port))
+        ok = wait_for(lambda: g.cmd("DETS").endswith(det), 1)
+        r = g.cmd("DETS")
+        check(ok and float(r.split()[1][4:]) < 1.0, f"DETS returns the last frame as sent ({r[:70]})")
+        u.sendto(b"not json", ("127.0.0.1", g.det_port))
+        time.sleep(0.05)
+        check(g.cmd("DETS").endswith(det), "a bad line doesn't replace the last good frame")
+        u.close()
+        # one LDR1 packet: a floor patch ahead of the phone plus a wall -> free and occupied cells
+        pts = [(x * 0.1, -0.3, 1.0 + z * 0.1) for x in range(-3, 4) for z in range(0, 5)]
+        pts += [(x * 0.1, 0.2, 2.0) for x in range(-3, 4)]
+        body = b"LDR1" + struct.pack("!IQII", 1, 1000, 1 | 2 | 4, len(pts)) + struct.pack("!5f", 0, 0, 0, 0, -0.3)
+        body += b"".join(struct.pack("!3f", *p) for p in pts)
+        t = socket.create_connection(("127.0.0.1", nav_port))
+        t.sendall(struct.pack("!I", len(body)) + body)
+        ok = wait_for(lambda: "occ=0" not in g.cmd("NAV"), 1)
+        nav = dict(kv.split("=", 1) for kv in g.cmd("NAV").split()[1:])
+        grid = dict(kv.split("=", 1) for kv in g.cmd("NAV GRID").split()[2:])
+        runs = [tuple(map(int, r.split("x"))) for r in grid["rle"].split(",")]
+        bx = list(map(int, grid["box"].split(",")))
+        counts = {v: sum(n for c, n in runs if c == v) for v in (0, 1, 2)}
+        check(ok and sum(n for _, n in runs) == bx[2] * bx[3], f"RLE covers the box ({bx})")
+        check(counts[1] == int(nav["free"]) and counts[2] == int(nav["occ"]) and counts[2] > 0,
+              f"GRID free/occ {counts[1]}/{counts[2]} match NAV {nav['free']}/{nav['occ']}")
+        check(grid["v"] == nav["version"], "GRID version = NAV version")
+        t.close()
+    finally:
+        g.close()
+        m.close()
+
+
 def test_scenarios(exe: str, scale: float) -> None:
     print(f"2D sim scenarios (goto -T {scale})")
     r = drive_scene(exe, scale, 1, 1.5, 0.0)
@@ -925,6 +970,7 @@ def main() -> None:
     os.makedirs(os.path.join(GOTO_DIR, "build"), exist_ok=True)
     t0 = time.monotonic()
     test_protocol(exe)
+    test_mission_cmds(exe)
     test_inputs(exe)
     test_cancel_latency(exe)
     test_real_tars_motor(exe)
