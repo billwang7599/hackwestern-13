@@ -15,6 +15,31 @@
 		A00000000000000000000028 = {isa = PBXBuildFile; fileRef = A00000000000000000000029; };
 		A00000000000000000000030 = {isa = PBXBuildFile; fileRef = A00000000000000000000031; };
 		A00000000000000000000032 /* SpeechLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000033 /* SpeechLink.swift */; };
+BD0000000000000000000000 = {isa = PBXBuildFile; fileRef = BC0000000000000000000000; };
+BD0000000000000000000001 = {isa = PBXBuildFile; fileRef = BC0000000000000000000001; };
+BD0000000000000000000002 = {isa = PBXBuildFile; fileRef = BC0000000000000000000002; };
+BD0000000000000000000003 = {isa = PBXBuildFile; fileRef = BC0000000000000000000003; };
+BD0000000000000000000004 = {isa = PBXBuildFile; fileRef = BC0000000000000000000004; };
+BD0000000000000000000005 = {isa = PBXBuildFile; fileRef = BC0000000000000000000005; };
+BD0000000000000000000006 = {isa = PBXBuildFile; fileRef = BC0000000000000000000006; };
+BD0000000000000000000007 = {isa = PBXBuildFile; fileRef = BC0000000000000000000007; };
+BD0000000000000000000008 = {isa = PBXBuildFile; fileRef = BC0000000000000000000008; };
+BD0000000000000000000009 = {isa = PBXBuildFile; fileRef = BC0000000000000000000009; };
+BD000000000000000000000A = {isa = PBXBuildFile; fileRef = BC000000000000000000000A; };
+BD000000000000000000000B = {isa = PBXBuildFile; fileRef = BC000000000000000000000B; };
+BD000000000000000000000C = {isa = PBXBuildFile; fileRef = BC000000000000000000000C; };
+BD000000000000000000000D = {isa = PBXBuildFile; fileRef = BC000000000000000000000D; };
+BD000000000000000000000E = {isa = PBXBuildFile; fileRef = BC000000000000000000000E; };
+BD000000000000000000000F = {isa = PBXBuildFile; fileRef = BC000000000000000000000F; };
+BD0000000000000000000010 = {isa = PBXBuildFile; fileRef = BC0000000000000000000010; };
+BD0000000000000000000011 = {isa = PBXBuildFile; fileRef = BC0000000000000000000011; };
+BD0000000000000000000012 = {isa = PBXBuildFile; fileRef = BC0000000000000000000012; };
+BD0000000000000000000013 = {isa = PBXBuildFile; fileRef = BC0000000000000000000013; };
+BD0000000000000000000014 = {isa = PBXBuildFile; fileRef = BC0000000000000000000014; };
+BD0000000000000000000015 = {isa = PBXBuildFile; fileRef = BC0000000000000000000015; };
+BD0000000000000000000016 = {isa = PBXBuildFile; fileRef = BC0000000000000000000016; };
+BD0000000000000000000017 = {isa = PBXBuildFile; fileRef = BC0000000000000000000017; };
+BD0000000000000000000018 = {isa = PBXBuildFile; fileRef = BC0000000000000000000018; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +52,31 @@
 		A00000000000000000000029 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PointCloudView.swift"; sourceTree = "<group>"; };
 		A00000000000000000000031 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EdgeStatusView.swift"; sourceTree = "<group>"; };
 		A00000000000000000000033 /* SpeechLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpeechLink.swift"; sourceTree = "<group>"; };
+BC0000000000000000000000 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "RoomTag.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/apriltag.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/apriltag_pose.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/apriltag_quad_thresh.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/g2d.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/homography.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/image_u8.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/image_u8_parallel.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000008 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/image_u8x3.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000009 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/image_u8x4.c"; sourceTree = SOURCE_ROOT; };
+BC000000000000000000000A = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/matd.c"; sourceTree = SOURCE_ROOT; };
+BC000000000000000000000B = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/pam.c"; sourceTree = SOURCE_ROOT; };
+BC000000000000000000000C = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/pjpeg-idct.c"; sourceTree = SOURCE_ROOT; };
+BC000000000000000000000D = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/pjpeg.c"; sourceTree = SOURCE_ROOT; };
+BC000000000000000000000E = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/pnm.c"; sourceTree = SOURCE_ROOT; };
+BC000000000000000000000F = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/pthreads_cross.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000010 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/string_util.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/svd22.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/time_util.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000013 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/unionfind.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/workerpool.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000015 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/zarray.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000016 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/zhash.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000017 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/common/zmaxheap.c"; sourceTree = SOURCE_ROOT; };
+BC0000000000000000000018 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../vendor/apriltag/tag36h11.c"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -102,7 +152,32 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A00000000000000000000014 /* MotionUSB.swift in Sources */,
+				BD0000000000000000000000,
+                BD0000000000000000000001,
+                BD0000000000000000000002,
+                BD0000000000000000000003,
+                BD0000000000000000000004,
+                BD0000000000000000000005,
+                BD0000000000000000000006,
+                BD0000000000000000000007,
+                BD0000000000000000000008,
+                BD0000000000000000000009,
+                BD000000000000000000000A,
+                BD000000000000000000000B,
+                BD000000000000000000000C,
+                BD000000000000000000000D,
+                BD000000000000000000000E,
+                BD000000000000000000000F,
+                BD0000000000000000000010,
+                BD0000000000000000000011,
+                BD0000000000000000000012,
+                BD0000000000000000000013,
+                BD0000000000000000000014,
+                BD0000000000000000000015,
+                BD0000000000000000000016,
+                BD0000000000000000000017,
+                BD0000000000000000000018,
+                A00000000000000000000014 /* MotionUSB.swift in Sources */,
 				A00000000000000000000024,
 				A00000000000000000000026,
 				A00000000000000000000030,
@@ -143,6 +218,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N8N9GMMH66;
 				GENERATE_INFOPLIST_FILE = YES;
+                SWIFT_OBJC_BRIDGING_HEADER = RoomTag.h;
+                COREML_CODEGEN_LANGUAGE = Swift;
+                HEADER_SEARCH_PATHS = "$(SRCROOT)/../../vendor/apriltag";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Accept a sensor-stream connection from your development computer.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Use the rear camera and LiDAR to map nearby obstacles and recognize objects.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Stream motion readings to your robot over a USB connection.";
@@ -163,6 +241,9 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N8N9GMMH66;
 				GENERATE_INFOPLIST_FILE = YES;
+                SWIFT_OBJC_BRIDGING_HEADER = RoomTag.h;
+                COREML_CODEGEN_LANGUAGE = Swift;
+                HEADER_SEARCH_PATHS = "$(SRCROOT)/../../vendor/apriltag";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Accept a sensor-stream connection from your development computer.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Use the rear camera and LiDAR to map nearby obstacles and recognize objects.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Stream motion readings to your robot over a USB connection.";

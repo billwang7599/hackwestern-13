@@ -793,6 +793,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func advanceGeneration() {
+        tagCandidate = nil
         epoch = UUID()
         generationLock.lock()
         activeGeneration = wanted ? epoch : nil
@@ -889,7 +890,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
             try sceneQueue.sync { try scene.start(port: 5561) { [weak self] in self?.report($0) } }
             try safetyQueue.sync { try safety.start(port: 5562) { [weak self] in self?.report($0) } }
             try rgbQueue.sync { try rgb.start(port: 5563) { [weak self] in self?.report($0) } }
-            if loadedMap == nil { sessionID = UUID().uuidString; floorY = nil; explicitFloor = false }
+            if loadedMap == nil { roomTag = nil; tagStatus("Room tag unseen"); sessionID = UUID().uuidString; floorY = nil; explicitFloor = false }
             runSession(map: loadedMap)
             loadedMap = nil
         } catch { end(); report("Camera listener: \(error.localizedDescription)") }
@@ -974,6 +975,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
         // No fixed AI-frame timer: submit the newest camera frame whenever the
         // encoder is free. The stream still permits only one unacknowledged
         // packet, and QNX retains only the latest frame for each AI consumer.
+        if tracking == "normal" { scanRoomTag(frame) }
         if !rgbBusy {
             publishRGB(frame: frame, tracking: tracking, id: id, token: token)
         }
@@ -1424,7 +1426,102 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
-    private struct SavedMap: Codable { let session: String; let floor: Float?; let explicitFloor: Bool; let worldMap: Data }
+    // Gravity fixes roll and pitch. Store a wall tag's horizontal normal and
+    // metric position so a correction cannot tilt the floor or change scale.
+    private struct RoomLandmark: Codable {
+        let id: Int32
+        let position: SIMD3<Float>
+        let yaw: Float
+
+        var transform: simd_float4x4 {
+            var t = simd_float4x4(simd_quatf(angle: yaw, axis: SIMD3(0, 1, 0)))
+            t.columns.3 = SIMD4(position, 1)
+            return t
+        }
+        func angle(to other: Self) -> Float {
+            abs(atan2(sin(yaw - other.yaw), cos(yaw - other.yaw)))
+        }
+    }
+
+    @Published private(set) var roomTagStatus = "Room tag unseen"
+    private let tagQueue = DispatchQueue(label: "MotionUSB.roomTag", qos: .utility)
+    private var roomTag: RoomLandmark?
+    private var tagCandidate: RoomLandmark?
+    private var tagBusy = false
+    private var nextTag = -Double.infinity
+    private var tagMessage = ""
+    private func tagStatus(_ message: String) {
+        guard tagMessage != message else { return }
+        tagMessage = message
+        DispatchQueue.main.async { self.roomTagStatus = message }
+    }
+
+    private func scanRoomTag(_ frame: ARFrame) {
+        guard !tagBusy, frame.timestamp >= nextTag else { return }
+        nextTag = frame.timestamp + 0.4
+        tagBusy = true
+        let image = frame.capturedImage, k = frame.camera.intrinsics
+        let camera = frame.camera.transform, token = epoch
+        let preferred = roomTag?.id ?? -1, stamp = frame.timestamp
+        tagQueue.async {
+            var pose = matrix_identity_float4x4
+            var id: Int32 = -1
+            if CVPixelBufferGetPlaneCount(image) >= 1,
+               CVPixelBufferLockBaseAddress(image, .readOnly) == kCVReturnSuccess {
+                if let ptr = CVPixelBufferGetBaseAddressOfPlane(image, 0) {
+                    id = room_tag_detect(ptr.assumingMemoryBound(to: UInt8.self),
+                        Int32(CVPixelBufferGetWidthOfPlane(image, 0)), Int32(CVPixelBufferGetHeightOfPlane(image, 0)),
+                        Int32(CVPixelBufferGetBytesPerRowOfPlane(image, 0)), k.columns.0.x, k.columns.1.y,
+                        k.columns.2.x, k.columns.2.y, preferred, &pose)
+                }
+                CVPixelBufferUnlockBaseAddress(image, .readOnly)
+            }
+            let world = camera * pose, observedID = id
+            self.queue.async {
+                self.tagBusy = false
+                guard self.current(token), self.lastTracking == "normal",
+                      ProcessInfo.processInfo.systemUptime - stamp < 1 else { return }
+                let normal = world.columns.2
+                guard observedID >= 0, hypot(normal.x, normal.z) > 0.85 else {
+                    self.tagCandidate = nil
+                    self.tagStatus(self.roomTag.map { "Looking for tag #\($0.id)" } ?? "Room tag unseen")
+                    return
+                }
+                if let reference = self.roomTag, reference.id != observedID {
+                    self.tagCandidate = nil
+                    self.tagStatus("Saw #\(observedID) · expected #\(reference.id)")
+                    return
+                }
+                let t = world.columns.3
+                let observed = RoomLandmark(id: observedID, position: SIMD3(t.x,t.y,t.z),
+                                            yaw: atan2(normal.x, normal.z))
+                let previous = self.tagCandidate
+                self.tagCandidate = observed
+                guard let previous, previous.id == observedID,
+                      simd_distance(previous.position, observed.position) < 0.06,
+                      previous.angle(to: observed) < 0.08 else { return }
+                guard let reference = self.roomTag else {
+                    self.roomTag = observed
+                    self.tagStatus("Room tag #\(observedID) acquired")
+                    return
+                }
+                let distance = simd_distance(reference.position, observed.position)
+                let angle = reference.angle(to: observed)
+                guard distance < 0.75, angle < 0.52 else {
+                    self.tagStatus("Tag #\(observedID) moved or map misaligned")
+                    return
+                }
+                if distance > 0.06 || angle > 0.06 {
+                    self.session.setWorldOrigin(relativeTransform: observed.transform * reference.transform.inverse)
+                    self.advanceGeneration()
+                    self.nextTag = stamp + 3
+                }
+                self.tagStatus("Room tag #\(observedID) matched")
+            }
+        }
+    }
+
+    private struct SavedMap: Codable { let session: String; let floor: Float?; let explicitFloor: Bool; let worldMap: Data; var tag: RoomLandmark? }
     private var mapURL: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("surroundings-worldmap.json") }
 
     func saveMap(completion: (() -> Void)? = nil) {
@@ -1443,7 +1540,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
                     do {
                         guard let map else { throw error ?? NSError(domain: "Scene", code: 2, userInfo: [NSLocalizedDescriptionKey: "ARKit returned no world map"]) }
                         let data = try NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true)
-                        let saved = SavedMap(session: id, floor: floor, explicitFloor: explicit, worldMap: data)
+                        let saved = SavedMap(session: id, floor: floor, explicitFloor: explicit, worldMap: data, tag: self.roomTag)
                         try JSONEncoder().encode(saved).write(to: self.mapURL, options: .atomic)
                         self.report("World map saved on iPhone; Pi keeps its observation map")
                         if let completion { DispatchQueue.main.async(execute: completion) }
@@ -1460,6 +1557,8 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
                 guard let map = try NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: saved.worldMap) else {
                     throw NSError(domain: "Scene", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid saved map"])
                 }
+                self.roomTag = saved.tag
+                self.tagStatus(saved.tag.map { "Looking for tag #\($0.id)" } ?? "Map has no saved tag")
                 self.sessionID = saved.session; self.floorY = saved.floor; self.explicitFloor = saved.explicitFloor
                 if self.wanted { self.runSession(map: map) } else { self.loadedMap = map }
                 self.report(self.wanted ? "Relocalizing: point rear camera at the saved room" : "Saved map loaded; press Start in the saved room")
@@ -1470,6 +1569,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
 
     func resetMap() {
         queue.async {
+            self.roomTag = nil; self.tagStatus("Room tag unseen")
             self.sessionID = UUID().uuidString; self.floorY = nil; self.explicitFloor = false; self.loadedMap = nil
             if self.wanted { self.runSession(map: nil) } else { self.advanceGeneration() }
             self.report("New map started; saved map remains available to load")

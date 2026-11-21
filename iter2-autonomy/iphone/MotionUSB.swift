@@ -81,6 +81,7 @@ struct MotionUSBApp: App {
                             Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
                             Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
                         }.buttonStyle(.bordered).controlSize(.small)
+                        Text(camera.roomTagStatus).font(.caption2).lineLimit(1)
                         ScrollView {
                             VStack(alignment: .leading, spacing: 5) {
                                 let keys = pi.latestStatus["keyboard"] as? [String: Any]

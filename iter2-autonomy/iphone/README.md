@@ -219,3 +219,11 @@ reason, serial device presence, and Arduino READY count. Last press persists
 across release so a quick tap remains visible at the 5 Hz status update rate.
 A serial node or historical READY count does not prove a working motor or
 wheel movement; there are no encoder measurements in this diagnostic.
+
+### Room recognition with AprilTags
+
+Print [room tag 0](room-tag-0.svg) at actual size and measure the black square from outer edge to outer edge. It should be **160 mm** wide. Keep the white margin. Fix it flat on a vertical wall. For a different room, use a different tag36h11 ID printed at the same black-border width. Leave each marker in its original location.
+
+Start sensors and point the rear camera at the wall tag until the dashboard shows its ID. Once ARKit has mapped the room, **Save map** stores the landmark with the existing iPhone world map and requests the usual Pi map save. **Load map** restores that saved room. Revisit familiar features for ARKit relocalization, then look at the same tag for position and heading correction. The app retains one saved room at a time. Older saves without a landmark still load.
+
+The iPhone runs the vendored AprilRobotics AprilTag 3.4.5 detector offline on a separate serial worker, at most 2.5 observations per second. Two consistent reads are required. Matching a tag can correct translation and yaw after normal tracking resumes. Large discrepancies (at least 75 cm or 30 degrees) are reported for inspection. A different ID does not register a correction. The Pi continues receiving poses and geometry in the room frame.
