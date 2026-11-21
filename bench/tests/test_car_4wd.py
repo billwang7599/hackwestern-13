@@ -7,9 +7,11 @@ tars_motor, with the REAL iter1-wasd/laptop/wheel_cal.py doing the calibration.
 Cars (each on a fresh virtual Uno, so it starts uncalibrated: firmware defaults
 150 mm/s, 120 deg/s, slow 60 deg/s):
   2wd         profiles/sm11_2wd.json  (1 TT motor per side on a caster)
-  4wd         profiles/sm11.json      (2 TT motors per side, tyre scrub, 0.85 kg loaded)
+  4wd         profiles/sm11.json      (2 TT motors per side, tyre scrub, 0.85 kg loaded,
+                                       geometry estimated from the user's photo)
   4wd-light   sm11.json with mass_kg 0.45, scrub_mu 0.2 (bare kit on a slick floor:
               the optimistic case, to show what a 4WD that CAN spin does)
+  4wd-taped   profiles/sm11_taped.json (rear tyres wrapped in tape: reported, not asserted)
 For each: MOVE 500, TURN 90, TURN 90 0.4 (slow) uncalibrated; wheel_cal.py dc-move,
 dc-spin, dc-spin --slow; then MOVE 500, TURN 90, TURN 90 0.4 again. Also the lowest
 battery voltage (on-phase sag) during the first TURN, and whether the Uno reset.
@@ -33,6 +35,7 @@ CARS = [
     ("2wd", "sm11_2wd", {}),
     ("4wd", "sm11", {}),
     ("4wd-light", "sm11", {"mass_kg": 0.45, "scrub_mu": 0.2}),
+    ("4wd-taped", "sm11_taped", {}),
 ]
 
 
@@ -126,7 +129,7 @@ def main() -> int:
     tc.check(four["move_uncal"] < two["move_uncal"] - 20,
              f"4WD uncalibrated MOVE 500 falls shorter than 2WD ({four['move_uncal']:.0f} vs {two['move_uncal']:.0f} mm): more driver drop")
     tc.check(abs(four["turn_uncal"]) < 10 and abs(four["slow_uncal"]) < 10,
-             f"4WD (loaded, mu 0.4): TURN 90 turns {four['turn_uncal']:.1f} deg, slow {four['slow_uncal']:.1f} deg: "
+             f"4WD (loaded, mu 0.4, photo geometry): TURN 90 turns {four['turn_uncal']:.1f} deg, slow {four['slow_uncal']:.1f} deg: "
              "the predicted tyre-scrub stall at the firmware's 0.45/0.36 duty")
     tc.check(four["cal_spin"].startswith("FAILED"),
              f"4WD: wheel_cal.py dc-spin can't calibrate a car that doesn't turn ({four['cal_spin'][:90]})")
@@ -137,8 +140,12 @@ def main() -> int:
     tc.check(abs(lite["turn_cal"] - 90) < 15,
              f"4WD-light after dc-spin: TURN 90 -> {lite['turn_cal']:.1f} deg (tol 15)")
 
+    tp = res["4wd-taped"]
+    print(f"  ..   4wd-taped (reported only): TURN 90 {tp['turn_uncal']:.1f} -> {tp['turn_cal']:.1f} deg after dc-spin "
+          f"({tp['cal_spin'][:70]}); slow {tp['slow_uncal']:.1f} -> {tp['slow_cal']:.1f}")
+
     print("\n  car        MOVE500 unc/cal   TURN90 unc/cal   slow TURN90 unc/cal   batt low in TURN")
-    for n in ("2wd", "4wd", "4wd-light"):
+    for n in ("2wd", "4wd", "4wd-light", "4wd-taped"):
         r = res[n]
         print(f"  {n:<10} {r['move_uncal']:5.0f} / {r['move_cal']:5.0f} mm   {r['turn_uncal']:5.1f} / {r['turn_cal']:5.1f}"
               f"     {r['slow_uncal']:5.1f} / {r['slow_cal']:5.1f}            {r['batt_low']:.2f} V")
