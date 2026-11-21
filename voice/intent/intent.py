@@ -9,6 +9,7 @@ tests/test_intent.py checks they agree on every test sentence (parity).
       -> safety_stop()          stop/halt/freeze (fuzzy) -> S, no matter what else
       -> features() + model     hashed char 2-4 grams + words -> logistic regression
       -> parse_amount()         "ninety", "half a metre", "two steps", "45 degrees"
+      -> find_object()          goto: "the bin" -> "trash can" (objects.txt, embedded in the header)
       -> decide()               Decision(action, lines to send to tars_motor)
 
 Python standard library only at runtime (numpy is only for training, train.py).
@@ -20,7 +21,8 @@ import os
 from dataclasses import dataclass, field
 
 INTENTS = ["forward", "back", "left", "right", "turn_around", "stop",
-           "follow", "gestures", "teach", "spin", "status", "unknown"]
+           "goto", "spin", "status", "unknown"]
+GOTO_PREFIX = "@goto "              # lines for the go-to controller (TCP 5557), not tars_motor
 N_FEAT = 4096                       # hashed feature bins (power of two)
 
 DEFAULT_TURN_DEG = 30
@@ -86,7 +88,7 @@ def edit_distance(a: str, b: str, cap: int = 3) -> int:
 # ---------------------------------------------------------------- wake word
 WAKE_WORDS = {"tars", "tarz", "tar", "tares", "tarr", "stars", "star", "taurus", "torres",
               "tires", "tyres", "tours", "towers", "cars", "tarps", "tass", "tas", "task",
-              "tarts", "tarse", "chars", "dars", "thars", "tahrs", "tarsh", "tarzan"}
+              "tarts", "tarse", "chars", "dars", "thars", "tahrs", "tarsh", "tarzan", "tons", "tones", "tans", "taz", "tarus", "tos"}
 WAKE_LEAD = {"hey", "ok", "okay", "yo", "hi", "uh", "um", "oh", "so", "a"}
 
 
@@ -138,7 +140,8 @@ def fnv1a(data: bytes) -> int:
 
 def features(toks: list[str]) -> dict[int, float]:
     """Hashed char 2..4-grams of ' '+text+' ' plus whole words (prefixed 0x01),
-    counts, L2-normalised. Returns {bin: value}."""
+    counts, L2-normalised, over feature_tokens(toks). Returns {bin: value}."""
+    toks = feature_tokens(toks)
     s = (" " + " ".join(toks) + " ").encode("ascii")
     f: dict[int, float] = {}
     for n in (2, 3, 4):
@@ -191,6 +194,55 @@ def _after_hundred(toks: list[str], j: int, v: int) -> tuple[int, int]:
     return v, j
 
 
+def whole_number(toks: list[str], i: int) -> tuple[float, int] | None:
+    """Number starting at toks[i]: "45", "1.5", "forty five", "one eighty",
+    "one hundred and twenty", "hundred". Returns (value, index after) or None."""
+    n = len(toks)
+    t = toks[i]
+    d = _num_token(t)
+    if d is not None:
+        return d, i + 1
+    if t in ONES or t in TENS:
+        if t in TENS:
+            v, j = TENS[t], i + 1
+            if j < n and toks[j] in ONES and 0 < ONES[toks[j]] < 10:
+                v, j = v + ONES[toks[j]], j + 1
+        else:
+            v, j = ONES[t], i + 1
+            if 0 < v < 10 and j < n and (toks[j] in TENS or toks[j] == "hundred"):
+                if toks[j] == "hundred":
+                    v, j = _after_hundred(toks, j + 1, v * 100)
+                else:                                       # "one eighty" = 180
+                    v, j = v * 100 + TENS[toks[j]], j + 1
+                    if j < n and toks[j] in ONES and 0 < ONES[toks[j]] < 10:
+                        v, j = v + ONES[toks[j]], j + 1
+        if j < n and toks[j] == "hundred" and v < 10:
+            v, j = _after_hundred(toks, j + 1, v * 100)
+        return float(v), j
+    if t == "hundred":
+        v, j = _after_hundred(toks, i + 1, 100)
+        return float(v), j
+    return None
+
+
+def feature_tokens(toks: list[str]) -> list[str]:
+    """Numbers -> one placeholder before featurising, so "turn right one hundred
+    and eighty degrees" looks like "turn right n180 degrees" to the classifier
+    (amounts are the slot parser's job). 180 and 360 keep their own token
+    because they mean turn-around / spin; "oh"/"zero" are left alone."""
+    out, i, n = [], 0, len(toks)
+    while i < n:
+        w = whole_number(toks, i) if toks[i] not in ("oh", "zero") else None
+        if w is None:
+            out.append(toks[i])
+            i += 1
+            continue
+        v, j = w
+        out.append("n180" if v == 180 else "n360" if v == 360 else "num")
+        i = j
+    return out
+
+
 def parse_amount(toks: list[str]) -> tuple[float | None, str | None]:
     """First amount in the sentence -> (value, unit). unit is deg|m|cm|mm|ft|in|step|small|None.
     value None = no amount. 'a bit'/'a little' -> (1, 'small')."""
@@ -201,30 +253,9 @@ def parse_amount(toks: list[str]) -> tuple[float | None, str | None]:
         if t in ("bit", "little", "tad", "smidge") and i > 0 and toks[i - 1] in ("a", "little"):
             return 1.0, "small"
         val, j = None, i
-        d = _num_token(t)
-        if d is not None:
-            val, j = d, i + 1
-        elif t in ONES or t in TENS:
-            v = 0
-            if t in TENS:
-                v, j = TENS[t], i + 1
-                if j < n and toks[j] in ONES and 0 < ONES[toks[j]] < 10:
-                    v, j = v + ONES[toks[j]], j + 1
-            else:
-                v, j = ONES[t], i + 1
-                if 0 < v < 10 and j < n and (toks[j] in TENS or toks[j] in ("hundred",)):
-                    if toks[j] == "hundred":
-                        v, j = _after_hundred(toks, j + 1, v * 100)
-                    else:                                   # "one eighty" = 180
-                        v, j = v * 100 + TENS[toks[j]], j + 1
-                        if j < n and toks[j] in ONES and 0 < ONES[toks[j]] < 10:
-                            v, j = v + ONES[toks[j]], j + 1
-            if j < n and toks[j] == "hundred" and v < 10:
-                v, j = _after_hundred(toks, j + 1, v * 100)
-            val = float(v)
-        elif t == "hundred":
-            v, j = _after_hundred(toks, i + 1, 100)
-            val = float(v)
+        w = whole_number(toks, i)
+        if w is not None:
+            val, j = w
         elif t == "half" or t == "quarter":
             val, j = (0.5 if t == "half" else 0.25), i + 1
             if j < n and toks[j] in ("a", "an"):
@@ -291,6 +322,52 @@ def turn_deg(val: float | None, unit: str | None) -> int:
         return DEFAULT_TURN_DEG
     return min(d, MAX_DEG)
 
+# ---------------------------------------------------------------- objects (goto)
+def load_objects(path: str | None = None) -> list[tuple[str, list[str]]]:
+    """objects.txt -> [(canonical, [canonical, alias, ...])], file order."""
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "objects.txt")
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for ln, line in enumerate(f, 1):
+            line = line.split("#", 1)[0].rstrip()
+            if not line.strip():
+                continue
+            if "\t" not in line:
+                raise ValueError(f"{path}:{ln}: expected canonical<TAB>alias,alias")
+            canon, aliases = line.split("\t", 1)
+            canon = " ".join(canon.lower().split())
+            al = [canon] + [" ".join(a.lower().split()) for a in aliases.split(",") if a.strip()]
+            out.append((canon, al))
+    return out
+
+
+def _tok_match(t: str, a: str) -> bool:
+    if t == a or t == a + "s" or t == a + "es":
+        return True
+    return len(a) >= 5 and edit_distance(t, a, 2) <= 1
+
+
+def find_object(objects, toks: list[str]) -> str | None:
+    """Canonical object named in toks, or None. Longer aliases win (more words
+    first, then file order); a merged token ("trashcan") matches a multi-word
+    alias too."""
+    cands = []
+    for oi, (canon, aliases) in enumerate(objects):
+        for ai, a in enumerate(aliases):
+            cands.append((-len(a.split()), oi, ai, canon, a.split()))
+    cands.sort(key=lambda c: (c[0], c[1], c[2]))
+    for _, _, _, canon, at in cands:
+        k = len(at)
+        for i in range(len(toks) - k + 1):
+            if all(_tok_match(toks[i + j], at[j]) for j in range(k)):
+                return canon
+        if k > 1:
+            joined = "".join(at)
+            if any(t == joined or t == joined + "s" for t in toks):
+                return canon
+    return None
+
+
 # ---------------------------------------------------------------- model + decision
 @dataclass
 class Model:
@@ -298,6 +375,7 @@ class Model:
     b: list[float]
     threshold: float
     stop_threshold: float
+    objects: list = field(default_factory=list)   # [(canonical, [aliases])]
 
 
 def load_model(path: str | None = None) -> Model:
@@ -319,7 +397,11 @@ def load_model(path: str | None = None) -> Model:
     flat = num(wblob)
     assert len(b) == len(INTENTS) and len(flat) == len(INTENTS) * N_FEAT
     W = [flat[k * N_FEAT:(k + 1) * N_FEAT] for k in range(len(INTENTS))]
-    return Model(W, b, thr, sthr)
+    objs = []
+    for canon, al in re.findall(r'\{"([^"]*)", "([^"]*)"\}', re.search(
+            r"intent_objects\[\] = \{(.*?)\n\};", src, re.S).group(1)):
+        objs.append((canon, al.split("|")))
+    return Model(W, b, thr, sthr, objs)
 
 
 def predict(model: Model, toks: list[str]) -> list[float]:
@@ -338,30 +420,30 @@ class Decision:
     intent: str = "-"
     prob: float = 0.0
     wake: bool = False
-    why: str = ""                  # safety | classifier | low_conf | unknown | no_wake | empty
+    why: str = ""                  # safety | classifier | low_conf | unknown | no_object | no_wake | empty
     lines: list[str] = field(default_factory=list)    # to tars_motor, in order
 
 
+CANCEL = GOTO_PREFIX + "CANCEL"
+
+
 def command_lines(intent: str, toks: list[str]) -> list[str]:
+    """Lines in send order. '@goto X' lines go to the go-to controller (5557),
+    the rest to tars_motor (5555). A manual move first cancels any go-to, so
+    the go-to controller's steering doesn't fight (and abort) the move."""
     val, unit = parse_amount(toks)
     if intent == "forward":
-        return [f"MOVE {move_mm(val, unit)}", "BEEP 1"]
+        return [CANCEL, f"MOVE {move_mm(val, unit)}", "BEEP 1"]
     if intent == "back":
-        return [f"MOVE -{move_mm(val, unit)}", "BEEP 1"]
+        return [CANCEL, f"MOVE -{move_mm(val, unit)}", "BEEP 1"]
     if intent == "left":
-        return [f"TURN -{turn_deg(val, unit)}", "BEEP 1"]
+        return [CANCEL, f"TURN -{turn_deg(val, unit)}", "BEEP 1"]
     if intent == "right":
-        return [f"TURN {turn_deg(val, unit)}", "BEEP 1"]
+        return [CANCEL, f"TURN {turn_deg(val, unit)}", "BEEP 1"]
     if intent == "turn_around":
-        return ["TURN 180", "BEEP 1"]
+        return [CANCEL, "TURN 180", "BEEP 1"]
     if intent == "spin":
-        return ["TURN 360", "BEEP 1"]
-    if intent == "follow":
-        return ["MODE follow", "BEEP 1"]
-    if intent == "gestures":
-        return ["MODE gesture", "BEEP 1"]
-    if intent == "teach":
-        return ["MODE teach", "BEEP 1"]
+        return [CANCEL, "TURN 360", "BEEP 1"]
     if intent == "status":
         return ["STATUS", "BEEP 2"]
     return []
@@ -371,7 +453,7 @@ def decide(model: Model, text: str, require_wake: bool = True) -> Decision:
     toks = normalize(text)
     wake, rest = strip_wake(toks)
     if safety_stop(rest, wake):
-        return Decision("stop", "stop", 1.0, wake, "safety", ["S"])
+        return Decision("stop", "stop", 1.0, wake, "safety", ["S", CANCEL])
     if require_wake and not wake:
         return Decision("ignore", wake=wake, why="no_wake")
     if not rest:
@@ -380,10 +462,15 @@ def decide(model: Model, text: str, require_wake: bool = True) -> Decision:
     k = max(range(len(p)), key=lambda i: p[i])
     intent = INTENTS[k]
     if intent == "stop" and p[k] >= model.stop_threshold:
-        return Decision("stop", intent, p[k], wake, "classifier", ["S"])
+        return Decision("stop", intent, p[k], wake, "classifier", ["S", CANCEL])
     if intent == "unknown" or p[k] < model.threshold:
         return Decision("reject", intent, p[k], wake, "unknown" if intent == "unknown" else "low_conf",
                         ["LED no", "BEEP 3"])
+    if intent == "goto":
+        obj = find_object(model.objects, rest)
+        if obj is None:
+            return Decision("reject", intent, p[k], wake, "no_object", ["LED no", "BEEP 3"])
+        return Decision("command", intent, p[k], wake, "classifier", [f"{GOTO_PREFIX}GOTO {obj}", "BEEP 1"])
     return Decision("command", intent, p[k], wake, "classifier", command_lines(intent, rest))
 
 

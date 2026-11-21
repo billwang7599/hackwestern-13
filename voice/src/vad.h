@@ -1,8 +1,9 @@
 /* Energy voice-activity detector: cuts the mic stream into short speech
  * segments so whisper only runs when someone talks (CPU stays ~idle otherwise).
  *
- * Works on 20 ms frames. Tracks the background noise level while quiet;
- * speech starts after start_frames frames louder than floor * ratio (and above
+ * Works on 20 ms frames. Noise floor = the quietest frame of the last 1.5 s
+ * (minimum statistics: pauses between words reach the floor, so it follows
+ * steady fan/crowd noise without a "learn while quiet" deadlock). Speech starts after start_frames frames louder than floor * ratio (and above
  * min_dbfs), ends after hang_ms of quiet, or is cut at max_ms. Keeps pre_ms of
  * audio from before the start so the first syllable ("TARS") isn't clipped.
  * Timing is by sample count, so a WAV file gives the same result every run.
@@ -19,13 +20,16 @@ typedef struct {
     int   start_frames;   /* this many loud frames in a row to start, e.g. 3 (60 ms) */
     int   hang_ms;        /* quiet this long ends the segment, e.g. 400 */
     int   pre_ms;         /* pre-roll kept before the start, e.g. 300 */
-    int   min_ms;         /* drop segments with less speech than this (clicks), e.g. 250 */
+    int   min_ms;         /* drop segments with less speech than this (clicks), e.g. 150 (a short "Stop!" is ~200 ms) */
     int   max_ms;         /* cut segments at this length, e.g. 3000 */
 } vad_cfg_t;
 
 typedef struct {
     vad_cfg_t c;
     double floor;          /* noise power estimate */
+#define VAD_HIST 75            /* 1.5 s of frame energies for the minimum */
+    double hist[VAD_HIST];
+    int    hist_n, hist_pos;
     int    in_speech, loud_run, quiet_run, speech_frames;
     int16_t *ring;         /* pre-roll ring buffer */
     int    ring_n, ring_pos, ring_fill;

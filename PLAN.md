@@ -42,20 +42,21 @@ Running YOLO, MediaPipe and speech together at full rate won't fit. These are es
 | **Teach** | every frame | off | off |
 
 Speech uses `threads=2` and only runs on a ≤3 s segment after voice activity detection, so it's nearly free between commands.
-Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") or the Uno button.
+Voice no longer switches vision modes: follow/gestures/teach were dropped as voice intents. Voice drives the go-to controller instead.
 
 ## Speech: model and classifier
 
 - **Speech-to-text model:** [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with **`ggml-tiny.en-q5_1.bin`** (~31 MB, English only).
   It's pure C/C++, so it builds with QNX `qcc`. It's downloaded by `voice/get_model.sh` and not committed.
   - Fallback if accuracy is poor: `ggml-base.en-q5_1.bin` (~57 MB, roughly 2–3× slower).
-  - The prompt is biased toward the command vocabulary ("TARS, forward, back, left, right, stop, …").
-- **Wake word:** "TARS …" by default, so crowd noise doesn't trigger moves.
+  - The prompt is a plain vocabulary list ("forward, back, left, right, stop, …, trash can, chair …"). A prompt full of "TARS, turn left." made tiny.en hallucinate "TARS, turn." on a bare "TARS".
+- **Wake word:** "TARS …" by default, so crowd noise doesn't trigger moves. It's fuzzy ("Stars", "Tires", "Tons"…), carries over a pause ("TARS" … "turn left"), and a press of the **Uno button** = 4 s of listening with no wake word (best fix for a loud floor).
+- **Everything on the robot is C** (QNX native): io-audio capture, VAD, whisper.cpp, intent inference, slot/object parser, TCP clients. Python is only for training, `try.py` and tests.
 - **Text → control classifier** (`voice/intent/`): whisper's output is noisy ("for word", "turn lift"), so text goes through a small trained classifier instead of exact string matching.
-  1. **Safety pass first:** anything fuzzy-matching *stop / halt / freeze / no* sends `S` immediately. The classifier can't override it.
+  1. **Safety pass first:** anything fuzzy-matching *stop / halt / freeze / whoa* (or, after the wake word, *no / wait / hold on…*) sends `S` to `tars_motor` and `CANCEL` to the go-to controller. The classifier can't override it.
   2. **Intent classifier:** character n-gram features with a linear model (logistic regression). It's trained in Python on generated paraphrases plus simulated whisper mistakes, and the weights are exported to a C header, so it runs in microseconds on QNX with no ML runtime.
-     Intents: `forward, back, left, right, turn_around, stop, follow, gestures, teach, spin, status, unknown`.
-  3. **Slots:** a number parser ("ninety", "half a metre", "two steps") turns the intent into `TURN ±deg` or `MOVE ±mm`.
+     Intents: `forward, back, left, right, turn_around, stop, goto, spin, status, unknown`. Phrases live in `voice/intent/phrases.txt`; retrain with `python3 voice/intent/train.py`.
+  3. **Slots:** a number parser ("ninety", "half a metre", "two steps") turns the intent into `TURN ±deg` or `MOVE ±mm`. For `goto`, an object parser maps synonyms to the canonical list in `voice/intent/objects.txt` ("bin" → `trash can`). Then `GOTO <object>` goes to TCP 5557. An unknown object gets `LED no` + `BEEP 3`. A manual `MOVE`/`TURN` sends `CANCEL` to 5557 first.
   4. **Confidence cutoff:** below the threshold the robot does nothing, then `LED no` + `BEEP 3`. A recognised command gets `BEEP 1`.
 
 ## Status
@@ -65,7 +66,7 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 | Uno stepper firmware, `tars_motor`, WASD teleop, `docs/PI_TEST.md` | `stepper-wheels` (GitHub) | Mac tests pass. **Not run on hardware yet.** |
 | MediaPipe gestures + follow mode | `stepper-wheels` (GitHub) | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
 | Teach-a-gesture on the spot | `kothar/learn-gesture` (local only) | Mac tests pass. Not merged. |
-| Speech + intent classifier | `kothar/voice-stt` (local, in progress) | Being built. |
+| Speech + intent classifier | `kothar/voice-stt` (local, not pushed) | **Mac tests pass; not built or run on QNX/Pi yet.** Classifier: 88.5% on unseen phrasings (cautious: 1.3% wrong, 40% "say again"), 107/109 realistic transcripts with 0 wrong moves, stop recall 100%, Python=C parity. End to end (macOS `say` → whisper tiny.en → real `tars_motor` stub): clean 21/21 ×2 voices, white noise 20 dB 18/21 ×2, crowd chatter 15 dB ~4/21 (never a wrong move). whisper 153 ms/command on M4 (Pi est. 0.6–1.2 s). Next: `voice/qnx/mic_test` on the Pi, then the QNX build. Use a close-talk mic or the Uno talk button on the demo floor. |
 | Python bridge (no QNX build) | `kothar/py-bridge` (local, in progress) | Being built. |
 | YOLO go-to-object | `kothar/goto` (local, in progress) | Being built. The teammate's YOLO plugs in via the detection interface. |
 | Goalie / balancer experiments | `goalie/`, `balancer/` | Parked. Don't touch. |

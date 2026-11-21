@@ -16,5 +16,7 @@ stt_t *stt_init(const stt_cfg_t *c);
 /* Transcribe 16 kHz mono samples. Returns 0 and fills text. */
 int  stt_run(stt_t *s, const int16_t *pcm, int n, char *text, int len);
 void stt_free(stt_t *s);
+/* Cut a whisper repeat loop at the first repeated sentence (in place). */
+void stt_dedupe(char *text);
 
 #endif

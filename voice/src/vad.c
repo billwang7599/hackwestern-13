@@ -14,7 +14,7 @@ void vad_defaults(vad_cfg_t *c)
     c->start_frames = 3;
     c->hang_ms = 400;
     c->pre_ms = 300;
-    c->min_ms = 250;
+    c->min_ms = 150;
     c->max_ms = 3000;
 }
 
@@ -71,12 +71,18 @@ int vad_push(vad_t *v, const int16_t *f, const int16_t **seg, int *n)
     e /= VAD_FRAME;
     v->last_dbfs = (float)(10.0 * log10(e + 1e-12));
     v->frames++;
-    int loud = e > v->floor * v->c.ratio && v->last_dbfs > v->c.min_dbfs;
 
+    /* minimum statistics: floor = quietest frame in the last 1.5 s, smoothed upward */
+    v->hist[v->hist_pos] = e;
+    v->hist_pos = (v->hist_pos + 1) % VAD_HIST;
+    if (v->hist_n < VAD_HIST) v->hist_n++;
+    double mn = v->hist[0];
+    for (int i = 1; i < v->hist_n; i++) if (v->hist[i] < mn) mn = v->hist[i];
+    if (mn < MIN_FLOOR) mn = MIN_FLOOR;
+    v->floor = mn < v->floor ? mn : 0.9 * v->floor + 0.1 * mn;
+
+    int loud = e > v->floor * v->c.ratio && v->last_dbfs > v->c.min_dbfs;
     if (!v->in_speech) {
-        /* learn the room while quiet: fast down, slow up */
-        if (!loud) v->floor = e < v->floor ? 0.8 * v->floor + 0.2 * e : 0.98 * v->floor + 0.02 * e;
-        if (v->floor < MIN_FLOOR) v->floor = MIN_FLOOR;
         v->loud_run = loud ? v->loud_run + 1 : 0;
         if (v->loud_run >= v->c.start_frames) {
             /* start: pre-roll (which already holds the first loud frames) + this frame */

@@ -41,7 +41,12 @@ def check(cond: bool, what: str) -> None:
 
 
 def first_line(d: I.Decision) -> str:
-    return d.lines[0] if d.lines else "-"
+    """First real command: skips the "@goto CANCEL" that precedes manual moves,
+    and drops the "@goto " routing prefix ("GOTO chair")."""
+    for l in d.lines:
+        if l != I.CANCEL:
+            return l[len(I.GOTO_PREFIX):] if l.startswith(I.GOTO_PREFIX) else l
+    return "-"
 
 
 # ------------------------------------------------------------------ 1. units
@@ -64,6 +69,19 @@ def test_units(m: I.Model) -> None:
         check(not I.strong_stop_word(w), f"not strong stop {w}")
     check(I.safety_stop(["no"], True) and not I.safety_stop(["no"], False), "'no' needs the wake word")
     check(I.safety_stop(["please", "stop"], False), "'stop' works without wake word")
+    objs = I.load_objects()
+    names = [c for c, _ in objs]
+    for want in ("trash can", "chair", "person", "backpack", "water bottle", "door", "table", "laptop", "cup", "box"):
+        check(want in names, f"object {want} in objects.txt")
+    check(I.find_object(objs, ["the", "garbage", "can"]) == "trash can", "multi-word alias beats 'can'")
+    check(I.find_object(objs, ["water", "bottle"]) == "water bottle", "water bottle, not just water")
+    check(I.find_object(objs, ["coffee", "cup"]) == "cup", "coffee cup -> cup")
+    check(I.find_object(objs, ["the", "kitchen"]) is None, "unknown object -> None")
+    check(I.decide(m, "tars go to the chair").lines == [I.GOTO_PREFIX + "GOTO chair", "BEEP 1"], "goto lines")
+    check(I.decide(m, "tars stop").lines == ["S", I.CANCEL], "stop: S to tars_motor + CANCEL to go-to")
+    check(I.decide(m, "tars go forward").lines[0] == I.CANCEL, "manual move cancels go-to first")
+    d = I.decide(m, "tars go to the kitchen")
+    check(d.action == "reject" and d.why == "no_object" and d.lines == ["LED no", "BEEP 3"], f"unknown object rejected {d}")
 
     slot_cases = {
         "tars go forward": "MOVE 300", "tars go back": "MOVE -300",
@@ -83,8 +101,16 @@ def test_units(m: I.Model) -> None:
         "tars go back to meters": "MOVE -1000", "tars move forward 100 millimeters": "MOVE 100",
         "tars go forward three hundred millimeters": "MOVE 300", "tars go back a hundred": "MOVE -1000",
         "tars turn around": "TURN 180", "tars spin around": "TURN 180", "tars do a full spin": "TURN 360",
-        "tars follow me": "MODE follow", "tars gesture mode": "MODE gesture",
-        "tars learn a new gesture": "MODE teach", "tars status": "STATUS",
+        "tars status": "STATUS",
+        "tars go to the trash can": "GOTO trash can", "tars drive to the chair": "GOTO chair",
+        "tars find the door": "GOTO door", "tars head over to that bin": "GOTO trash can",
+        "tars go to the garbage": "GOTO trash can", "tars go to the trashcan": "GOTO trash can",
+        "tars go to the garbage can": "GOTO trash can", "tars find the water bottle": "GOTO water bottle",
+        "tars go to the bottle": "GOTO water bottle", "tars find my back pack": "GOTO backpack",
+        "tars go to the backpack": "GOTO backpack", "tars go to the computer": "GOTO laptop",
+        "tars go to the desk": "GOTO table", "tars find a mug": "GOTO cup", "tars go to the boxes": "GOTO box",
+        "tars go to that guy": "GOTO person", "tars go to the chare": "GOTO chair",
+        "tars go to the kitchen": "LED no", "tars find the giraffe": "LED no",
     }
     for text, want in slot_cases.items():
         d = I.decide(m, text)
@@ -126,7 +152,7 @@ def evaluate(m: I.Model, rows) -> None:
         row = sum(conf[i])
         lines.append(f"| {name} | {row} | {tp / col if col else 0:.2f} | {tp / row if row else 0:.2f} |")
     lines.append(f"| **all** | **{n}** | | **accuracy {acc:.3f}** |")
-    short = ["fwd", "back", "left", "right", "around", "stop", "follow", "gest", "teach", "spin", "status", "unk"]
+    short = ["fwd", "back", "left", "right", "around", "stop", "goto", "spin", "status", "unk"]
     cm = ["| true \\ predicted | " + " | ".join(short) + " |", "|---" * (K + 1) + "|"]
     for i in range(K):
         cm.append(f"| **{short[i]}** | " + " | ".join(str(conf[i][j]) if conf[i][j] else "·" for j in range(K)) + " |")
@@ -158,7 +184,7 @@ def test_realistic(m: I.Model):
         got = d.intent if d.action in ("command", "stop") else d.action
         ok = (got == want or (want == "reject" and d.action in ("reject", "ignore"))) and (cmd == "-" or first_line(d) == cmd)
         good += ok
-        moved = any(l.startswith(("MOVE", "TURN", "MODE")) for l in d.lines)
+        moved = any(l.startswith(("MOVE", "TURN", I.GOTO_PREFIX + "GOTO")) for l in d.lines)
         if moved and not ok:
             wrong_motion += 1
             print(f"  WRONG MOTION {text!r}: want {want} {cmd}, got {d.lines}")
@@ -173,14 +199,14 @@ def test_realistic(m: I.Model):
 # ------------------------------------------------------------------ 4. stop recall
 def test_stop_recall(m: I.Model, gen_rows, real_rows):
     stops = [t for t, c, _ in gen_rows if c == "stop"] + [r[0] for r in real_rows if r[1] == "stop"]
-    missed = [t for t in stops if I.decide(m, t).lines != ["S"]]
+    missed = [t for t in stops if I.decide(m, t).lines != ["S", I.CANCEL]]
     for t in missed[:10]:
         print(f"  STOP MISSED: {t!r}")
     print(f"stop recall: {len(stops) - len(missed)}/{len(stops)}")
     check(not missed, f"stop recall 100% ({len(stops) - len(missed)}/{len(stops)})")
     # and stop words inside other sentences still stop
-    for t in ("tars go forward stop", "TARS turn left no stop", "stars, follow me. STOP!", "forward stop"):
-        check(I.decide(m, t).lines == ["S"], f"stop wins in {t!r}")
+    for t in ("tars go forward stop", "TARS turn left no stop", "stars, go to the chair. STOP!", "forward stop"):
+        check(I.decide(m, t).lines[0] == "S", f"stop wins in {t!r}")
     return len(stops), len(missed)
 
 

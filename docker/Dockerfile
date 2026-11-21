@@ -5,7 +5,7 @@ FROM --platform=linux/amd64 ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential make bear git ca-certificates \
+        build-essential make cmake bear git ca-certificates \
         openssh-client rsync file less python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
 

@@ -1,18 +1,20 @@
 # TARS voice: training phrases for the intent classifier.
 #
 # Format: one phrase per line,   intent<TAB>phrase
-#   - intents: forward back left right turn_around stop follow gestures teach spin status unknown
+#   - intents: forward back left right turn_around stop goto spin status unknown
 #   - write it the way a person says it, WITHOUT the wake word ("TARS, ..." is added automatically)
 #   - lowercase, no punctuation needed; train.py adds capitals, punctuation and whisper mistakes
 #   - {n} = a turn amount ("90", "forty five degrees", "a bit" ...)
 #   - {d} = a distance   ("half a metre", "two steps", "50 centimeters" ...)
+#   - {o} = an object from objects.txt ("trash can", "bin", "chair" ...)
 #   - '#' starts a comment. A phrase may only be listed under ONE intent (train.py checks).
 #
 # After editing:   python3 voice/intent/train.py      (retrains, rewrites intent_model.h, runs the tests)
 # Try it:          python3 voice/intent/try.py
 #
-# About 1 in 5 phrases (picked by a fixed hash) is held out of training and used
-# to measure accuracy on phrasings the model has never seen.
+# About 1 in 5 phrases of 2+ words (picked by a fixed hash) is held out of
+# training and used to measure accuracy on phrasings the model has never seen.
+# One-word phrases are always trained on.
 
 # ---------------------------------------------------------------- forward -> MOVE +mm (default 300)
 forward	forward
@@ -108,6 +110,8 @@ left	turn to the left
 left	left turn
 left	to your left
 left	to the left
+left	go to the left
+left	go to your left
 left	veer left
 left	bear left
 left	hang a left
@@ -142,6 +146,8 @@ right	turn to the right
 right	right turn
 right	to your right
 right	to the right
+right	go to the right
+right	go to your right
 right	veer right
 right	bear right
 right	hang a right
@@ -233,69 +239,115 @@ stop	emergency stop
 stop	stop driving
 stop	okay stop
 
-# ---------------------------------------------------------------- follow -> MODE follow
-follow	follow me
-follow	follow
-follow	follow mode
-follow	come with me
-follow	track me
-follow	follow my hand
-follow	start following
-follow	follow me please
-follow	chase me
-follow	keep up with me
-follow	follow along
-follow	switch to follow mode
-follow	follow my hand please
-follow	tail me
-follow	come follow me
-follow	go into follow mode
-follow	follow the hand
-follow	you follow me
-follow	stick with me
+# ---------------------------------------------------------------- goto -> "GOTO <object>" to the go-to controller (TCP 5557)
+# {o} = an object; train.py fills it from objects.txt (and with things NOT in
+# objects.txt, so "go to the kitchen" is still goto -> "don't know that object").
+goto	go to the {o}
+goto	go to {o}
+goto	drive to the {o}
+goto	drive over to the {o}
+goto	head to the {o}
+goto	head over to the {o}
+goto	head over to that {o}
+goto	go over to the {o}
+goto	go over to that {o}
+goto	move to the {o}
+goto	roll to the {o}
+goto	find the {o}
+goto	find a {o}
+goto	find me the {o}
+goto	find my {o}
+goto	find my backpack
+goto	go to the back pack
+goto	find my bag
+goto	go to my {o}
+goto	go get my {o}
+goto	where's my {o}
+goto	go find the {o}
+goto	go find a {o}
+goto	look for the {o}
+goto	search for the {o}
+goto	where is the {o}
+goto	take me to the {o}
+goto	bring me to the {o}
+goto	navigate to the {o}
+goto	approach the {o}
+goto	go up to the {o}
+goto	get to the {o}
+goto	go toward the {o}
+goto	go towards the {o}
+goto	drive up to that {o}
+goto	can you go to the {o}
+goto	please go to the {o}
+goto	visit the {o}
+goto	seek the {o}
+goto	hunt down the {o}
+goto	locate the {o}
+goto	go to that {o} over there
+goto	the {o} go there
 
-# ---------------------------------------------------------------- gestures -> MODE gesture
-gestures	gestures
-gestures	gesture mode
-gestures	gesture control
-gestures	watch my hand
-gestures	watch my hands
-gestures	back to gestures
-gestures	use gestures
-gestures	hand signals
-gestures	switch to gestures
-gestures	gesture
-gestures	no more following
-gestures	hand control
-gestures	go to gesture mode
-gestures	listen to my hands
-gestures	use hand signals
-gestures	gestures please
-gestures	normal mode
-gestures	switch to gesture mode
-gestures	back to gesture mode
-gestures	look at my hand
-
-# ---------------------------------------------------------------- teach -> MODE teach
-teach	teach
-teach	learn
-teach	learn this
-teach	teach mode
-teach	remember this
-teach	learn a new gesture
-teach	watch this
-teach	let me teach you
-teach	learn a gesture
-teach	new gesture
-teach	teach you a gesture
-teach	learn this sign
-teach	i will teach you
-teach	teaching mode
-teach	record a gesture
-teach	learn this pose
-teach	learn something new
-teach	start learning
-teach	memorize this
+# ---------------------------------------------------------------- retired intents -> unknown
+# follow / gestures / teach were dropped as voice intents (MediaPipe is on the
+# back burner). Their phrases stay here as "unknown" so they're rejected safely
+# (LED no + BEEP 3) instead of being mistaken for a move.
+unknown	follow me
+unknown	follow
+unknown	follow mode
+unknown	come with me
+unknown	track me
+unknown	follow my hand
+unknown	start following
+unknown	follow me please
+unknown	chase me
+unknown	keep up with me
+unknown	follow along
+unknown	switch to follow mode
+unknown	follow my hand please
+unknown	tail me
+unknown	come follow me
+unknown	go into follow mode
+unknown	follow the hand
+unknown	you follow me
+unknown	stick with me
+unknown	gestures
+unknown	gesture mode
+unknown	gesture control
+unknown	watch my hand
+unknown	watch my hands
+unknown	back to gestures
+unknown	use gestures
+unknown	hand signals
+unknown	switch to gestures
+unknown	gesture
+unknown	no more following
+unknown	hand control
+unknown	go to gesture mode
+unknown	listen to my hands
+unknown	use hand signals
+unknown	gestures please
+unknown	normal mode
+unknown	switch to gesture mode
+unknown	back to gesture mode
+unknown	look at my hand
+unknown	teach
+unknown	learn
+unknown	learn this
+unknown	teach mode
+unknown	remember this
+unknown	learn a new gesture
+unknown	watch this
+unknown	let me teach you
+unknown	learn a gesture
+unknown	new gesture
+unknown	teach you a gesture
+unknown	learn this sign
+unknown	i will teach you
+unknown	teaching mode
+unknown	record a gesture
+unknown	learn this pose
+unknown	learn something new
+unknown	start learning
+unknown	memorize this
 
 # ---------------------------------------------------------------- spin -> TURN 360
 spin	spin
@@ -390,6 +442,14 @@ unknown	i like your robot
 unknown	is that a raspberry pi
 unknown	what language is this
 unknown	turn
+unknown	turn turn
+unknown	turn the
+unknown	go to
+unknown	go to the
+unknown	find
+unknown	the
+unknown	and
+unknown	move it move it
 unknown	move
 unknown	can you dance
 unknown	sing a song

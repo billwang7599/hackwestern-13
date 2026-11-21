@@ -1,0 +1,22 @@
+# Objects the robot can "go to" (voice intent `goto`), for YOLO go-to.
+#
+# Format: canonical<TAB>alias,alias,...   ('#' = comment)
+#   - canonical is what voice sends to the go-to controller: "GOTO <canonical>"
+#   - aliases are what people (and whisper) say; the canonical name always matches too
+#   - lowercase; multi-word aliases are fine ("garbage can"); plurals and 1-letter
+#     typos of words with 5+ letters match automatically
+#
+# Also lists a few whisper mishearings ("share" for chair); keep those, they're on purpose.
+# Keep in sync with goto/objects.txt (branch kothar/goto); same format, so you can copy it.
+# After editing: python3 voice/intent/train.py   (embeds the list in intent_model.h for the C code)
+
+trash can	trash ken,trash kin,bin,trash,garbage,garbage can,garbage bin,trash bin,trashcan,rubbish,rubbish bin,waste bin,wastebasket,recycling,recycling bin,dustbin
+chair	seat,stool,chairs,share,cheer,chare
+person	human,someone,somebody,guy,man,woman,people,teammate,judge,him,her
+backpack	back pack,bag,rucksack,knapsack,school bag
+water bottle	bottel,bottle,water,flask,drink bottle
+door	doorway,exit,entrance,the way out
+table	desk,bench,counter
+laptop	computer,notebook,macbook,lap top,pc
+cup	mug,coffee cup,coffee,glass
+box	cardboard box,package,crate,carton

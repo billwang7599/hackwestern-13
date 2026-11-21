@@ -129,6 +129,13 @@ def export_header(path, W, b, thr, stop_thr, info: str):
         f.write(f"#define INTENT_THRESHOLD {thr:.2f}f\n#define INTENT_STOP_THRESHOLD {stop_thr:.2f}f\n\n")
         f.write("static const char *const intent_names[INTENT_N] = {"
                 + ", ".join(f'"{n}"' for n in I.INTENTS) + "};\n\n")
+        objs = I.load_objects()
+        f.write("/* goto objects from objects.txt: canonical, '|'-separated aliases (canonical first) */\n")
+        f.write("typedef struct { const char *canon, *aliases; } intent_object_t;\n")
+        f.write("static const intent_object_t intent_objects[] = {\n")
+        for canon, al in objs:
+            f.write(f'    {{"{canon}", "{"|".join(al)}"}},\n')
+        f.write("};\n#define INTENT_N_OBJECTS " + str(len(objs)) + "\n\n")
         f.write("static const float intent_b[INTENT_N] = {" + ", ".join(cfloat(v, ".6g") for v in br) + "};\n\n")
         f.write("static const float intent_W[INTENT_N][INTENT_N_FEAT] = {\n")
         for k in range(K):
@@ -143,8 +150,9 @@ def main():
     t0 = time.time()
     try:
         gen_data.load_phrases()
+        I.load_objects()
     except ValueError as e:
-        sys.exit(f"phrases.txt has problems, fix them and rerun:\n{e}")
+        sys.exit(f"phrases.txt / objects.txt has problems, fix them and rerun:\n{e}")
     rows = gen_data.generate(30, seed=13)
     train_rows = [(t, I.INTENTS.index(c)) for t, c, s in rows if s == "train"]
     random.Random(1).shuffle(train_rows)

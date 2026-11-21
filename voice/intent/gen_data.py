@@ -25,7 +25,12 @@ import os
 
 PHRASES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phrases.txt")
 INTENT_NAMES = ["forward", "back", "left", "right", "turn_around", "stop",
-                "follow", "gestures", "teach", "spin", "status", "unknown"]
+                "goto", "spin", "status", "unknown"]
+# goto templates: {o} is filled with an alias from objects.txt (most of the
+# time) or with a thing that's NOT in the list (still intent goto; the robot then
+# says "don't know that object" with LED no + BEEP 3).
+NOT_OBJECTS = ["kitchen", "window", "wall", "stairs", "car", "tree", "plant", "couch", "fridge",
+               "printer", "sign", "stage", "corner", "lamp", "phone", "whiteboard", "elevator", "moon"]
 
 
 def load_phrases(path: str = PHRASES) -> dict[str, list[str]]:
@@ -76,7 +81,7 @@ DIST_AMOUNTS = ["a meter", "one meter", "half a metre", "half a meter", "two ste
 
 WAKE = ["tars", "TARS,", "Tars,", "Tars.", "TARS.", "hey tars", "hey TARS,", "okay tars",
         "Stars,", "stars", "Cars,", "cars", "tires", "Taurus,", "tar's", "Tarz,", "Tars!",
-        "towers", "tours"]
+        "towers", "tours", "Tons,", "Tones,"]
 
 HOMO = {
     "forward": ["for word", "four word", "foreword", "forwards", "for ward", "foward", "forword"],
@@ -92,7 +97,17 @@ HOMO = {
     "stop": ["stopped", "stops", "stob", "stopping", "stap", "stahp"],
     "halt": ["halts", "hault", "halted"],
     "freeze": ["freezes", "frees", "breeze", "frieze"],
-    "teach": ["teeth", "peach", "teaches", "each"],
+    "chair": ["share", "cheer", "chairs", "chare"],
+    "trash": ["trish", "crash", "trashcan"],
+    "bottle": ["bottel", "battle", "model"],
+    "laptop": ["lap top", "laptops"],
+    "backpack": ["back pack", "backpacks"],
+    "box": ["bocks", "boxes", "fox"],
+    "door": ["dour", "doors", "the door"],
+    "table": ["tables", "cable"],
+    "cup": ["cop", "cups"],
+    "bin": ["been", "ben", "bean"],
+    "find": ["fine", "found", "fined"],
     "status": ["stratus", "state us", "statues"],
     "gestures": ["gesture", "just yours", "jesters", "gestured"],
     "gesture": ["jester", "gestures"],
@@ -105,6 +120,8 @@ HOMO = {
     "meter": ["metre", "meters", "metal"],
     "ninety": ["90", "nineteen"],
 }
+KEY_WORDS = {"left", "right", "back", "forward", "forwards", "spin", "around", "round", "to",
+             "find", "status", "report", "circle", "reverse", "backwards", "backward", "ahead"}
 FILLERS = ["uh", "um", "please", "now", "okay", "so", "like", "just", "hey", "can you", "could you"]
 # For the stop class: damage that keeps a stop word recognisable (whisper rarely
 # mangles "stop" further than this; the safety pass must catch all of them).
@@ -113,10 +130,27 @@ STOP_DAMAGE = {"stop": ["stop", "Stop!", "stopped", "stops", "stob", "stopping",
 
 
 def split_of(intent: str, template: str) -> str:
+    if len(template.split()) == 1:
+        return "train"            # single words are the core vocabulary: always learn them
     return "test" if zlib.crc32(f"{intent}|{template}".encode()) % 5 == 0 else "train"
 
 
+_OBJECTS: list[list[str]] = []
+
+
+def random_object(rng: random.Random) -> str:
+    """Pick an object uniformly, then one of its names (so every object is seen
+    equally often, however many aliases it has)."""
+    if not _OBJECTS:
+        import intent as I
+        _OBJECTS.extend(al for _, al in I.load_objects())
+    return rng.choice(rng.choice(_OBJECTS))
+
+
 def fill(t: str, rng: random.Random) -> str:
+    if "{o}" in t:
+        o = random_object(rng) if rng.random() < 0.8 else rng.choice(NOT_OBJECTS)
+        t = t.replace("{o}", o)
     if "{n}" in t:
         t = t.replace("{n}", rng.choice(TURN_AMOUNTS))
     if "{d}" in t:
@@ -152,9 +186,11 @@ def damage(text: str, intent: str, rng: random.Random, level: float) -> str:
             continue
         out.append(w)
     # drop a filler-ish word (never the only word, never a stop word)
+    # (only in 3+ word phrases, never a key word: dropping "around" from "turn
+    # around" would teach the model that a bare "turn" means turn around)
     if len(out) > 2 and rng.random() < 0.12 * level and intent != "stop":
         k = rng.randrange(len(out))
-        if out[k].lower() not in ("left", "right", "back", "forward", "follow", "spin", "teach"):
+        if out[k].lower().strip(",.") not in KEY_WORDS:
             out.pop(k)
     # merge two words
     if len(out) >= 2 and rng.random() < 0.06 * level and intent != "stop":
@@ -192,6 +228,8 @@ def generate(per_template: int = 30, seed: int = 13) -> list[tuple[str, str, str
         for t in temps:
             sp = split_of(intent, t)
             n = per_template if intent not in ("unknown",) else per_template // 2
+            if len(t.split()) == 1 and intent == "unknown":
+                n *= 3                 # bare "turn", "move", "what": easily outvoted by "turn left" etc.
             for _ in range(n):
                 level = rng.choice([0.0, 0.5, 1.0, 1.0, 1.5])
                 s = damage(fill(t, rng), intent, rng, level)

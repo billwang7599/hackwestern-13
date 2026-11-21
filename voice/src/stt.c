@@ -82,7 +82,47 @@ int stt_run(stt_t *s, const int16_t *pcm, int n, char *text, int len)
     while (*b == ' ') b++;
     memmove(text, b, strlen(b) + 1);
     for (int k = (int)strlen(text) - 1; k >= 0 && text[k] == ' '; k--) text[k] = '\0';
+    stt_dedupe(text);
     return 0;
+}
+
+/* Whisper (tiny, noisy input, short window) sometimes loops: "TARS, turn. Go
+ * back half a meter. TARS, turn. TARS, turn. ..." Cut the text at the first
+ * sentence that repeats an earlier one (compared lowercase, letters/digits only). */
+static void key_of(const char *a, const char *b, char *k, int kl)
+{
+    int o = 0;
+    for (const char *p = a; p < b && o < kl - 1; p++) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) k[o++] = c;
+    }
+    k[o] = '\0';
+}
+
+void stt_dedupe(char *text)
+{
+    enum { MAXS = 16 };
+    char keys[MAXS][96];
+    int ns = 0;
+    char *start = text;
+    for (char *p = text;; p++) {
+        if (*p == '.' || *p == '!' || *p == '?' || *p == '\0') {
+            char k[96];
+            key_of(start, p, k, sizeof k);
+            if (k[0]) {
+                for (int i = 0; i < ns; i++)
+                    if (!strcmp(keys[i], k)) {
+                        while (start > text && start[-1] == ' ') start--;
+                        *start = '\0';
+                        return;
+                    }
+                if (ns < MAXS) snprintf(keys[ns++], sizeof keys[0], "%s", k);
+            }
+            if (*p == '\0') return;
+            start = p + 1;
+        }
+    }
 }
 
 void stt_free(stt_t *s)

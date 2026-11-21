@@ -94,7 +94,7 @@ static int edit_distance(const char *a, const char *b, int cap)
 static const char *const WAKE_WORDS[] = {
     "tars", "tarz", "tar", "tares", "tarr", "stars", "star", "taurus", "torres", "tires", "tyres",
     "tours", "towers", "cars", "tarps", "tass", "tas", "task", "tarts", "tarse", "chars", "dars",
-    "thars", "tahrs", "tarsh", "tarzan", NULL };
+    "thars", "tahrs", "tarsh", "tarzan", "tons", "tones", "tans", "taz", "tarus", "tos", NULL };
 static const char *const WAKE_LEAD[] = { "hey", "ok", "okay", "yo", "hi", "uh", "um", "oh", "so", "a", NULL };
 
 int intent_is_wake(const char *t)
@@ -150,8 +150,12 @@ static unsigned fnv1a(const unsigned char *p, int n, int prefix)
     return h;
 }
 
-void intent_probs(char **toks, int n, float *probs)
+static int feature_tokens(char **toks, int n, char **out, int max);
+
+void intent_probs(char **in_toks, int in_n, float *probs)
 {
+    char *toks[MAX_TOKS];
+    int n = feature_tokens(in_toks, in_n, toks, MAX_TOKS);
     /* s = " " + join(toks, " ") + " " */
     char s[512];
     int L = 0;
@@ -245,6 +249,57 @@ static int after_hundred(char **toks, int n, int j, int v, int *jout)
     return v;
 }
 
+/* Number starting at toks[i] ("45", "1.5", "forty five", "one eighty",
+ * "one hundred and twenty", "hundred") -> 1, *val, *jout = index after it. */
+static int whole_number(char **toks, int n, int i, double *val, int *jout)
+{
+    const char *t = toks[i];
+    double d;
+    int j, v;
+    if (num_token(t, &d)) { *val = d; *jout = i + 1; return 1; }
+    int o = lookup(ONES, t), te = lookup(TENS, t);
+    if (o >= 0 || te >= 0) {
+        if (te >= 0) {
+            v = te; j = i + 1;
+            int o2 = j < n ? lookup(ONES, toks[j]) : -1;
+            if (o2 > 0 && o2 < 10) { v += o2; j++; }
+        } else {
+            v = o; j = i + 1;
+            if (v > 0 && v < 10 && j < n && (lookup(TENS, toks[j]) >= 0 || !strcmp(toks[j], "hundred"))) {
+                if (!strcmp(toks[j], "hundred")) v = after_hundred(toks, n, j + 1, v * 100, &j);
+                else {
+                    v = v * 100 + lookup(TENS, toks[j]); j++;
+                    int o2 = j < n ? lookup(ONES, toks[j]) : -1;
+                    if (o2 > 0 && o2 < 10) { v += o2; j++; }
+                }
+            }
+        }
+        if (j < n && !strcmp(toks[j], "hundred") && v < 10) v = after_hundred(toks, n, j + 1, v * 100, &j);
+        *val = v; *jout = j;
+        return 1;
+    }
+    if (!strcmp(t, "hundred")) { *val = after_hundred(toks, n, i + 1, 100, &j); *jout = j; return 1; }
+    return 0;
+}
+
+/* Numbers -> "num" / "n180" / "n360" before featurising (see intent.py feature_tokens). */
+static int feature_tokens(char **toks, int n, char **out, int max)
+{
+    static char *const NUM = "num", *const N180 = "n180", *const N360 = "n360";
+    int o = 0, i = 0;
+    while (i < n && o < max) {
+        double v;
+        int j;
+        if (strcmp(toks[i], "oh") && strcmp(toks[i], "zero") && whole_number(toks, n, i, &v, &j)) {
+            out[o++] = v == 180 ? N180 : v == 360 ? N360 : NUM;
+            i = j;
+        } else {
+            out[o++] = toks[i++];
+        }
+    }
+    return o;
+}
+
 int intent_parse_amount(char **toks, int n, double *out_val, const char **out_unit)
 {
     for (int i = 0; i < n; i++) {
@@ -254,29 +309,8 @@ int intent_parse_amount(char **toks, int n, double *out_val, const char **out_un
             *out_val = 1.0; *out_unit = "small"; return 1;
         }
         int have = 0, j = i;
-        double val = 0, d;
-        int o = lookup(ONES, t), te = lookup(TENS, t);
-        if (num_token(t, &d)) { val = d; j = i + 1; have = 1; }
-        else if (o >= 0 || te >= 0) {
-            int v;
-            if (te >= 0) {
-                v = te; j = i + 1;
-                int o2 = j < n ? lookup(ONES, toks[j]) : -1;
-                if (o2 > 0 && o2 < 10) { v += o2; j++; }
-            } else {
-                v = o; j = i + 1;
-                if (v > 0 && v < 10 && j < n && (lookup(TENS, toks[j]) >= 0 || !strcmp(toks[j], "hundred"))) {
-                    if (!strcmp(toks[j], "hundred")) v = after_hundred(toks, n, j + 1, v * 100, &j);
-                    else {
-                        v = v * 100 + lookup(TENS, toks[j]); j++;
-                        int o2 = j < n ? lookup(ONES, toks[j]) : -1;
-                        if (o2 > 0 && o2 < 10) { v += o2; j++; }
-                    }
-                }
-            }
-            if (j < n && !strcmp(toks[j], "hundred") && v < 10) v = after_hundred(toks, n, j + 1, v * 100, &j);
-            val = v; have = 1;
-        } else if (!strcmp(t, "hundred")) { val = after_hundred(toks, n, i + 1, 100, &j); have = 1; }
+        double val = 0;
+        if (whole_number(toks, n, i, &val, &j)) have = 1;
         else if (!strcmp(t, "half") || !strcmp(t, "quarter")) {
             val = t[0] == 'h' ? 0.5 : 0.25; j = i + 1; have = 1;
             if (j < n && (!strcmp(toks[j], "a") || !strcmp(toks[j], "an"))) j++;
@@ -341,12 +375,93 @@ static int turn_deg(int have, double val, const char *unit)
     return d > MAX_DEG ? MAX_DEG : (int)d;
 }
 
+/* ---------------------------------------------------------------- objects (goto) */
+static int tok_match(const char *t, const char *a, int alen)
+{
+    int tl = (int)strlen(t);
+    if (tl == alen && !strncmp(t, a, (size_t)alen)) return 1;
+    if (tl == alen + 1 && !strncmp(t, a, (size_t)alen) && t[alen] == 's') return 1;
+    if (tl == alen + 2 && !strncmp(t, a, (size_t)alen) && t[alen] == 'e' && t[alen + 1] == 's') return 1;
+    if (alen >= 5 && alen < 62) {
+        char ab[64];
+        memcpy(ab, a, (size_t)alen);
+        ab[alen] = '\0';
+        return edit_distance(t, ab, 2) <= 1;
+    }
+    return 0;
+}
+
+/* One alias = words separated by ' '. Match it at toks[i..]. */
+static int alias_at(char **toks, int n, int i, const char *alias, int alen)
+{
+    const char *p = alias, *end = alias + alen;
+    while (p < end) {
+        const char *w = p;
+        while (p < end && *p != ' ') p++;
+        if (i >= n || !tok_match(toks[i], w, (int)(p - w))) return 0;
+        i++;
+        if (p < end) p++;
+    }
+    return 1;
+}
+
+typedef struct { int words, oi, ai; const char *canon, *alias; int alen; } cand_t;
+
+static int cand_cmp(const void *x, const void *y)
+{
+    const cand_t *a = x, *b = y;
+    if (a->words != b->words) return b->words - a->words;      /* more words first */
+    if (a->oi != b->oi) return a->oi - b->oi;
+    return a->ai - b->ai;
+}
+
+const char *intent_find_object(char **toks, int n)
+{
+    static cand_t cands[512];
+    static int nc = -1;                    /* built once; read-only afterwards */
+    if (nc < 0) {
+        int c = 0;
+        for (int oi = 0; oi < INTENT_N_OBJECTS; oi++) {
+            const char *p = intent_objects[oi].aliases;
+            for (int ai = 0; *p && c < 512; ai++) {
+                const char *e = strchr(p, '|');
+                int len = e ? (int)(e - p) : (int)strlen(p);
+                int words = 1;
+                for (int k = 0; k < len; k++) if (p[k] == ' ') words++;
+                cands[c++] = (cand_t){ words, oi, ai, intent_objects[oi].canon, p, len };
+                p += len + (e ? 1 : 0);
+            }
+        }
+        qsort(cands, (size_t)c, sizeof *cands, cand_cmp);
+        nc = c;
+    }
+    for (int c = 0; c < nc; c++) {
+        const cand_t *k = &cands[c];
+        for (int i = 0; i + k->words <= n; i++)
+            if (alias_at(toks, n, i, k->alias, k->alen)) return k->canon;
+        if (k->words > 1) {                /* merged: "trashcan" for "trash can" */
+            char joined[64];
+            int o = 0;
+            for (int q = 0; q < k->alen && o < 62; q++) if (k->alias[q] != ' ') joined[o++] = k->alias[q];
+            joined[o] = '\0';
+            for (int i = 0; i < n; i++) {
+                int tl = (int)strlen(toks[i]);
+                if (!strcmp(toks[i], joined) || (tl == o + 1 && !strncmp(toks[i], joined, (size_t)o) && toks[i][o] == 's'))
+                    return k->canon;
+            }
+        }
+    }
+    return NULL;
+}
+
 /* ---------------------------------------------------------------- decision */
 static void add_line(intent_decision_t *d, const char *fmt, int v)
 {
     if (d->n_lines < INTENT_MAX_LINES)
         snprintf(d->lines[d->n_lines++], INTENT_LINE_LEN, fmt, v);
 }
+
+#define CANCEL INTENT_GOTO_PREFIX "CANCEL"
 
 void intent_decide(const char *text, int require_wake, intent_decision_t *d)
 {
@@ -363,6 +478,7 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *d)
     if (intent_safety_stop(toks, nt, wake)) {
         d->action = INTENT_ACT_STOP; d->intent = "stop"; d->prob = 1.0f; d->why = "safety";
         add_line(d, "S", 0);
+        add_line(d, CANCEL, 0);
         return;
     }
     if (require_wake && !wake) { d->action = INTENT_ACT_IGNORE; d->why = "no_wake"; return; }
@@ -378,6 +494,7 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *d)
     if (!strcmp(name, "stop") && p[k] >= INTENT_STOP_THRESHOLD) {
         d->action = INTENT_ACT_STOP; d->why = "classifier";
         add_line(d, "S", 0);
+        add_line(d, CANCEL, 0);
         return;
     }
     if (!strcmp(name, "unknown") || p[k] < INTENT_THRESHOLD) {
@@ -387,7 +504,22 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *d)
         add_line(d, "BEEP 3", 0);
         return;
     }
+    if (!strcmp(name, "goto")) {
+        const char *obj = intent_find_object(toks, nt);
+        if (!obj) {
+            d->action = INTENT_ACT_REJECT; d->why = "no_object";
+            add_line(d, "LED no", 0);
+            add_line(d, "BEEP 3", 0);
+            return;
+        }
+        d->action = INTENT_ACT_COMMAND; d->why = "classifier"; d->object = obj;
+        if (d->n_lines < INTENT_MAX_LINES)
+            snprintf(d->lines[d->n_lines++], INTENT_LINE_LEN, INTENT_GOTO_PREFIX "GOTO %s", obj);
+        add_line(d, "BEEP 1", 0);
+        return;
+    }
     d->action = INTENT_ACT_COMMAND; d->why = "classifier";
+    if (strcmp(name, "status")) add_line(d, CANCEL, 0);   /* a manual move cancels any go-to */
     double val = 0;
     const char *unit = NULL;
     int have = intent_parse_amount(toks, nt, &val, &unit);
@@ -397,9 +529,6 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *d)
     else if (!strcmp(name, "right")) add_line(d, "TURN %d", turn_deg(have, val, unit));
     else if (!strcmp(name, "turn_around")) add_line(d, "TURN 180", 0);
     else if (!strcmp(name, "spin")) add_line(d, "TURN 360", 0);
-    else if (!strcmp(name, "follow")) add_line(d, "MODE follow", 0);
-    else if (!strcmp(name, "gestures")) add_line(d, "MODE gesture", 0);
-    else if (!strcmp(name, "teach")) add_line(d, "MODE teach", 0);
     else if (!strcmp(name, "status")) { add_line(d, "STATUS", 0); add_line(d, "BEEP 2", 0); return; }
     add_line(d, "BEEP 1", 0);
 }

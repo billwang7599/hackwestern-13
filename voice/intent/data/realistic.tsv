@@ -47,18 +47,18 @@ Tars, spin around.	turn_around	TURN 180
 Tars, do a full spin.	spin	TURN 360
 TARS, do a spin.	spin	TURN 360
 TARS, do a 360.	spin	TURN 360
-TARS, follow me.	follow	MODE follow
-Tars, follow me.	follow	MODE follow
-TARS, follow.	follow	MODE follow
-TARS, hollow me.	follow	MODE follow
-Stars, come with me.	follow	MODE follow
-TARS, gesture mode.	gestures	MODE gesture
-Tars, gestures.	gestures	MODE gesture
-TARS, back to gestures.	gestures	MODE gesture
-TARS, switch to gesture control.	gestures	MODE gesture
-TARS, learn a new gesture.	teach	MODE teach
-Tars, teach mode.	teach	MODE teach
-TARS, learn this.	teach	MODE teach
+TARS, follow me.	reject	-
+TARS, go to the trash can.	goto	GOTO trash can
+Tars, drive to the chair.	goto	GOTO chair
+TARS, find the door.	goto	GOTO door
+Stars, head over to that bin.	goto	GOTO trash can
+TARS, go to the garbage.	goto	GOTO trash can
+Tars, find my backpack.	goto	GOTO backpack
+TARS, go to the water bottle.	goto	GOTO water bottle
+TARS, go find a cup.	goto	GOTO cup
+Tars, take me to the table.	goto	GOTO table
+TARS, go to the laptop.	goto	GOTO laptop
+TARS, drive over to the box.	goto	GOTO box
 TARS, status.	status	STATUS
 Tars, status report.	status	STATUS
 TARS, are you okay?	status	STATUS
@@ -100,3 +100,13 @@ TARS, tell me a joke.	reject	-
 TARS.	ignore	-
 Tars, um.	reject	-
 TARS, make me a sandwich.	reject	-
+TARS, go to the trashcan.	goto	GOTO trash can
+Tars, go to the person.	goto	GOTO person
+TARS, find the chairs.	goto	GOTO chair
+TARS, go to the share.	goto	GOTO chair
+Tars, where is the exit?	goto	GOTO door
+TARS, go to the kitchen.	reject	-
+TARS, find the elephant.	reject	-
+TARS, go to the left.	left	TURN -30
+TARS, gesture mode.	reject	-
+TARS, learn a new gesture.	reject	-
