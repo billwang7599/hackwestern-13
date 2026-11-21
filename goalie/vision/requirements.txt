@@ -1,0 +1,6 @@
+# Python 3.11-3.14 (pygame-ce has no 3.15 wheel yet):  python3.14 -m venv .venv
+opencv-python>=4.9
+numpy>=1.26
+pygame-ce>=2.5      # Switch controller (switch_input.py); same `import pygame` API
+anthropic>=0.40     # taunt.py (optional: canned lines without ANTHROPIC_API_KEY)
+pytest>=8           # test_vision.py
