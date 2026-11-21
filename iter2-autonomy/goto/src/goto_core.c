@@ -1163,6 +1163,10 @@ static int pick_explore(goto_sm *s)
             double a = k * 2 * M_PI / 16, px = s->goal_x + r * sin(a), pz = s->goal_z + r * cos(a);
             if (r > now_d - 0.4 || nav_cell(s->nav, (float)px, (float)pz) != NAV_FREE) continue;
             double score = r + 0.5 * hypot(px - x, pz - z);
+            /* a hop whose view of the goal is known to be blocked (straight at the middle of
+             * the wall in between) can't map the goal's ring and leaves the robot in the
+             * wall's shadow with nothing nearer to try: last resort only */
+            if (nav_line_clear(s->nav, (float)px, (float)pz, (float)s->goal_x, (float)s->goal_z) == 0) score += 100.0;
             int j = n++;
             while (j > 0 && cs[j - 1] > score) { cx[j] = cx[j - 1]; cz[j] = cz[j - 1]; cs[j] = cs[j - 1]; j--; }
             cx[j] = px; cz[j] = pz; cs[j] = score;

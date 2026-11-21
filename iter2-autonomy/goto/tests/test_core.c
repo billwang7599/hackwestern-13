@@ -959,6 +959,43 @@ static void test_map_leg_waits_for_post_move_pose(void)
           goto_state_name(S.st));
 }
 
+/* Regression (full-stack sim, obstacle scenario): wall between the robot and a bin in the wall's
+ * LiDAR shadow. The first explore hop went straight at the middle of the wall: from there the
+ * goal stays hidden, nothing is >= 0.4 m nearer and routable, so -> unmapped -> blind search ->
+ * not_found. An explore hop must be able to see the goal when such a cell exists. */
+static void test_map_explore_sees_the_goal(void)
+{
+    map_setup();
+    for (double x = -1.95; x < 2.0; x += 0.1)            /* room seen from (0,0): wall + its shadow */
+        for (double z = -0.95; z < 3.0; z += 0.1) {
+            int ix, iz, v = NAV_FREE;
+            if (z > 1.3 && z < 1.4 && fabs(x) < 0.6) v = NAV_OCC;
+            else if (z > 1.4 && fabs(x * 1.3 / z) < 0.62) v = NAV_UNKNOWN;
+            if (nav_world_to_cell((float)x, (float)z, &ix, &iz)) nav_set_cell(N, ix, iz, v);
+        }
+    put_robot(0, 0, 0);
+    add_inst(0, 2.4, MEM_FRESH);                          /* the bin, behind the wall */
+    EV[0] = 0;
+    start("trash can");
+    int id = 900;
+    for (int n = 0; n < 20 && !S.exploring; n++) {        /* the 360 reveal, then explore */
+        grab_events();
+        const goto_act *a = find(ACT_TURN);
+        if (!a) break;
+        PYAW -= a->a * M_PI / 180;
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        leg_done_phone_lags(id);
+    }
+    grab_events();
+    CHECK(had_event("reveal trash can #1", EV) && S.exploring && S.st == ST_FOLLOW_PATH,
+          "goal in the wall's shadow: reveal, then an explore hop (%s, %s)", goto_state_name(S.st), EV);
+    int los = nav_line_clear(N, (float)S.vx, (float)S.vz, 0.0f, 2.4f);
+    CHECK(los != 0, "the explore hop (%.2f, %.2f) can see the goal (line_clear %d), not the wall's middle", S.vx, S.vz, los);
+}
+
 static void test_map_route_around_wall(void)
 {
     map_setup();
@@ -1259,6 +1296,7 @@ int main(void)
     test_memory_cfg();
     test_map_route_around_wall();
     test_map_leg_waits_for_post_move_pose();
+    test_map_explore_sees_the_goal();
     test_map_gone_then_check_others();
     test_map_occluded_detour();
     test_map_no_route_fails();
