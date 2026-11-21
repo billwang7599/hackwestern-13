@@ -303,6 +303,27 @@ you'll demo on.
 Expected speed: about **4 cm/s** at 12 RPM with 65 mm wheels, so crossing
 1 m takes about 25 s. Bigger wheels go faster but push less.
 
+### Step 7: go-to ("TARS, go to the trash can")
+
+Needs Steps 2–5 working. Details are in `goto/README.md`.
+
+1. **On the laptop, build:**
+   - `goto/get_model.sh` writes `goto/models/yolo_world.onnx` and `labels.txt`.
+   - `make -C goto` builds `goto` with qcc.
+   - `make -C goto detect ORT_ROOT=...` needs ONNX Runtime built for QNX first (see `goto/README.md`).
+   - `make -C goto deploy PI_HOST=qnxuser@<pi-ip>` copies everything to the Pi.
+2. **Camera alone:** run `./detect --camera camapi:1 --nomodel --stdout --no-udp --frames 20`. You should get 20 lines with the right `w`/`h`.
+   - If `camera_open failed`: check that the QNX `sensor` service is running and that its config lists the USB webcam.
+3. **Model alone:** run `./detect --camera camapi:1 --stdout --no-udp` and hold a cup or bottle in view. You should see a `"label":"cup"` box, and stderr prints fps every 5 s. Expect about 5–10 fps.
+4. **Wheels in the air:** start `tars_motor`, `./goto -c goto.conf -o objects.txt &` and `./detect &`, then from the laptop:
+   `printf 'GOTO cup\n' | nc <pi-ip> 5557`. It beeps once.
+   - With the cup out of view: the wheels do 30° turns. After 12 of them (a full circle) it beeps three times.
+   - With the cup in view: the wheels spin forward, and the faster side is the side the cup is on.
+5. **On the floor:** put a trash can 1–2 m away and `GOTO trash can`. It should turn toward it, crawl up (about 4 cm/s) and stop about 0.5 m away with one beep.
+   - **Watch:** `printf 'STATUS\n' | nc <pi-ip> 5557` shows `state= h= bearing=`.
+   - **If it stops too early or too late:** change `arrive_h_frac` in `goto.conf`. It's the box height ÷ frame height at the spot where you want it to stop.
+6. **Stop test:** during an approach, `printf 'S\n' | nc <pi-ip> 5555`. The wheels stop at once, and goto STATUS shows `result=cancelled:stop`.
+
 ---
 
 ## 4. Useful commands (TCP, port 5555)

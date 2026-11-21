@@ -29,7 +29,8 @@
  *
  * STATUS also has move=idle|running|done|aborted move_id= move_kind=MOVE|TURN|-
  * move_req= move_done= move_why= move_est_ms= wheel_d= wheel_t= and the on-robot
- * button counters btn_teach= btn_forget= (they only ever count up).
+ * button counters btn_teach= btn_forget= (they only ever count up), and stops=
+ * (number of S received from any client; goto/ cancels when it goes up).
  *
  * Runs unattended at boot: no client = wheels held at 0 (the watchdog starts
  * tripped), and a missing/unplugged Uno is reopened every second.
@@ -93,7 +94,10 @@ typedef struct { int set; float deg, dps; } arm_req_t;
 static arm_req_t arm_req[2];
 static int   req_halt, req_zero, req_level, req_stop_gesture, req_reset;
 static int   req_hard_stop;                /* S: zero the wheels this tick, no slew */
-static long long stop_rx_ms;              /* when that S arrived */
+static long long stop_rx_ms;
+static int   stop_count;                  /* S commands received (STATUS stops=), lets
+                                           * autonomous clients (goto/) see a stop sent by
+                                           * someone else and give up */              /* when that S arrived */
 static long  stop_ms = -1;                /* last S: received -> wheels commanded 0 */
 /* last VIS report from the vision app */
 static char  vis_mode[16] = "-", vis_see[24] = "-";
@@ -511,6 +515,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
         req_stop_gesture = req_halt = 1;
         req_hard_stop = 1;
         stop_rx_ms = now_ms();
+        stop_count++;
         if (mv_state == MV_RUNNING) req_move_abort = "stop";
         req_gesture = NULL;
         memset(&arm_req, 0, sizeof arm_req);
@@ -691,7 +696,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
                  "stop_ms=%ld vis=%s vis_fps=%.1f vis_cam_ms=%d vis_stop_ms=%d vis_see=%s "
                  "vis_age_ms=%lld move=%s move_id=%d move_kind=%s move_req=%.1f move_done=%.1f "
                  "move_why=%s move_est_ms=%d wheel_d=%.1f wheel_t=%.1f btn_teach=%d btn_forget=%d "
-                 "led=%d\n",
+                 "led=%d stops=%d\n",
                  out_l, out_r, ms_since(&last_cmd), last_dist, estop, estop_why,
                  arm_pos[0], arm_pos[1], arm_tgt[0], arm_tgt[1], gesture_name,
                  tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name,
@@ -699,7 +704,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
                  vis_at_ms ? now_ms() - vis_at_ms : -1LL,
                  mv_names[mv_state], mv_id, mv_kind == 'M' ? "MOVE" : mv_kind == 'R' ? "TURN" : "-",
                  mv_req, mv_done, mv_why, mv_est_ms, wheel_d, wheel_t, btn_teach, btn_forget,
-                 led_pattern);
+                 led_pattern, stop_count);
         pthread_mutex_unlock(&lock);
     } else if (!strcasecmp(cmd, "VIS")) {
         char m[16], see[24];

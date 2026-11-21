@@ -33,3 +33,7 @@ vision/tests/assets/
 vision/qnx/python/vendor/
 vision/qnx/cpp/tars_gesture_cpu
 gesture_view.jpg
+
+# goto
+goto/build/
+goto/models/
