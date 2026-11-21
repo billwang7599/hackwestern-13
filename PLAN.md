@@ -3,6 +3,12 @@
 Shared plan for humans and coding agents. **Read [AGENTS.md](AGENTS.md) before changing code.**
 Update the status table when you finish something.
 
+## Priorities (set by the team, 2026-11-21)
+
+1. **Keyboard + motor control.** Laptop WASD over Wi-Fi to the Pi, then to the Uno and the wheels. Fast path: `pi/tars_bridge.py` (Python, no QNX build), branch `kothar/py-bridge`.
+2. **Voice to command to YOLO "go to".** "TARS, go to the trash can": speech, then intent `goto` + object, then YOLO finds it, then the robot searches, steers and stops on arrival.
+3. *Back burner:* MediaPipe gestures, follow mode, teach-a-gesture. Keep the code, but don't spend time on it.
+
 ## The robot
 
 A two-wheel rover that runs **fully on the robot**. No laptop and no internet at runtime.
@@ -60,7 +66,8 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 | MediaPipe gestures + follow mode | `stepper-wheels` (GitHub) | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
 | Teach-a-gesture on the spot | `kothar/learn-gesture` (local only) | Mac tests pass. Not merged. |
 | Speech + intent classifier | `kothar/voice-stt` (local, in progress) | Being built. |
-| YOLO | teammate's code, not in repo | Needs to be added as a `tars_motor` client. |
+| Python bridge (no QNX build) | `kothar/py-bridge` (local, in progress) | Being built. |
+| YOLO go-to-object | `kothar/goto` (local, in progress) | Being built. The teammate's YOLO plugs in via the detection interface. |
 | Goalie / balancer experiments | `goalie/`, `balancer/` | Parked. Don't touch. |
 
 ## Hardware checks that gate everything (do these first)
@@ -74,7 +81,8 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 
 ## Next up
 
-- Merge `learn-gesture` into `stepper-wheels` and switch gesture turns to `TURN ±30` / `MOVE ±mm`.
-- Merge `voice-stt` once its tests pass.
-- Wire YOLO in as a client: send `D l r` steering for follow-object, and `S` when the target is lost.
-- Demo script: wake → "TARS, follow me" → ✋ stop → teach a pose → "TARS, turn around".
+- Merge `py-bridge` once its tests pass (priority 1).
+- Merge `voice-stt` once its tests pass, with the `goto <object>` intent added.
+- `goto/` (branch `kothar/goto`): a YOLO detection interface (JSON lines: label, conf, box), the search-and-steer program, and the YOLO-World custom-vocabulary export.
+- Demo script: "TARS, go to the trash can" → search → drive → stop on arrival → "TARS, stop".
+- Back burner: merge `learn-gesture`, and switch gesture turns to `TURN`/`MOVE`.
