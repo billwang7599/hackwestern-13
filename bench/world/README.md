@@ -80,6 +80,7 @@ the car restarted.
 | `{"op": "set", "params": {...}}` (shorthand `{"set": {...}}`) | `{"ok", "params"}` |
 | `{"op": "fault", "name", "on"?: true, "s"?: seconds}` (shorthand `{"fault": name}`) | `{"ok"}` |
 | `{"op": "teleport", "x", "y", "th"}` / `{"op": "car", "msg": {...}}` | passed to the car's 5591 |
+| `{"op": "seed_nav", "points": [[x_ark, y, z_ark], ...]}` | `{"ok", "packets", "points"}`. **Bench map demo B only:** the points go to goto's nav port as LDR1 packets on the phone feed (≤ 1000 per packet, this feed's seq/uptime, the pose the phone believes now, tracking OK), sent before the next live packet. See `bench/maps/README.md` |
 
 Removing walls renumbers the ones after it (ids are positions).
 

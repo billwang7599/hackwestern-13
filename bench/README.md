@@ -48,7 +48,7 @@ stopping never depends on a panel.
 **Event topics:** `status` (tars_motor STATUS, parsed), `goto` (goto STATUS + EVENTs),
 `car` (virtual car truth + params), `world` (sim room + sensors), `voice` (voice lab
 results), `map3d` (3D map data), `scenario` (scenario progress), `cmd` (every line sent
-to the robot + reply), `log`.
+to the robot + reply), `navgrid` (goto's `NAV GRID`, on change), `maps` (map demo / explorer state), `log`.
 
 **Tests use free ports.** Several parts' tests run at once on one Mac, so a test never
 binds the robot's real port numbers or 5590–5599; every process takes its ports as flags.
@@ -63,6 +63,7 @@ binds the robot's real port numbers or 5590–5599; every process takes its port
 | sim world | `world/`, `run_sim.py`, `plugins/world.py`, `web/panels/world2d.js` |
 | voice lab | `plugins/voicelab.py`, `web/panels/voice.js` |
 | iPhone 3D map | `phone/`, `plugins/phone.py`, `web/panels/map3d.js` |
+| map demos | `maps/`, `plugins/maps.py`, `web/panels/maps.js`, `world/prescans/` (plus small hooks: `world2d.js` layers/pick, `worldsim.py` `seed_nav`, `phone/sim.py` surfaces) |
 
 Tests go in `bench/tests/test_<part>*.py`.
 
@@ -266,3 +267,16 @@ recording, or a ray-cast sim room. The sim room follows topic `world` live (room
 The sim takes its pose from topic `car`. `/api/phone/*` and topic `map3d` are documented in
 `plugins/phone.py`; details, frames and the live-phone checklist are in `phone/README.md`.
 Test: `python3 bench/tests/test_phone.py`.
+
+## Map demos (`maps/`, SIMULATION)
+
+Two demos of "build a map, then go find stuff", with the real tars_motor + goto host builds on
+the virtual car (`python3 bench/run_sim.py`, panel **Map demos (SIM)**):
+- **A. Explore live.** goto starts knowing nothing. Scan / Explore fills goto's map only from what
+  the sim LiDAR sees (drawn under the 2D view), and the 3D view fills with splats. Then GOTO uses
+  the map it just built.
+- **B. Prescan** (simulation only). A saved map (mode A's result, an iPhone recording, or Andrew's
+  map save) becomes the sim room (walls from its occupied cells), goto's prior map and memory, and
+  the 3D backdrop. Drop the car anywhere, then GOTO.
+
+Details, frames and what the real robot would need: `maps/README.md`. Test: `python3 bench/tests/test_maps.py`.
