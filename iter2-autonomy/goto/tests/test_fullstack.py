@@ -663,6 +663,27 @@ def sc_diagwall():
         st.close()
 
 
+def sc_shortwall():
+    """user's second demo (bench open_bin 10 x 8 m): a short wall 0.4 m in front of the start,
+    the remembered bin 2 m behind it, open floor all round. Ended failed:blocked (replans 7)."""
+    print("full-stack: SHORTWALL: a short wall 0.4 m in front of the robot, remembered bin behind it")
+    w = World(size=7.0, x0=-2.0, y0=-3.5)
+    w.cans.append([2.4, 0.0])
+    w.walls.extend(box(0.45, 0.0, 0.05, 0.5))          # face 0.4 m ahead, 1.0 m wide
+    st = Stack(w, mem_file([(2.4, 0.0)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("shortwall")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 2.4, y)
+        inside = any(0.35 < p[0] < 0.55 and abs(p[1]) < 0.55 for p in st.sens.trace)
+        check(not inside, "never drove through the wall")
+        check(s["result"] == "arrived" and d < 0.95, f"got round the short wall and docked ({s['result']}, {d:.2f} m)")
+    finally:
+        st.close()
+
+
 def sc_moved():
     print("full-stack: MOVED OBJECT: memory says A, the bin is now at B")
     w = World()
@@ -827,11 +848,15 @@ SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion,
              "visual": sc_visual_only, "voice": sc_voice}
 
 
+# known failures, run with --only NAME (not in the default run until fixed)
+EXTRA = {"shortwall": sc_shortwall}
+
+
 def run_scenario(name: str) -> None:
     # An exception in a scenario thread used to vanish into stderr: its checks never
     # ran, so the total shrank (24/24) and the suite still exited 0. Count it as a FAIL.
     try:
-        SCENARIOS[name]()
+        (SCENARIOS.get(name) or EXTRA[name])()
     except Exception as e:
         traceback.print_exc()
         check(False, f"{name}: scenario crashed before finishing its checks ({e!r})")

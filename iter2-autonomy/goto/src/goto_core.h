@@ -69,6 +69,7 @@ typedef struct {
     double nav_guard_hfov_deg;/* ... and inside the phone's LiDAR cone (>= 180: the whole rectangle) */
     double nav_escape_mm;     /* a path leg would start with an obstacle in that zone: pivot to the nearest
                                  heading that's clear and drive this far, then re-plan (0 = off) */
+    double robot_radius_m;    /* nav footprint for inflation/fit checks (nav_set_robot_radius); MEASURE the real car */
     double nav_move_max_mm;   /* tars_motor's MOVE limit (wheels.h MOVE_MAX_MM): longer legs go in pieces */
     /* per-object arrive override, e.g. person is tall: arrive_h.person = 0.85 */
     int    n_arrive_over;

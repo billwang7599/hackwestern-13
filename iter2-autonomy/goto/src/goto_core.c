@@ -73,6 +73,7 @@ void goto_cfg_defaults(goto_cfg *c)
     c->nav_guard_hfov_deg = 60.0;
     c->nav_escape_mm = 300.0;
     c->nav_move_max_mm = 1000.0;
+    c->robot_radius_m = 0.35;      /* as before; the SM11 (~0.20 x 0.175 m) wants ~0.18 once that's validated */
     snprintf(c->memory_path, sizeof c->memory_path, "memory.txt");
     c->n_arrive_over = 1;
     snprintf(c->arrive_over_label[0], sizeof c->arrive_over_label[0], "person");
@@ -124,7 +125,7 @@ int goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen)
         {"nav_guard_wait_s", &c->nav_guard_wait_s, 0}, {"nav_reveal_deg", &c->nav_reveal_deg, 0},
         {"nav_guard_stop_m", &c->nav_guard_stop_m, 0}, {"nav_guard_half_w", &c->nav_guard_half_w, 0},
         {"nav_guard_hfov_deg", &c->nav_guard_hfov_deg, 0}, {"nav_escape_mm", &c->nav_escape_mm, 0},
-        {"nav_move_max_mm", &c->nav_move_max_mm, 0},
+        {"nav_move_max_mm", &c->nav_move_max_mm, 0}, {"robot_radius_m", &c->robot_radius_m, 0},
     };
     char line[256];
     while (fgets(line, sizeof line, f)) {
@@ -1211,14 +1212,22 @@ static void check_others(goto_sm *s, int downgrade)
 
 static void do_plan(goto_sm *s);
 
+/* the robot's footprint half-size in cells, as nav.c inflates it: ceil(radius / NAV_RES) */
+static int foot_cells(const goto_sm *s)
+{
+    double r = s->cfg.robot_radius_m > 0 ? s->cfg.robot_radius_m : NAV_DEFAULT_ROBOT_RADIUS;
+    int c = (int)ceil(r / NAV_RES - 1e-9);
+    return c < 1 ? 1 : c;
+}
+
 /* the robot is standing here, so its own footprint is floor: the phone can't see under it.
  * Same square nav_plan checks (ceil(0.35 / 0.1) = 4 cells each side); never clears OCC. */
 static void mark_footprint_free(goto_sm *s, double x, double z)
 {
     int cx, cz;
     if (nav_world_to_cell((float)x, (float)z, &cx, &cz))
-        for (int i = -4; i <= 4; i++)
-            for (int k = -4; k <= 4; k++)
+        for (int i = -foot_cells(s); i <= foot_cells(s); i++)
+            for (int k = -foot_cells(s); k <= foot_cells(s); k++)
                 if (nav_cell_at(s->nav, cx + i, cz + k) == NAV_UNKNOWN) nav_set_cell(s->nav, cx + i, cz + k, NAV_FREE);
 }
 
@@ -1324,10 +1333,10 @@ static int backoff_cell(goto_sm *s, double x, double z, double *bx, double *bz)
 {
     int cx, cz;
     if (!nav_world_to_cell((float)x, (float)z, &cx, &cz)) return 0;
-    double ox[81], oz[81], mx = 0, mz = 0;
-    int no = 0;
-    for (int i = -4; i <= 4; i++)
-        for (int k = -4; k <= 4; k++)
+    double ox[121], oz[121], mx = 0, mz = 0;
+    int no = 0, fc = foot_cells(s) > 5 ? 5 : foot_cells(s);
+    for (int i = -fc; i <= fc; i++)
+        for (int k = -fc; k <= fc; k++)
             if (nav_cell_at(s->nav, cx + i, cz + k) == NAV_OCC) {
                 ox[no] = NAV_ORIGIN_X + (cx + i + 0.5) * NAV_RES - x;
                 oz[no] = NAV_ORIGIN_Z + (cz + k + 0.5) * NAV_RES - z;
@@ -1411,9 +1420,9 @@ static int lane_clear(const goto_sm *s, double px, double pz, double gx, double 
     if (L <= NAV_LOS_END_MARGIN) return 1;
     dx /= L; dz /= L;
     double ex = gx - NAV_LOS_END_MARGIN * dx, ez = gz - NAV_LOS_END_MARGIN * dz;
-    for (int i = 1; i <= 4; i++)
+    for (int i = 1; i <= foot_cells(s); i++)
         for (int sgn = -1; sgn <= 1; sgn += 2) {
-            double off = sgn * 0.1 * i, ox = off * dz, oz = -off * dx;      /* perpendicular */
+            double off = sgn * NAV_RES * i, ox = off * dz, oz = -off * dx;      /* perpendicular */
             if (nav_line_clear_ex(s->nav, (float)(px + ox), (float)(pz + oz), (float)(ex + ox), (float)(ez + oz), 0.0f) == 0)
                 return 0;
         }

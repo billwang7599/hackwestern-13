@@ -879,6 +879,7 @@ static void map_setup(void)
     if (!N) N = nav_new();
     nav_reset(N);
     nav_set_robot_radius(N, 0.35f);
+    S.cfg.robot_radius_m = 0.35;              /* map tests were written for the 0.35 m TARS footprint */
     goto_mem_init(&MM);
     goto_sm_set_memory(&S, &MM, 1e6);
     goto_sm_set_nav(&S, N);

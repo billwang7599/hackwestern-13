@@ -803,6 +803,9 @@ int main(int argc, char **argv)
     const char *cfg_path = NULL, *obj_path = NULL;
     int opt;
     const char *mem_opt = NULL;
+    /* logs go to files under run_sim / the bench: line-buffer both so the tail survives a kill */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
     while ((opt = getopt(argc, argv, "m:p:u:n:ic:o:M:r:vT:h")) != -1) {
         switch (opt) {
         case 'm': {
@@ -838,6 +841,7 @@ int main(int argc, char **argv)
     if (obj_path && goto_objects_load(&objs, obj_path) < 0) { fprintf(stderr, "goto: can't read %s\n", obj_path); return 1; }
     goto_sm_init(&sm, &cfg, &objs);
     nav = nav_new();
+    if (nav && cfg.robot_radius_m > 0) nav_set_robot_radius(nav, (float)cfg.robot_radius_m);
     if (!nav) { fprintf(stderr, "goto: out of memory for the nav grid\n"); return 1; }
     goto_sm_set_nav(&sm, nav);
 
