@@ -6,6 +6,11 @@
     stops / teach timers, plus a once-a-second status line that is also sent to
     tars_motor as "VIS ..." so its STATUS shows it.
 
+Pet mode (GESTURES.md section 8) runs inside the same Brain; its events are
+logged as [pet]. If tars_motor refuses a D (S from another client, watchdog,
+tip, bump, guard), the move/stream is dropped (Brain.server_stop) so it never
+restarts by itself.
+
 Teach triggers that need no laptop: the TEACH hand sign (handled in Brain), and
 the Uno button, read by polling tars_motor STATUS for btn_teach= / btn_forget=
 counters (see GESTURES.md section 7). Learned poses are saved to learned_path
@@ -119,9 +124,15 @@ class GestureRuntime:
     # -- commands ----------------------------------------------------------------
     def _send(self, cmds, t_cap: float | None) -> None:
         for c in cmds:
-            self.link.send(c.text)
-            if not c.text.startswith("D") or c.reason not in ("resend", "follow"):
+            reply = self.link.send(c.text)
+            if not c.text.startswith("D") or c.reason not in ("resend", "follow", "pet_stream"):
                 print(f"[cmd] {c.text:<14} {c.reason:<14} mode={self.ctl.mode}", flush=True)
+            if c.text.startswith("D ") and reply and reply.startswith("ERR"):
+                # the server stopped us (another client's S, watchdog, tip, guard): stop wins
+                with self.ctl_lock:
+                    self.brain.server_stop(now_ms())
+                print(f"[cmd] server refused D ({reply}); move dropped", flush=True)
+                break
             if t_cap is not None:
                 lat = now_ms() - t_cap
                 self.stats.cam_to_cmd_ms = lat
@@ -135,6 +146,9 @@ class GestureRuntime:
         for e in self.brain.events:
             print(f"[teach] {e}", flush=True)
         self.brain.events = []
+        for e in self.brain.pet.events:
+            print(f"[pet] {e} (energy {self.brain.pet.energy:.2f})", flush=True)
+        self.brain.pet.events = []
         if self.brain.dirty and self.learned_path:
             try:
                 self.brain.save(self.learned_path)
@@ -238,11 +252,13 @@ class GestureRuntime:
         stop = f"{st.stop_ms:.0f}ms" if st.stop_ms >= 0 else "-"
         c = self.ctl
         extra = ""
-        if c.mode == g.FOLLOW_MODE:
+        if c.mode == g.FOLLOW_MODE or (c.mode == g.PET_MODE and c.f_active):
             extra = f" wheels={c.f_cur[0]:+.2f},{c.f_cur[1]:+.2f}"
         elif c.moving:
             extra = f" move={c.moving}"
         b = self.brain
+        if b.pet.active:
+            extra += f" pet={b.pet.state} energy={b.pet.energy:.2f}"
         if b.state != L.IDLE:
             extra += f" teach={b.state}"
         if b.match:
@@ -263,6 +279,8 @@ class GestureRuntime:
         st = self.stats
         # tars_motor shows these in STATUS (vis_mode= vis_fps= vis_stop_ms= ...)
         mode = self.ctl.mode if self.brain.state == L.IDLE else "teach:" + self.brain.state
+        if self.brain.state == L.IDLE and self.brain.pet.active:
+            mode = "pet:" + self.brain.pet.state          # <= 15 chars (tars_motor vis_mode)
         self.link.send(f"VIS {mode} {st.fps:.1f} {st.cam_to_cmd_ms:.0f} "
                        f"{st.stop_ms:.0f} {self._last_label}")
 

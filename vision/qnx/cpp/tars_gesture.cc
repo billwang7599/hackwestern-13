@@ -8,13 +8,16 @@
 // Teach: hold the shaka sign 2 s, or press the Uno button (polled from
 // tars_motor STATUS btn_teach= / btn_forget=). Learned poses: --learned JSON.
 // A 20 ms ticker thread does resends, move ends and the camera-stall STOP.
+// Pet mode (pet.hpp, GESTURES.md section 8): --pet, or hold peace to cycle
+// gesture -> follow -> pet. A D that tars_motor refuses (S from another client,
+// watchdog, tip, bump, guard) drops the move: Brain::server_stop, stop wins.
 //
 // Build: vision/qnx/cpp/build_on_pi.sh (on the Pi, in the qnx-ports/mediapipe
 // tree, per the QNX "MediaPipe Camera Sample" codelab).
 //
 //   tars_gesture --model=hand_landmarker.task --conf=gesture.conf [--camera_unit=N]
 //                [--host=127.0.0.1] [--port=5555] [--dry_run] [--frames=N]
-//                [--learned=learned.json] [--buttons=true]
+//                [--learned=learned.json] [--buttons=true] [--pet]
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -53,6 +56,7 @@ ABSL_FLAG(bool, dry_run, false, "Print commands instead of sending them.");
 ABSL_FLAG(int, frames, 0, "Stop after N frames (0 = run forever).");
 ABSL_FLAG(std::string, learned, "learned.json", "Learned poses JSON (loaded at start, saved on change; '' = off).");
 ABSL_FLAG(bool, buttons, true, "Poll tars_motor STATUS for the Uno teach/forget button counters.");
+ABSL_FLAG(bool, pet, false, "Start in PET mode (same as pet_start = 1 in gesture.conf).");
 
 namespace {
 
@@ -165,6 +169,8 @@ struct Runtime {
     void after() {
         for (auto &e : brain.events) std::printf("[teach] %s\n", e.c_str());
         brain.events.clear();
+        for (auto &e : brain.pet.events) std::printf("[pet] %s (energy %.2f)\n", e.c_str(), brain.pet.energy);
+        brain.pet.events.clear();
         if (brain.dirty && !learned_path.empty()) {
             try {
                 brain.save(learned_path);
@@ -211,9 +217,18 @@ struct Runtime {
 
     void send(const std::vector<tars::Cmd> &cmds, double t_cap) {
         for (auto &c : cmds) {
-            link.send(c.text);
-            if (c.text[0] != 'D' || (c.reason != "resend" && c.reason != "follow"))
+            std::string reply = link.send(c.text);
+            if (c.text[0] != 'D' || (c.reason != "resend" && c.reason != "follow" && c.reason != "pet_stream"))
                 std::printf("[cmd] %-14s %-14s mode=%s\n", c.text.c_str(), c.reason.c_str(), ctl.mode.c_str());
+            if (c.text.rfind("D ", 0) == 0 && reply.rfind("ERR", 0) == 0) {
+                // the server stopped us (another client's S, watchdog, tip, guard): stop wins
+                {
+                    std::lock_guard<std::mutex> lk(ctl_m);
+                    brain.server_stop(now_ms());
+                }
+                std::printf("[cmd] server refused D (%s); move dropped\n", reply.c_str());
+                break;
+            }
             if (t_cap >= 0) {
                 double lat = now_ms() - t_cap;
                 cam_to_cmd_ms = lat;
@@ -229,11 +244,16 @@ struct Runtime {
     std::string status_line() {
         char b[320], stop[16] = "-", extra[64] = "";
         if (stop_ms >= 0) std::snprintf(stop, sizeof stop, "%.0fms", stop_ms);
-        if (ctl.mode == tars::FOLLOW_MODE)
+        if (ctl.mode == tars::FOLLOW_MODE || (ctl.mode == tars::PET_MODE && ctl.f_active))
             std::snprintf(extra, sizeof extra, " wheels=%+.2f,%+.2f", ctl.f_cur_l, ctl.f_cur_r);
         else if (ctl.has_move)
             std::snprintf(extra, sizeof extra, " move=%s", ctl.move_intent.c_str());
         std::string ex = extra;
+        if (brain.pet.active) {
+            char p[64];
+            std::snprintf(p, sizeof p, " pet=%s energy=%.2f", brain.pet.state.c_str(), brain.pet.energy);
+            ex += p;
+        }
         if (brain.state != tars::learn::IDLE) ex += std::string(" teach=") + brain.state;
         if (brain.has_match) {
             char m[64];
@@ -252,16 +272,17 @@ struct Runtime {
         double t = now_ms();
         if (t < next_log) return;
         next_log = t + 1000;
-        std::string line;
+        std::string line, mode;
         {
             std::lock_guard<std::mutex> lk(ctl_m);
             line = status_line();
+            mode = brain.state == tars::learn::IDLE ? ctl.mode : std::string("teach:") + brain.state;
+            if (brain.state == tars::learn::IDLE && brain.pet.active) mode = "pet:" + brain.pet.state;  // <= 15 chars
         }
         std::printf("[status] %s\n", line.c_str());
         std::fflush(stdout);
         if (!link.dry()) {
             char v[128];
-            std::string mode = brain.state == tars::learn::IDLE ? ctl.mode : std::string("teach:") + brain.state;
             std::snprintf(v, sizeof v, "VIS %s %.1f %.0f %.0f %s", mode.c_str(), fps, cam_to_cmd_ms,
                           stop_ms, last_label.c_str());
             link.send(v);
@@ -277,6 +298,7 @@ int main(int argc, char **argv) {
     signal(SIGTERM, on_signal);
 
     tars::Config cfg = tars::load_config(absl::GetFlag(FLAGS_conf));
+    if (absl::GetFlag(FLAGS_pet)) cfg.v["pet_start"] = 1.0;
     MotorLink link(absl::GetFlag(FLAGS_host), absl::GetFlag(FLAGS_port), absl::GetFlag(FLAGS_dry_run));
     Runtime rt(cfg, link);
     rt.learned_path = absl::GetFlag(FLAGS_learned);

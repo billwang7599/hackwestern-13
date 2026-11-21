@@ -11,6 +11,7 @@ localhost:5555. Headless; logs mode, fps and camera->command latency.
     python3 tars_gesture.py --unit 1 --save-every 30   # save annotated jpgs to check the view
 
 Same flags for tuning as the Mac prototype: --set key=value overrides gesture.conf.
+    python3 tars_gesture.py --pet                  # start in PET mode (GESTURES.md section 8)
 
 Runs fully on the robot: teach a new pose with the 🤙 TEACH sign (or the Uno
 button), learned poses persist in --learned (default vision/learned.json).
@@ -55,6 +56,7 @@ def main() -> int:
     ap.add_argument("--no-buttons", action="store_true", help="don't poll tars_motor STATUS for the Uno button")
     ap.add_argument("--console", choices=["auto", "on", "off"], default="auto",
                     help="stdin commands (auto = only when stdin is a terminal)")
+    ap.add_argument("--pet", action="store_true", help="start in PET mode (same as --set pet_start=1)")
     ap.add_argument("--verbose", "-v", action="store_true")
     a = ap.parse_args()
 
@@ -74,6 +76,8 @@ def main() -> int:
     for kv in a.set:
         k, v = kv.split("=", 1)
         over[k.strip()] = float(v)
+    if a.pet:
+        over["pet_start"] = 1.0
     cfg = g.load_config(a.conf, over)
 
     link = MotorLink(None if a.dry_run else a.host, a.port, verbose=a.verbose)
@@ -102,7 +106,7 @@ def main() -> int:
                     H, W = img.shape[:2]
                     for x, y, _ in res.lm:
                         cv2.circle(img, (int(x * W), int(y * H)), 2, (0, 255, 0), -1)
-                cv2.putText(img, f"{rt.ctl.mode} {res.label} {rt.brain.state}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX,
+                cv2.putText(img, f"{rt.ctl.mode} {res.label} {rt.brain.state} {rt.brain.pet.state}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX,
                             0.45, (0, 0, 255), 1)
                 cv2.imwrite("gesture_view.jpg", img)
             if a.frames and n >= a.frames:

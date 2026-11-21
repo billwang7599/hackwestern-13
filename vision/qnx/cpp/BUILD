@@ -11,6 +11,7 @@ cc_binary(
     srcs = [
         "gesture.hpp",
         "learn.hpp",
+        "pet.hpp",
         "tars_gesture.cc",
     ],
     # same float results as the Python apps (no fused multiply-add)

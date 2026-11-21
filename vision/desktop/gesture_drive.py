@@ -9,12 +9,15 @@ Default is DRY RUN: commands are printed, nothing is sent.
     python gesture_drive.py --host tars.local      # drive the real robot over Wi-Fi (fallback path)
     python gesture_drive.py --video clip.mp4 --headless --frames 300
     python gesture_drive.py --set follow_kp_turn=1.5 --set stable_frames=3
+    python gesture_drive.py --pet                  # start in PET mode (GESTURES.md section 8)
 
-Keys in the window: q/Esc quit · space STOP · m toggle GESTURE/FOLLOW · p pause
+Keys in the window: q/Esc quit · space STOP · m next mode (GESTURE/FOLLOW/PET) · p pause
                     t teach (same as the Uno button) · f forget all learned poses
 Gestures: open palm STOP · thumbs up / point up FORWARD · fist / point down /
 thumbs down BACK · point left/right TURN 30° · peace sign (hold) GESTURE<->FOLLOW ·
 🤙 shaka (hold 2 s) TEACH a new pose (hold 5 s: forget all). GESTURES.md §7.
+PET mode (§8): 👋 wave = greet · ✋ stay · ☝️ come here · 👍 happy · 👎 sad ·
+✌️ flash = trick, hold 2 s = leave · ✊ hold = sleep · no hand = bored, then sleep.
 """
 from __future__ import annotations
 
@@ -31,13 +34,15 @@ import numpy as np  # noqa: E402
 
 import gesture as g  # noqa: E402
 import learn as L  # noqa: E402
+import pet as P  # noqa: E402
 from app import DEFAULT_LEARNED, DEFAULT_MODEL, GestureRuntime, now_ms  # noqa: E402
 from link import MotorLink  # noqa: E402
 
 HAND_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10),
               (10, 11), (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (0, 17),
               (17, 18), (18, 19), (19, 20)]
-MODE_COLOR = {g.GESTURE_MODE: (255, 200, 0), g.FOLLOW_MODE: (0, 220, 255)}   # BGR
+MODE_COLOR = {g.GESTURE_MODE: (255, 200, 0), g.FOLLOW_MODE: (0, 220, 255),
+              g.PET_MODE: (180, 105, 255)}   # BGR
 
 
 def parse_args():
@@ -57,6 +62,7 @@ def parse_args():
     ap.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = forever)")
     ap.add_argument("--realtime", action="store_true",
                     help="with --video: pace frames at the file's fps (default: as fast as possible)")
+    ap.add_argument("--pet", action="store_true", help="start in PET mode (same as --set pet_start=1)")
     ap.add_argument("--verbose", "-v", action="store_true", help="print every D and every reply")
     return ap.parse_args()
 
@@ -90,7 +96,7 @@ def draw(frame_rgb, res, rt: GestureRuntime, scale: int = 2):
             cv2.circle(img, c, int(cfg["follow_target_size"] * H), (255, 255, 255), 1)  # target size
 
     # wheel bars (what we're commanding)
-    if mode == g.FOLLOW_MODE:
+    if mode == g.FOLLOW_MODE or (mode == g.PET_MODE and rt.ctl.f_active):
         l, r = rt.ctl.f_cur
     elif rt.ctl.move:
         _, l, r, _ = rt.ctl.move
@@ -105,7 +111,17 @@ def draw(frame_rgb, res, rt: GestureRuntime, scale: int = 2):
         cv2.putText(img, "LR"[i], (x0 + 5, H // 2 + 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     cv2.rectangle(img, (0, 0), (W, 34), (0, 0, 0), -1)
-    cv2.putText(img, f"{mode.upper()}  {res.label}", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2)
+    title = f"{mode.upper()}  {res.label}"
+    if rt.brain.pet.active:
+        p = rt.brain.pet
+        title = f"PET:{p.state}  {res.label}"
+        bw = 160                                                   # energy bar
+        cv2.rectangle(img, (W - 300, 10), (W - 300 + bw, 24), (80, 80, 80), 1)
+        cv2.rectangle(img, (W - 300, 10), (W - 300 + int(bw * p.energy), 24), col, -1)
+        cv2.putText(img, f"energy {p.energy:.2f}", (W - 300, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
+        if p.state == P.SLEEP:
+            cv2.putText(img, "zzz", (W // 2 - 30, H // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.5, col, 3)
+    cv2.putText(img, title, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2)
     draw_learn(img, res, rt)
     st = rt.stats
     stop = f"{st.stop_ms:.0f}ms" if st.stop_ms >= 0 else "-"
@@ -153,6 +169,8 @@ def main() -> int:
     for kv in a.set:
         k, v = kv.split("=", 1)
         over[k.strip()] = float(v)
+    if a.pet:
+        over["pet_start"] = 1.0
     cfg = g.load_config(a.conf, over)
 
     src = a.video if a.video else a.camera
@@ -208,7 +226,7 @@ def main() -> int:
                 if k == ord("m"):
                     with rt.ctl_lock:
                         cmds = rt.ctl._stop(now_ms(), "key")
-                        rt.ctl.mode = g.FOLLOW_MODE if rt.ctl.mode == g.GESTURE_MODE else g.GESTURE_MODE
+                        rt.ctl.mode = g.next_mode(rt.ctl.mode, cfg)
                     rt._send(cmds, None)
                     print(f"[mode] {rt.ctl.mode} (key)", flush=True)
                 if k == ord("p"):
