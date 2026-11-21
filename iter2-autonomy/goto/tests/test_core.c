@@ -1080,6 +1080,86 @@ static void test_map_occluded_detour(void)
     CHECK(had_event("not_there trash can #1", EV), "nothing from the vantage either -> not_there");
 }
 
+/* distance from (px,pz) to an axis-aligned rectangle */
+static double rect_dist(double px, double pz, double x0, double z0, double x1, double z1)
+{
+    double dx = px < x0 ? x0 - px : px > x1 ? px - x1 : 0, dz = pz < z0 ? z0 - pz : pz > z1 ? pz - z1 : 0;
+    return hypot(dx, dz);
+}
+
+/* Regression (full-stack sim, rare OCCLUSION flake): something appears ~0.4 m in front of the robot
+ * at the spot, inside its own 9x9-cell footprint square (and lidar_guard's stop zone). Every plan
+ * from here was START_BLOCKED, so no vantage cell "qualified": OCCLUDED -> next_candidate -> a blind
+ * 360 from behind the board -> not_found. It must still DETOUR: pivot away (allowed while the guard
+ * is BLOCKED), drive FORWARD a little away from the board (never reverse), then on to a vantage cell. */
+static void test_map_occluder_inside_footprint(void)
+{
+    map_setup();                                        /* default 0.35 m radius, like the robot */
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(2.05, 0.45, 0);                           /* facing +z */
+    add_inst(2.05, 2.05, MEM_FRESH);                    /* the bin, 1.6 m ahead */
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    run_legs_ev(10);
+    CHECK(S.st == ST_LOOK && hypot(PX - 2.05, PZ - 2.05) < 0.95, "at the spot, looking (%s, %.2f m)",
+          goto_state_name(S.st), hypot(PX - 2.05, PZ - 2.05));
+    /* a 0.6 m board 0.39 m ahead of the robot, between it and the bin: one row of OCC cells
+     * (sampled densely: 0.1 m steps from a cell edge skip cells to float rounding) */
+    int ix0, ix1, izb;
+    nav_world_to_cell((float)(PX - 0.3), (float)(PZ + 0.39), &ix0, &izb);
+    nav_world_to_cell((float)(PX + 0.3), (float)(PZ + 0.39), &ix1, &izb);
+    for (int ix = ix0; ix <= ix1; ix++) nav_set_cell(N, ix, izb, NAV_OCC);
+    double bx0 = NAV_ORIGIN_X + ix0 * NAV_RES, bx1 = NAV_ORIGIN_X + (ix1 + 1) * NAV_RES;   /* the cells' extent */
+    double bz0 = NAV_ORIGIN_Z + izb * NAV_RES + 0.05, bz1 = bz0 + 0.05;                    /* (bz0 - 0.05 .. bz1) */
+    double d0 = rect_dist(PX, PZ, bx0, bz0 - 0.05, bx1, bz1);
+    CHECK(d0 < 0.45 && ix1 - ix0 >= 5, "board (%d cells) %.2f m ahead: inside the footprint square", ix1 - ix0 + 1, d0);
+    advance(0.4);
+    clear();
+    look_empty(4);
+    grab_events();
+    CHECK(had_event("occluded trash can #1", EV) && had_event("detour trash can #1", EV),
+          "occluder inside the footprint: OCCLUDED -> DETOUR, not next_candidate (%s)", EV);
+    CHECK(!had_event("next_candidate", EV) && S.st == ST_FOLLOW_PATH && S.vantage,
+          "routes to a vantage cell (%s)", goto_state_name(S.st));
+    /* drive it: the robot centre must never get closer to the board than it was */
+    int id = 1200, first_turn = 1;
+    double first_deg = 0, closest = d0;
+    for (int n = 0; n < 40; n++) {
+        grab_events();
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (!a && !m) break;
+        if (a) { if (first_turn) first_deg = a->a; PYAW -= a->a * M_PI / 180; }
+        else {
+            if (m->a < 0) reverse_moves++;
+            double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            for (int k = 1; k <= 20; k++) {
+                double qx = PX + (nx - PX) * k / 20, qz = PZ + (nz - PZ) * k / 20;
+                if (fabs(qx - 2.05) < 0.9 && qz < 1.4) closest = fmin(closest, rect_dist(qx, qz, bx0, bz0 - 0.05, bx1, bz1));
+            }
+            PX = nx; PZ = nz;
+        }
+        first_turn = 0;
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        leg_done_phone_lags(id);
+    }
+    CHECK(fabs(first_deg) >= 90, "first it pivots away from the board (TURN %.0f)", first_deg);
+    CHECK(reverse_moves == 0 && crossed_occ == 0, "no reverse moves (%d), no leg through the board (%d)", reverse_moves, crossed_occ);
+    CHECK(closest >= d0 - 0.02, "never drove closer to the board (start %.2f m, closest %.2f m)", d0, closest);
+    CHECK(S.st == ST_LOOK && nav_line_clear(N, (float)PX, (float)PZ, 2.05f, 2.05f) == 1,
+          "vantage reached with a clear view of the spot, LOOK (%s)", goto_state_name(S.st));
+    /* YOLO sees it from there and docks */
+    clear();
+    advance(0.4);
+    for (int i = 0; i < 2; i++) { advance(0.12); frame("trash can", 0.5, 0.3, 0.8); }
+    for (int i = 0; i < 3; i++) { advance(0.12); frame("trash can", 0.5, 0.75, 0.95); }
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "ARRIVED after the detour (%s)", S.result);
+}
+
 static void test_map_no_route_fails(void)
 {
     map_setup();
@@ -1299,6 +1379,7 @@ int main(void)
     test_map_explore_sees_the_goal();
     test_map_gone_then_check_others();
     test_map_occluded_detour();
+    test_map_occluder_inside_footprint();
     test_map_no_route_fails();
     test_map_stop_mid_path();
     test_map_guard_and_replan();

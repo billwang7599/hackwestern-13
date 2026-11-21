@@ -1149,6 +1149,77 @@ static void check_others(goto_sm *s, int downgrade)
 
 static void do_plan(goto_sm *s);
 
+/* the robot is standing here, so its own footprint is floor: the phone can't see under it.
+ * Same square nav_plan checks (ceil(0.35 / 0.1) = 4 cells each side); never clears OCC. */
+static void mark_footprint_free(goto_sm *s, double x, double z)
+{
+    int cx, cz;
+    if (nav_world_to_cell((float)x, (float)z, &cx, &cz))
+        for (int i = -4; i <= 4; i++)
+            for (int k = -4; k <= 4; k++)
+                if (nav_cell_at(s->nav, cx + i, cz + k) == NAV_UNKNOWN) nav_set_cell(s->nav, cx + i, cz + k, NAV_FREE);
+}
+
+/* the robot's footprint square at (px,pz) is all observed free (nav_plan's start rule) */
+static int foot_clear(goto_sm *s, double px, double pz)
+{
+    nav_pt_t tmp[2];
+    return nav_plan_ring(s->nav, (float)px, (float)pz, (float)px, (float)pz, 0.0f, 0.11f, tmp, 2) >= 0;
+}
+
+/* Something stands inside the robot's own footprint square (< ~0.45 m away: a person or a board
+ * stepping in right in front, also inside lidar_guard's stop zone), so every plan from here is
+ * START_BLOCKED, though the robot isn't touching it. A nearby cell 0.2-0.4 m away to back off to,
+ * WITHOUT reversing: its footprint is clear, the straight line to it is observed free, and the
+ * direction points away from every obstacle in the footprint, so a pivot (tars_motor allows it
+ * under a fresh BLOCKED) and a forward MOVE only ever increase the distance to them. */
+static int backoff_cell(goto_sm *s, double x, double z, double *bx, double *bz)
+{
+    int cx, cz;
+    if (!nav_world_to_cell((float)x, (float)z, &cx, &cz)) return 0;
+    double ox[81], oz[81], mx = 0, mz = 0;
+    int no = 0;
+    for (int i = -4; i <= 4; i++)
+        for (int k = -4; k <= 4; k++)
+            if (nav_cell_at(s->nav, cx + i, cz + k) == NAV_OCC) {
+                ox[no] = NAV_ORIGIN_X + (cx + i + 0.5) * NAV_RES - x;
+                oz[no] = NAV_ORIGIN_Z + (cz + k + 0.5) * NAV_RES - z;
+                mx += ox[no]; mz += oz[no]; no++;
+            }
+    if (!no) return 0;
+    double away = atan2(-mx, -mz);              /* straight away from the obstacles' middle */
+    for (double r = 0.2; r <= 0.41; r += 0.1)
+        for (int j = 0; j < 16; j++) {          /* 0, +1, -1, +2, ... steps of 22.5 deg from "away" */
+            double a = away + ((j + 1) / 2) * (j % 2 ? 1 : -1) * (M_PI / 8), dx = sin(a), dz = cos(a);
+            int ok = 1;
+            for (int o = 0; o < no && ok; o++) ok = dx * ox[o] + dz * oz[o] <= 0;
+            if (!ok) continue;
+            double px = x + r * dx, pz = z + r * dz;
+            if (nav_line_clear_ex(s->nav, (float)x, (float)z, (float)px, (float)pz, 0.0f) != 1) continue;
+            if (!foot_clear(s, px, pz)) continue;
+            *bx = px;
+            *bz = pz;
+            return 1;
+        }
+    return 0;
+}
+
+/* nav_plan(_ring) from the robot into s->path; if the start is blocked by something in the
+ * footprint, back off first: path[0] = the back-off cell, then the route from there */
+static int plan_from_robot(goto_sm *s, double x, double z, double tx, double tz, int ring_default)
+{
+    int n = ring_default ? nav_plan(s->nav, (float)x, (float)z, (float)tx, (float)tz, s->path, 64)
+                         : nav_plan_ring(s->nav, (float)x, (float)z, (float)tx, (float)tz, 0.0f, 0.11f, s->path, 64);
+    double bx, bz;
+    if (n != NAV_ERR_START_BLOCKED || !backoff_cell(s, x, z, &bx, &bz)) return n;
+    int m = ring_default ? nav_plan(s->nav, (float)bx, (float)bz, (float)tx, (float)tz, s->path + 1, 63)
+                         : nav_plan_ring(s->nav, (float)bx, (float)bz, (float)tx, (float)tz, 0.0f, 0.11f, s->path + 1, 63);
+    if (m < 0) return m == NAV_ERR_START_BLOCKED ? n : m;
+    s->path[0].x = (float)bx;
+    s->path[0].z = (float)bz;
+    return m + 1;
+}
+
 /* the goal's surroundings are unmapped (LiDAR shadow): a reachable, mapped free cell that is
  * clearly closer to the goal, so the phone can see more from there. Frontier-lite. */
 static int pick_explore(goto_sm *s)
@@ -1188,18 +1259,20 @@ static int pick_vantage(goto_sm *s)
     double cx[72], cz[72], cd[72];
     int n = 0;
     static const double R[3] = {0.7, 1.0, 1.3};
+    mark_footprint_free(s, x, z);
     for (int r = 0; r < 3; r++)
         for (int k = 0; k < 24; k++) {
             double a = k * 2 * M_PI / 24, px = s->goal_x + R[r] * sin(a), pz = s->goal_z + R[r] * cos(a);
             if (nav_cell(s->nav, (float)px, (float)pz) != NAV_FREE) continue;
             if (nav_line_clear(s->nav, (float)px, (float)pz, (float)s->goal_x, (float)s->goal_z) != 1) continue;
+            if (!foot_clear(s, px, pz)) continue;   /* the robot must fit there: don't spend a try on it */
             double d = hypot(px - x, pz - z);
             int j = n++;
             while (j > 0 && cd[j - 1] > d) { cx[j] = cx[j - 1]; cz[j] = cz[j - 1]; cd[j] = cd[j - 1]; j--; }
             cx[j] = px; cz[j] = pz; cd[j] = d;
         }
     for (int i = 0; i < n && i < 8; i++)
-        if (nav_plan_ring(s->nav, (float)x, (float)z, (float)cx[i], (float)cz[i], 0.0f, 0.11f, s->path, 64) >= 0) {
+        if (plan_from_robot(s, x, z, cx[i], cz[i], 0) >= 0) {
             s->vx = cx[i];
             s->vz = cz[i];
             return 1;
@@ -1226,15 +1299,9 @@ static void do_plan(goto_sm *s)
     set_state(s, ST_PLAN);
     s->plan_wait = 0;
     if (nav_count(s->nav, NAV_FREE) == 0) { map_fallback(s, "no_map"); return; }
-    /* the robot is standing here, so its own footprint is floor: the phone can't see under
-     * it. Same square nav_plan checks (ceil(0.35 / 0.1) = 4 cells each side); never clears OCC. */
-    int cx, cz;
-    if (nav_world_to_cell((float)x, (float)z, &cx, &cz))
-        for (int i = -4; i <= 4; i++)
-            for (int k = -4; k <= 4; k++)
-                if (nav_cell_at(s->nav, cx + i, cz + k) == NAV_UNKNOWN) nav_set_cell(s->nav, cx + i, cz + k, NAV_FREE);
-    int n = s->vantage ? nav_plan_ring(s->nav, (float)x, (float)z, (float)s->vx, (float)s->vz, 0.0f, 0.11f, s->path, 64)
-                       : nav_plan(s->nav, (float)x, (float)z, (float)s->goal_x, (float)s->goal_z, s->path, 64);
+    mark_footprint_free(s, x, z);
+    int n = s->vantage ? plan_from_robot(s, x, z, s->vx, s->vz, 0)
+                       : plan_from_robot(s, x, z, s->goal_x, s->goal_z, 1);
     s->path_ver = nav_version(s->nav);
     if (n >= 0) {
         s->path_n = n;
