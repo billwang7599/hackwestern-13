@@ -48,7 +48,6 @@ forward	step forward
 forward	walk forward
 forward	go on
 forward	proceed
-forward	move it
 forward	let's go
 forward	get going
 forward	move forward {d}
@@ -582,6 +581,8 @@ unknown	good morning
 unknown	i like your robot
 unknown	is that a raspberry pi
 unknown	what language is this
+# bare turn/rotate/move: no direction -> also rejected by rule (intent_is_bare). Bare "go"/"drive" = forward.
+unknown	move it
 unknown	turn
 unknown	turn turn
 unknown	turn the

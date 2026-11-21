@@ -141,6 +141,26 @@ int intent_safety_stop(char **toks, int n, int wake)
     return 0;
 }
 
+/* ---------------------------------------------------------------- bare fragments */
+/* "TARS, turn." / "move" / "move it" / "turn turn": a motion verb with no direction, amount
+ * or object. The linear model can't learn these (the words dominate left/right/turn_around),
+ * so they're rejected by rule, after both stop checks (a stop is never removed). */
+/* verbs with no default direction ("go" / "drive" alone = forward, as in realistic.tsv) */
+static const char *const BARE_VERBS[] = { "turn", "turns", "turning", "tern", "move", "moving",
+    "rotate", "rotating", NULL };
+static const char *const BARE_FILLER[] = { "the", "a", "an", "to", "it", "now", "please", "just",
+    "again", "and", "then", "uh", "um", "so", "on", "there", NULL };
+
+int intent_is_bare(char **toks, int n)
+{
+    int verbs = 0;
+    for (int i = 0; i < n; i++) {
+        if (in_list(toks[i], BARE_VERBS)) verbs++;
+        else if (!in_list(toks[i], BARE_FILLER)) return 0;
+    }
+    return verbs > 0;
+}
+
 /* ---------------------------------------------------------------- features + model */
 static unsigned fnv1a(const unsigned char *p, int n, int prefix)
 {
@@ -495,6 +515,12 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *d)
         d->action = INTENT_ACT_STOP; d->why = "classifier";
         add_line(d, "S", 0);
         add_line(d, CANCEL, 0);
+        return;
+    }
+    if (intent_is_bare(toks, nt)) {         /* "TARS, turn." never moves (README: bare fragments) */
+        d->action = INTENT_ACT_REJECT; d->why = "bare";
+        add_line(d, "LED no", 0);
+        add_line(d, "BEEP 3", 0);
         return;
     }
     if (!strcmp(name, "unknown") || p[k] < INTENT_THRESHOLD) {

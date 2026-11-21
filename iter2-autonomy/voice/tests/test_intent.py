@@ -4,6 +4,7 @@
     make -C iter2-autonomy/voice test-intent        # builds build/intent_cli, then runs this
 
   1. normalisation, wake word, safety words, number/slot parser (unit tests)
+     1b. regressions found by the bench voice lab (bare "turn", "the left one", ...)
   2. held-out accuracy on TEST templates (phrasings never seen in training),
      per-class precision/recall, confusion matrix, accept/reject rates
   3. hand-written realistic whisper transcripts (data/realistic.tsv)
@@ -125,6 +126,37 @@ def test_units(m: I.Model) -> None:
         d = I.decide(m, text)
         check(first_line(d) == want, f"slot {text!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f})")
     return list(slot_cases)
+
+
+# ------------------------------------------------------------------ 1b. regressions (bench voice lab)
+MOTION = ("MOVE", "TURN", I.GOTO_PREFIX + "GOTO", I.GOTO_PREFIX + "RECALL")
+
+
+def test_regressions(m: I.Model) -> list[str]:
+    """Bugs found by the laptop bench voice lab. Each must stay fixed, in Python and C (parity)."""
+    print("regressions: bare fragments")
+    texts = []
+    # 1. a motion verb with no direction must never move ("TARS, turn." used to give TURN 180)
+    bare = ["TARS, turn.", "tars turn", "Tars, turn!", "tars turn turn", "tars turn turn turn",
+            "tars turn the", "tars turn it", "tars turn now", "tars uh turn", "tars turning",
+            "tars move", "tars move it", "tars move it move it", "tars just move", "tars move now please",
+            "tars rotate", "tars rotate it", "tars, tern.", "tars go to", "tars go to the"]
+    for t in bare:
+        d = I.decide(m, t)
+        check(d.action == "reject" and d.lines == ["LED no", "BEEP 3"] and not any(l.startswith(MOTION) for l in d.lines),
+              f"bare fragment rejected {t!r}: {d}")
+    check(I.decide(m, "tars turn").why == "bare", "bare turn: why=bare")
+    # ...but a stop inside one still stops, and real commands with the same verbs still work
+    for t in ("tars turn stop", "turn turn stop", "tars move no", "tars rotate wait"):
+        check(I.decide(m, t).lines == ["S", I.CANCEL], f"stop wins over bare {t!r}")
+    still = {"tars turn left": "TURN -30", "tars turn right": "TURN 30", "tars turn around": "TURN 180",
+             "tars move forward": "MOVE 300", "tars move back": "MOVE -300", "tars rotate left": "TURN -30",
+             "tars spin": "TURN 360", "TARS. Go!": "MOVE 300", "tars back up a bit": "MOVE -100",
+             "tars move to the chair": "GOTO chair", "tars turn to the left": "TURN -30"}
+    for t, want in still.items():
+        d = I.decide(m, t)
+        check(first_line(d) == want, f"not bare {t!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f})")
+    return texts + bare + list(still)
 
 
 # ------------------------------------------------------------------ 2. held-out accuracy
@@ -273,7 +305,7 @@ if __name__ == "__main__":
         sys.exit(f"{CLI} missing: run make -C iter2-autonomy/voice intent_cli")
     model = I.load_model()
     print(f"model: threshold {model.threshold}, stop_threshold {model.stop_threshold}")
-    slot_texts = test_units(model)
+    slot_texts = test_units(model) + test_regressions(model)
     gen = gen_data.generate(30, seed=13)
     test_rows = [r for r in gen if r[2] == "test"]
     acc, okr, wr, rj = evaluate(model, test_rows)

@@ -130,6 +130,19 @@ def safety_stop(toks: list[str], wake: bool) -> bool:
         return True
     return wake and any(t in WEAK_STOP for t in toks)
 
+# ---------------------------------------------------------------- bare fragments
+# "TARS, turn." / "move" / "move it" / "turn turn": a motion verb with no direction, amount or
+# object. The linear model can't learn these (the words dominate left/right/turn_around), so
+# they're rejected by rule, after both stop checks (a stop is never removed).
+# verbs with no default direction ("go" / "drive" alone = forward, as in realistic.tsv)
+BARE_VERBS = {"turn", "turns", "turning", "tern", "move", "moving", "rotate", "rotating"}
+BARE_FILLER = {"the", "a", "an", "to", "it", "now", "please", "just", "again", "and", "then",
+               "uh", "um", "so", "on", "there"}
+
+
+def is_bare(toks: list[str]) -> bool:
+    return any(t in BARE_VERBS for t in toks) and all(t in BARE_VERBS or t in BARE_FILLER for t in toks)
+
 # ---------------------------------------------------------------- features
 def fnv1a(data: bytes) -> int:
     h = 2166136261
@@ -420,7 +433,7 @@ class Decision:
     intent: str = "-"
     prob: float = 0.0
     wake: bool = False
-    why: str = ""                  # safety | classifier | low_conf | unknown | no_object | no_wake | empty
+    why: str = ""                  # safety | classifier | low_conf | unknown | bare | no_object | no_wake | empty
     lines: list[str] = field(default_factory=list)    # to tars_motor, in order
 
 
@@ -463,6 +476,8 @@ def decide(model: Model, text: str, require_wake: bool = True) -> Decision:
     intent = INTENTS[k]
     if intent == "stop" and p[k] >= model.stop_threshold:
         return Decision("stop", intent, p[k], wake, "classifier", ["S", CANCEL])
+    if is_bare(rest):                   # "TARS, turn." never moves (README: bare fragments)
+        return Decision("reject", intent, p[k], wake, "bare", ["LED no", "BEEP 3"])
     if intent == "unknown" or p[k] < model.threshold:
         return Decision("reject", intent, p[k], wake, "unknown" if intent == "unknown" else "low_conf",
                         ["LED no", "BEEP 3"])
