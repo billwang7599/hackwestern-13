@@ -74,8 +74,8 @@ unless a test picks free ports.
 | Port | Who listens | What |
 |---|---|---|
 | 8770 | `bench.py` | the browser page |
-| 5590 | world sim / bench (UDP) | **virtual car truth**, 50 Hz, one JSON per datagram: `{"t": ms, "x": m, "y": m, "th": rad, "v": m/s, "w": rad/s, "wl": m/s, "wr": m/s, "pwm_l": -255..255, "pwm_r": …, "batt_v": V, "contact": bool}` |
-| 5591 | virtual car (UDP) | **car control**, one JSON per datagram: `{"set": {<profile key>: value}}`, `{"pose": {"x","y","th"}}` (teleport), `{"fault": "push"\|"lift_left"\|"lift_right"\|"tip"\|"bump"\|"unplug"\|"brownout"\|"clear", …}`, `{"walls": [[x1,y1,x2,y2], …]}` (the car stops against walls and the firmware feels a bump) |
+| 5590 | world sim / bench (UDP) | **virtual car truth**, 50 Hz, one JSON per datagram: `{"t": ms, "x": m, "y": m, "th": rad, "v": m/s, "w": rad/s, "wl": m/s, "wr": m/s, "pwm_l": -255..255, "pwm_r": …, "batt_v": V, "contact": bool}`, plus extra keys (additive, see "Virtual car" below). The car sends it to 5590 **and** to every subscriber (`{"sub": port}` on 5591), so the world sim and the bench both get it |
+| 5591 | virtual car (UDP) | **car control**, one JSON per datagram: `{"set": {<profile key>: value}}`, `{"pose": {"x","y","th"}}` (teleport), `{"fault": "push"\|"lift_left"\|"lift_right"\|"tip"\|"bump"\|"unplug"\|"brownout"\|"clear", …}`, `{"walls": [[x1,y1,x2,y2], …]}` (the car stops against walls and the firmware feels a bump), `{"sub": <udp port>}` (send truth there too for 5 s; renew every ~2 s), `{"button": "tap"\|"hold"\|"down"\|"up"}`, `{"reset": true}`, `{"get": "profile"}`. **Every datagram gets a JSON reply** to its sender: `{"ok": true, …}` or `{"ok": false, "error": …}` |
 | 5592 | world sim | world control (format in `world/README.md`) |
 | 5593 | bench (UDP) | world state for the 2D view (format in `world/README.md`) |
 | 5594–5595 | phone part | reserved (`phone/README.md`) |
