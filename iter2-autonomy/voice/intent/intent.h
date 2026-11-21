@@ -27,7 +27,7 @@ typedef struct {
     const char *intent;      /* "forward" ... "unknown", or "-" */
     float prob;              /* classifier max prob (1.0 for the safety pass) */
     int wake;                /* wake word heard */
-    const char *why;         /* safety | classifier | low_conf | unknown | no_object | no_wake | empty */
+    const char *why;         /* safety | classifier | low_conf | unknown | bare | no_object | no_wake | empty */
     const char *object;      /* goto: canonical object, else NULL */
     int n_lines;
     char lines[INTENT_MAX_LINES][INTENT_LINE_LEN];   /* to tars_motor, in order */
@@ -41,6 +41,8 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *out);
 int  intent_normalize(const char *text, char *buf, int buflen, char **toks, int max_toks);
 int  intent_is_wake(const char *tok);
 int  intent_safety_stop(char **toks, int n, int wake);
+/* only motion verbs + fillers ("turn", "rotate", "move it"): rejected, never a move */
+int  intent_is_bare(char **toks, int n);
 void intent_probs(char **toks, int n, float *probs /* [INTENT_N] */);
 int  intent_parse_amount(char **toks, int n, double *val, const char **unit);
 /* goto: canonical object named in toks (objects.txt, embedded in intent_model.h), or NULL */

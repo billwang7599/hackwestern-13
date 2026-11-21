@@ -3,7 +3,9 @@
 #   make host          Mac/Linux build: build/tars_voice_host, build/intent_cli, build/stt_cli (laptop)
 #   make test          intent tests + end-to-end (say -> WAV -> whisper -> fake tars_motor)
 #   make test-intent   only the classifier tests (no whisper / model needed)
+#   make test-stt      whisper repeat-loop filter (no model needed)
 #   make test-net      HEAR / AUDIO / WATCH network input (mission control)
+#   make test-goto-link  voice moves vs the real goto + tars_motor (CANCEL race)
 #   make               QNX aarch64 build (in docker/run.sh): build/qnx/tars_voice, build/qnx/mic_test
 #   make mic_test      QNX mic check only (no whisper; small, build this first)
 #   make deploy PI_HOST=qnxuser@<pi-ip>
@@ -32,7 +34,7 @@ ifeq ($(UNAME),Darwin)
 HOST_LIBS := -framework Accelerate -framework Foundation
 endif
 
-.PHONY: all host test test-intent test-net e2e qnx mic_test deploy clean fetch model
+.PHONY: all host test test-intent test-stt test-net test-goto-link e2e qnx mic_test deploy clean fetch model
 
 all: qnx
 
@@ -79,7 +81,18 @@ test-net: host
 	@test -f models/ggml-tiny.en-q5_1.bin || ./get_model.sh
 	python3 tests/test_net.py
 
-test: test-intent e2e test-net
+# voice manual moves vs the REAL goto + REAL tars_motor (CANCEL/S race, goto stalls)
+test-goto-link: host
+	@test -f models/ggml-tiny.en-q5_1.bin || ./get_model.sh
+	@test -x ../goto/build/goto_host || $(MAKE) -C ../goto host
+	@test -x ../../iter1-wasd/pi/build/tars_motor_host || $(MAKE) -C ../../iter1-wasd/pi host
+	python3 tests/test_goto_link.py
+
+# whisper repeat-loop filter (stt_dedupe) via stt_cli --dedupe; no model needed
+test-stt: build/stt_cli
+	python3 tests/test_stt.py
+
+test: test-intent test-stt e2e test-net test-goto-link
 
 # ---------------------------------------------------------------- QNX (aarch64)
 ifneq ($(shell command -v qcc 2>/dev/null),)

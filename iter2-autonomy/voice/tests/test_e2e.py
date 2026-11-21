@@ -281,7 +281,8 @@ def main() -> int:
                     print(f"    miss: {text!r} want {want} got {got}; heard {heard}")
             if res["name"].endswith("clean"):
                 check(res["wrong_motion"] == 0, f"[{res['name']}] no wrong motion")
-            check(res["goto_got"] == res["goto_sent"], f"[{res['name']}] go-to controller got {res['goto_got']} vs sent {res['goto_sent']}")
+            got = [l for l in res["goto_got"] if l != "STATUS"]   # STATUS = voice's "is it busy?" probe before a move
+            check(got == res["goto_sent"], f"[{res['name']}] go-to controller got {got} vs sent {res['goto_sent']}")
             check(not res["bad_replies"], f"[{res['name']}] tars_motor rejected {res['bad_replies']}")
             if res["name"].endswith("clean"):
                 check(res["good"] >= 0.85 * res["n"], f"[{res['name']}] clean accuracy >= 85% ({res['good']}/{res['n']})")
