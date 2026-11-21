@@ -85,6 +85,76 @@ unless a test picks free ports.
 forward direction at its start pose, y = left, `th` = heading in radians, counter-clockwise
 from +x. Converting to ARKit (y up) or goto's frames is the world sim's job.
 
+## Virtual car (`bench/car/`)
+
+**What it is:** the real `iter1-wasd/uno/tars/tars.ino`, default `CAR_SM11` build (DC wheels,
+EN+IN driver, kit pins), compiled **unchanged** for the Mac with the firmware test mocks
+(`iter1-wasd/uno/test/mock/`), inside `build/vuno`, which adds:
+- **Serial** on a pseudo-terminal. Opening it resets the "Uno" like DTR does (WHEELS DC,
+  WHEELS DCSLOW, READY after `boot_ms`, bytes sent meanwhile are lost).
+- **Time:** `millis()`/`micros()` from the real clock.
+- **Pins → physics** (`physics.h`, 1 ms steps): L298N coast/brake/drive, a sagging battery,
+  deadband (start vs keep-rolling), first-order lag, side gains, slip, drift, skid-steer
+  track, walls (stall plus a bump spike).
+- **Accelerometer:** physics → MPU6050 registers, so tip/bump run the firmware's own code.
+- **Button / LED / buzzer** on the kit pins (D13 / D3 / D12).
+
+```sh
+make -C bench/car                                 # build/vuno (host clang)
+python3 bench/car/launch.py --motor 5555          # car + host tars_motor -b uno, ports 5590/5591
+python3 bench/car/launch.py ctl '{"fault":"tip"}' # one control datagram
+python3 bench/tests/test_car.py                   # through the real tars_motor + wheel_cal.py
+python3 bench/tests/test_car_plugin.py            # plugins/car.py routes + topic
+bench/car/hil.sh                                  # the REAL Uno on this Mac's USB (untested)
+```
+
+**For run_sim.py:**
+`sys.path.insert(0, "bench/car"); import launch as car`, then
+`proc, dev = car.start("sm11", truth_port, ctl_port, seed)`,
+optionally `car.start_motor(dev, port, guard_port=…)`, and finally `car.stop()`.
+- Give tars_motor **`dev`** (a symlink, default `<tempdir>/tars-vuno-<ctl_port>`), not the
+  `/dev/ttys…` path: "unplug" re-creates the pty and moves the link, which is how tars_motor's
+  normal 1 s reconnect finds it.
+- `start` prints nothing; the car logs to the `log=` file. `--trace` (in `extra=`) logs every
+  serial line both ways.
+
+**Truth extras** (beyond the 5590 row): `batt_a`, `mode_l`/`mode_r` (0 coast, 1 brake,
+2 drive), `odo` (m driven), `roll` (deg), `imu` [x,y,z] g, `led`, `buzz`, `btn`,
+`fw` ("run"/"reset"), `boots`, `plugged`, `host_open`, `pty`, `faults` {tip, lift_left,
+lift_right, brownout, unplug}, `stalls`/`stall_max_ms` (main-loop gaps over 50 ms, meaning a busy laptop).
+`wl`/`wr` are wheel **surface** speeds: a lifted wheel spins, a stalled one reads ~0.
+
+**Faults:**
+- `push` (`vx`,`vy` body m/s, default 0.3 sideways)
+- `bump` (`g`, default 2.5)
+- `tip` (roll 75°, until clear)
+- `lift_left` / `lift_right` (that wheel loses the floor, 12° roll)
+- `unplug` (`ms`, default 1500, 0 = until clear; the firmware keeps running on the battery)
+- `brownout` (`v` default 4.0, `ms` default 400; below `uno_resets_below_v` the Uno resets
+  and says READY again)
+- `clear`
+
+**Profile:** `profiles/sm11.json`. **Every value is `measured: false`**, with its source;
+the file's `measure_when_the_car_arrives` lists how to replace each one (wheel_cal.py
+dc-move/dc-spin, docs/PI_TEST.md §2b and Step 5). They are tuned so the firmware's own
+defaults make sense: duty 0.45 (`DC_MAX_DUTY`) gives 150 mm/s, duty 0.30 (`DC_MIN_DUTY`)
+keeps a rolling wheel going but can't start one, so the 0.8 × 40 ms kick does that. The
+skid-steer track (0.20 m, from `test_dc_car.py`) makes an **uncalibrated** `TURN` under-turn
+(D 1 spins ~68°/s here vs the firmware's default 120), as a real car would before
+`wheel_cal.py dc-spin`. Live changes: `{"set": …}` or the panel sliders; nothing is saved.
+The firmware's EEPROM survives resets and unplugs, but not a restart of `vuno`.
+
+**Determinism:** noise comes from `--seed`, but the firmware runs on the real clock, so two
+runs agree statistically, not bit for bit. A busy laptop shows up in `stalls`.
+
+**What it can't tell you:**
+- The real kit's numbers (all guesses until measured).
+- PWM-frequency effects (490 vs 980 Hz), beyond the gain.
+- Serial at 115200 baud (the pty is instant).
+- The AVR's speed or RAM.
+- The Bluetooth module on D0/D1.
+- Whether the real Uno resets on open (CH340 clones do too; `--no-reset-on-open` models one that doesn't).
+
 ## Testing honesty
 
 Say exactly what ran: the sim, a recording, the real Uno on USB, the iPhone. The bench
