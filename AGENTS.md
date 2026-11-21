@@ -22,7 +22,7 @@ Read [PLAN.md](PLAN.md) first. It has the architecture, the CPU budget and the c
 | `uno/tars/tars.ino` | Uno firmware: wheels, LED, buzzer, button, tip/bump | Arduino C++ |
 | `uno/test/` | host-side firmware tests with mocks (`make -C uno/test`) | C++ |
 | `pi/` | `tars_motor` QNX server + `test_server.py` (`make -C pi host && make -C pi test`) | C / Python |
-| `vision/` | MediaPipe gestures, follow mode, teach-a-gesture (`GESTURES.md`) | Python (+ partial C++) |
+| `vision/` | MediaPipe gestures, follow mode, teach-a-gesture, pet mode (`GESTURES.md`) | Python + C++ ports (parity-tested) |
 | `voice/` | speech-to-text (whisper.cpp) + intent classifier | C/C++ (+ Python training) |
 | `goto/` | "go to the trash can": `goto` controller (C) + `detect` YOLO via ONNX Runtime (C++), `objects.txt` aliases, `DETECTIONS.md` (`make -C goto host && make -C goto test`) | C / C++ (+ Python export & sim) |
 | `laptop/` | `tars_client.py`, WASD `teleop.py`, `wheel_cal.py` (dev only) | Python |

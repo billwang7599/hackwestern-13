@@ -10,6 +10,7 @@ Update the status table when you finish something.
 1. **Keyboard + motor control.** Laptop WASD over Wi-Fi to the Pi, then to the Uno and the wheels. Demo path: native C `tars_motor`.
 2. **Voice to command to YOLO "go to".** "TARS, go to the trash can": speech, then intent `goto` + object, then YOLO finds it, then the robot searches, steers and stops on arrival.
 3. *Back burner:* MediaPipe gestures, follow mode, teach-a-gesture. Keep the code, but don't spend time on it.
+4. *Iteration 3 (after 1 + 2 work on the robot):* **pet mode**, see below.
 
 ## The robot
 
@@ -67,9 +68,25 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 | Uno stepper firmware, `tars_motor`, WASD teleop, `docs/PI_TEST.md` | `main` | Mac tests pass. **Not run on hardware yet.** |
 | MediaPipe gestures + follow mode | `main` | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
 | Teach-a-gesture on the spot | `main` | Mac tests pass. Back burner. |
+| Iteration 3: pet mode (`vision/common/pet.py` + `pet.hpp`) | `kothar/pet` | Mac only: 38/38 pet unit tests, Python vs C++ parity identical (pet sessions included). C++ app type-checked against stub headers. **Not built on QNX, not run on the Pi or with a real camera/hand.** |
 | Speech + intent classifier (`voice/`) | `main` | Mac tests pass (stop recall 100%, 107/109 realistic transcripts, 0 wrong moves; crowd chatter ~4/21). **Not built or run on QNX/Pi yet.** Next: `voice/qnx/mic_test` on the Pi. Use a close-talk mic or the Uno talk button on the demo floor. |
 | YOLO go-to-object (`goto/`: C `goto` + C++ `detect`) | `main` | Mac: 92/92 C unit (also under ASan/UBSan, parser fuzzed), 25/25 YOLO post, 34/34 socket+sim checks; 2D sim 40/40 random starts arrived (median 46 s, stops 0.49–0.58 m away); real `tars_motor_host -b stub` end to end; C++ `detect` + ONNX Runtime on the Mac matches ultralytics boxes to 0.1 px. **Not cross-compiled with qcc, camapi code never compiled, nothing run on the Pi.** |
 | Goalie / balancer experiments | `goalie/`, `balancer/` | Parked. Don't touch. |
+
+## Iteration 3: pet mode
+
+TARS reacts to your hand like a small pet, using MediaPipe on the Pi (QNX C++ app `vision/qnx/cpp/tars_gesture.cc`
+is the robot path). 👋 wave → wiggle hello · ✋ stay (stop) · ☝️ come here · 👍 happy spin (zoomies when
+excited) · 👎 sad back-up · ✌️ flash = 360° trick, hold = leave · ✊ hold = play dead · no hand → bored
+look-arounds, then sleep. A mood (`energy`) rises with 👍/👋 and decays, and scales speed. Enter with `--pet`
+or by cycling ✌️ GESTURE → FOLLOW → PET. Rules + bounds: `vision/GESTURES.md` §8.
+
+- **Stop still wins:** ✋ → `S` on the first frame from every pet state, nothing moves while it's up;
+  camera stall, lost hand and a `D` refused by `tars_motor` (another client's `S`, watchdog, tip, guard)
+  all stop and never auto-restart.
+- **Bounded:** every pet `D` ≤ `pet_max_speed`, every wiggle segment ≤ `pet_max_seg_ms`, come-here ≤ 5 s per command.
+- **CPU:** it's the MediaPipe mode in the CPU table (YOLO idle). Don't run it alongside go-to.
+- **Like the gesture moves, the body language is timed `D` segments, not `TURN`/`MOVE`.** Tune `pet_*` on the real robot.
 
 ## Hardware checks that gate everything (do these first)
 
