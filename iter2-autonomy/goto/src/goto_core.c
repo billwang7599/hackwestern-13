@@ -1358,6 +1358,36 @@ static int ring_unmapped(const goto_sm *s)
     return unknown * 2 > total;
 }
 
+/* Reveal spin bookkeeping. revealed_deg counts toward 360. On steppers TURN is exact, but a DC
+ * car's timed TURN can do 75% of what it's told: twelve 30 deg steps then covered only 270 deg,
+ * leaving part of the room unmapped (DC full-stack sim, obstacle with TURN x0.75: a long way
+ * round, docked at 150 s). With ARKit poses, each step's estimate is corrected by the measured
+ * yaw change. reveal_more() applies the correction for the step just finished, then says whether
+ * there's more to turn. */
+static int reveal_more(goto_sm *s)
+{
+    if (s->cfg.nav_reveal_deg <= 0) return 0;
+    double x, z, yaw;
+    if (s->revealed_deg > 0 && s->reveal_have_yaw && nav_pose(s, &x, &z, &yaw) == NAV_POSE_ARKIT) {
+        double got = fabs(wrap180(DEG(yaw - s->reveal_yaw)));
+        got = clampd(got, 0.25 * s->cfg.nav_reveal_deg, 2.0 * s->cfg.nav_reveal_deg);   /* a pose jump can't run away */
+        s->revealed_deg += got - s->cfg.nav_reveal_deg;
+    }
+    s->reveal_have_yaw = 0;
+    return s->revealed_deg < 360 - 1e-6;
+}
+
+static void reveal_turn(goto_sm *s)
+{
+    double x, z, yaw;
+    int first = s->revealed_deg <= 0;
+    s->revealed_deg += s->cfg.nav_reveal_deg;      /* estimate; reveal_more() corrects it */
+    if (nav_pose(s, &x, &z, &yaw) == NAV_POSE_ARKIT) { s->reveal_yaw = yaw; s->reveal_have_yaw = 1; }
+    s->leg = 3;
+    if (first) map_event(s, "reveal");
+    start_leg(s, ACT_TURN, s->cfg.nav_reveal_deg * s->search_dir);
+}
+
 static void do_plan(goto_sm *s)
 {
     double x, z, yaw;
@@ -1378,30 +1408,21 @@ static void do_plan(goto_sm *s)
         next_leg(s);
         return;
     }
-    if (n == NAV_ERR_START_BLOCKED && s->revealed_deg < 360 && s->cfg.nav_reveal_deg > 0) {
-        s->revealed_deg += s->cfg.nav_reveal_deg;
-        s->leg = 3;
-        if (s->revealed_deg <= s->cfg.nav_reveal_deg) map_event(s, "reveal");
-        start_leg(s, ACT_TURN, s->cfg.nav_reveal_deg * s->search_dir);
+    if (n == NAV_ERR_START_BLOCKED && reveal_more(s)) {
+        reveal_turn(s);
         return;
     }
     /* unknown floor blocks like an obstacle and the phone sees a 60 deg cone: before calling a
      * goal unreachable, spin in place (re-planning every step) to map around the robot */
     if ((n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH) && !s->vantage && !s->exploring &&
-        s->revealed_deg < 360 && s->cfg.nav_reveal_deg > 0) {
-        s->revealed_deg += s->cfg.nav_reveal_deg;
-        s->leg = 3;
-        if (s->revealed_deg <= s->cfg.nav_reveal_deg) map_event(s, "reveal");
-        start_leg(s, ACT_TURN, s->cfg.nav_reveal_deg * s->search_dir);
+        reveal_more(s)) {
+        reveal_turn(s);
         return;
     }
     if (n == NAV_ERR_NO_GOAL && !s->vantage && ring_unmapped(s)) {
         /* shadowed / never seen: spin to map around us, then hop closer, then give up to visual */
-        if (s->revealed_deg < 360 && s->cfg.nav_reveal_deg > 0) {
-            s->revealed_deg += s->cfg.nav_reveal_deg;
-            s->leg = 3;
-            if (s->revealed_deg <= s->cfg.nav_reveal_deg) map_event(s, "reveal");
-            start_leg(s, ACT_TURN, s->cfg.nav_reveal_deg * s->search_dir);
+        if (reveal_more(s)) {
+            reveal_turn(s);
             return;
         }
         if (s->explores < 4 && pick_explore(s)) {
@@ -1640,6 +1661,8 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->replans = 0;
     s->detoured_id = 0;
     s->path_n = s->path_i = 0;
+    s->revealed_deg = 0;                       /* each GOTO may look around once more */
+    s->reveal_have_yaw = 0;
     if (mem_try_next(s)) return;
     if (s->recall) { start_look(s, now); goto_sm_fail(s, now, "not remembered"); return; }
     start_look(s, now);                        /* look before turning: it may be in view */

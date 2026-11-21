@@ -854,6 +854,7 @@ static nav_t *N;
 static goto_mem MM;
 static double PX, PZ, PYAW;                   /* the fake robot, nav frame */
 static int crossed_occ, reverse_moves, legs;
+static double TURN_SCALE = 1.0;                /* fake robot's TURN error (DC car: timed turns) */
 
 static void set_free_rect(double x0, double z0, double x1, double z1, int v)
 {
@@ -939,7 +940,7 @@ static int run_legs_ev(int max)
         const goto_act *a = find(ACT_TURN);
         const goto_act *m = find(ACT_MOVE);
         if (!a && !m) return n;
-        if (a) PYAW -= a->a * M_PI / 180;
+        if (a) PYAW -= a->a * TURN_SCALE * M_PI / 180;
         else {
             if (m->a < 0) reverse_moves++;
             double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
@@ -1256,6 +1257,48 @@ static void test_map_no_route_fails(void)
         look_empty(4);
     }
     CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found"), "then FAILED (%s)", S.result);
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+}
+
+/* Regression (DC full-stack sim, obstacle with TURN x0.75): the reveal spin counted commanded
+ * degrees, so twelve 30 deg steps of a car that turns 75% covered 270 deg and part of the room
+ * stayed unmapped. With ARKit, the measured yaw counts. Also: a new GOTO may reveal again. */
+static int reveal_spins(double scale)
+{
+    map_setup();
+    C.search_max_deg = 60;
+    goto_sm_init(&S, &C, &O); goto_sm_set_memory(&S, &MM, 1e6); goto_sm_set_nav(&S, N); goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(2.5, 2.5, 4.0, 4.0, NAV_OCC);
+    set_free_rect(3.2, 3.2, 3.3, 3.3, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.25, 3.25, MEM_FRESH);
+    TURN_SCALE = scale;
+    double yaw0 = PYAW;
+    start("trash can");
+    int spins = 0;
+    while (S.st == ST_FOLLOW_PATH && S.leg == 3 && spins < 40) { run_legs_ev(1); spins++; }
+    double turned = fabs((PYAW - yaw0) * 180 / M_PI);
+    CHECK(turned >= 359.0 && turned < 360.0 + 2.0 * 30 * scale, "TURN x%.2f: reveal really turned %.0f deg in %d steps", scale, turned, spins);
+    TURN_SCALE = 1.0;
+    return spins;
+}
+
+static void test_map_reveal_measured(void)
+{
+    CHECK(reveal_spins(1.0) == 12, "exact turns: 12 x 30 as before");
+    int n = reveal_spins(0.75);
+    CHECK(n == 16, "turns at 75%%: 16 steps to really cover 360 (%d)", n);
+    n = reveal_spins(1.25);
+    CHECK(n == 10, "turns at 125%%: 10 steps (%d)", n);
+    /* a second GOTO reveals again (revealed_deg used to carry over between GOTOs) */
+    reveal_spins(1.0);
+    goto_sm_cancel(&S, T, "x");
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(had_event("reveal trash can #1", EV) && S.st == ST_FOLLOW_PATH && S.leg == 3, "next GOTO: reveal again (%s)", EV);
     C = (goto_cfg){0};
     goto_cfg_defaults(&C);
 }
@@ -1579,6 +1622,7 @@ int main(void)
     test_map_occluded_detour();
     test_map_occluder_inside_footprint();
     test_map_no_route_fails();
+    test_map_reveal_measured();
     test_map_stop_mid_path();
     test_map_guard_and_replan();
     test_leased_approach();

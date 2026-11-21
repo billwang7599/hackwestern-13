@@ -293,6 +293,8 @@ typedef struct {
     unsigned path_ver;
     int replans, detoured_id;
     double revealed_deg;
+    int reveal_have_yaw;              /* reveal_yaw = ARKit yaw when the current reveal TURN started */
+    double reveal_yaw;
     int plan_wait;                    /* ST_PLAN: re-plan once the guard is CLEAR */
     int exploring, explores;          /* heading to a mapped cell nearer an unmapped goal, then re-plan */
     int leg_settle;                   /* leg done, ARKit pose: wait for 2 poses taken after it ended */
