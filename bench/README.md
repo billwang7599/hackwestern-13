@@ -33,7 +33,9 @@ the whole simulated stack and then the bench.
 - `bench.target`: `{"name": "sim"|"usb"|"pi", "motor", "goto", "voice", "relay"}`.
 - `bench.plugins.get("robot")`: the robot link (owned by the `robot` plugin). It is the
   **only** thing that opens connections to tars_motor / goto / tars_voice (or the relay):
-  `send(dest, line) -> reply` with dest `"motor"|"goto"|"voice"`, and `stop()` (`S` to
+  `send(dest, line, data=b"") -> reply` with dest `"motor"|"goto"|"voice"` (`data`: raw
+  bytes written right after the line, for tars_voice's `AUDIO <n>` + clip; the reply is the
+  next line), and `stop()` (`S` to
   tars_motor, then `CANCEL` to goto). Other plugins call it; if it isn't loaded, they
   disable their send buttons and say so.
 
@@ -154,6 +156,41 @@ runs agree statistically, not bit for bit. A busy laptop shows up in `stalls`.
 - The AVR's speed or RAM.
 - The Bluetooth module on D0/D1.
 - Whether the real Uno resets on open (CH340 clones do too; `--no-reset-on-open` models one that doesn't).
+
+## Voice lab (`plugins/voicelab.py`, `web/panels/voice.js`)
+
+Text or laptop-mic speech goes through the robot's **real** voice code on the laptop. Needs
+`iter2-autonomy/voice/get_model.sh` and `make -C iter2-autonomy/voice host`.
+
+| Shown | Comes from |
+|---|---|
+| decision (action, intent, prob, why) | `build/intent_cli`: the C classifier, the same `intent.c` as on QNX |
+| top-3, amount, object, wake word | `intent/intent.py` (the Python reference parsing the same `intent_model.h`). The test checks that its top-1 matches intent_cli on every phrase |
+| **lines the robot sends** | a **shadow `tars_voice_host`** (the same `main.c`) whose tars_motor / go-to / phone-speech links go to fake listeners on free ports. The lab sends it `HEAR <text>` and records what arrives, in order (e.g. `S`, `CANCEL`, `BEEP 1`, the urgent "Stopping." SAY). The fakes answer `OK`, so `MEMORY SAY` shows "no memory" |
+| transcript (🎤 or batch audio) | `build/stt_cli` (whisper tiny.en, as mission `--laptop-stt`) |
+
+- **Modes:** *push-to-talk* is the robot's `HEAR`/`AUDIO` input, with no wake word.
+  *Robot mic* requires "TARS". Wake carry-over ("TARS" … pause … "turn left") is not modelled.
+- **Mic:** hold 🎤 or **T**. The browser records, decimates to 16 kHz mono and POSTs a WAV
+  (the same capture code as mission control). Clips are 0.1–15 s.
+- **Send switch** (off = dry run; it is disabled without the robot plugin). When on, text
+  goes as `HEAR <text>` and the clip as `AUDIO <n>` + bytes, via `robot.send("voice", …)`. The
+  robot's own classifier decides. If `robot.send` has no `data=`, audio falls back to the
+  laptop transcript as `HEAR`, and the panel says so.
+- **Batch:** `realistic.tsv` (labelled; scored like `test_intent.py`), `phrases.txt` (`{n}`
+  → "ninety degrees", `{d}` → "half a meter", `{o}` → "trash can"; training data, so it
+  isn't a held-out score), or a WAV folder (`labels.tsv` `file<TAB>intent[<TAB>first line]`,
+  or names like `goto__far.wav`).
+  - *Speak it* synthesises each line with macOS `say` (cached in `$TMPDIR/tars-bench-voice`)
+    and runs it through whisper.
+  - Noise: white or babble (a WAV, or `say` crowd sentences), at a chosen SNR.
+  - Output: accuracy, wrong motions, stop recall, a confusion table, the worst misses (wrong
+    motions first), median/p95 latency and the load average.
+- **Latency caveat:** the stt/classify times include starting the process (and whisper's ~30
+  ms model load). The robot keeps the model loaded.
+- API: `GET /api/voicelab/info`, `POST /api/voicelab/{text,audio,send,batch,batch_cancel}`,
+  `GET /api/voicelab/batch_last`. Topic `voice` carries `{kind: result|batch|send}`.
+- Test: `python3 bench/tests/test_voice.py`.
 
 ## Testing honesty
 
