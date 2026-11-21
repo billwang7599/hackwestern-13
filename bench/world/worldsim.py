@@ -101,6 +101,7 @@ class World:
         self.navsock = None
         self.nav_cv = threading.Condition()
         self.nav_pending: bytes | None = None
+        self.nav_seed: list[bytes] = []              # prescan seed packets, sent before live ones
         self.state_to = [_addr(a) for a in args.state_to]
         self.load(C.load_room_file(args.room) if not args.room.endswith(".json")
                   else C.normalise_room(json.load(open(args.room))))
@@ -251,6 +252,8 @@ class World:
             if op == "teleport":
                 self.car_ctl({"pose": {k: float(msg.get(k, 0)) for k in ("x", "y", "th")}})
                 return {"ok": True}
+            if op == "seed_nav":      # bench map modes: a prescan's cells into goto's nav map
+                return self.seed_nav(msg.get("points") or [])
             if op == "car":           # pass-through to the car's control port (5591 format)
                 self.car_ctl(msg.get("msg", {}))
                 return {"ok": True}
@@ -467,12 +470,49 @@ class World:
                 self.nav_pending = struct.pack(">I", len(body)) + body
                 self.nav_cv.notify()
 
+    def seed_nav(self, points) -> dict:
+        """SIM ONLY (bench map demo B): replay a prescan into goto's nav map as LDR1 packets on the
+        phone's own feed: the points (ARKit frame, floor y = 0) in chunks of <= 1000, stamped with
+        this feed's sequence/uptime and the pose the phone believes right now, tracking OK. goto has no
+        map-load command; on the robot this would need one plus relocalisation (bench/maps/README.md)."""
+        if not self.args.nav:
+            return {"ok": False, "error": "no nav port (--nav)"}
+        try:
+            pts = [(float(p[0]), float(p[1]), float(p[2])) for p in points]
+        except (TypeError, ValueError, IndexError):
+            return {"ok": False, "error": "points: [[x_ark, y, z_ark], ...]"}
+        fr = self.last_frame
+        if fr is not None:
+            bx, by, bth = fr["phone"]
+        else:
+            pose = self.pose_now() or (self.room["start"]["x"], self.room["start"]["y"], self.room["start"]["th"])
+            bx, by, bth = pose
+        xa, za, yaw = C.world_to_ark(self.room["start"], bx, by, bth)
+        pkts = []
+        for k in range(0, len(pts), 1000):
+            chunk = pts[k:k + 1000]
+            with self.lock:
+                self.seq += 1
+                uptime = int((time.monotonic() - self.t0) * 1e6) + 1 + k
+            body = b"LDR1" + struct.pack(">IQII", self.seq, uptime, 7, len(chunk))
+            body += struct.pack(">4f", xa, self.params["phone_h"], za, yaw) + struct.pack(">f", 0.0)
+            body += struct.pack(f">{3 * len(chunk)}f", *(v for q in chunk for v in q))
+            pkts.append(struct.pack(">I", len(body)) + body)
+        with self.nav_cv:
+            self.nav_seed += pkts
+            self.nav_cv.notify()
+        self.counts["seed_pkts"] += len(pkts)
+        return {"ok": True, "packets": len(pkts), "points": len(pts)}
+
     def nav_sender(self, stop: threading.Event):
         while not stop.is_set():
             with self.nav_cv:
-                while self.nav_pending is None and not stop.is_set():
+                while self.nav_pending is None and not self.nav_seed and not stop.is_set():
                     self.nav_cv.wait(0.2)
-                pkt, self.nav_pending = self.nav_pending, None
+                if self.nav_seed:
+                    pkt = self.nav_seed.pop(0)
+                else:
+                    pkt, self.nav_pending = self.nav_pending, None
             if pkt is None:
                 continue
             try:

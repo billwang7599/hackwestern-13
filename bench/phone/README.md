@@ -63,8 +63,12 @@ Frames: ARKit (x, y, z) = (world y, world z, world x), yaw = world th, floor_y =
 - **Pose**: `auto` = sim car truth (topic `car`, else a `car`/`robot`/`pose` in the world
   message) when fresh, otherwise a scripted scan path. `car` waits for truth; `script` always
   follows the script.
-- Not modelled: the confidence map, RGB surface splats, inference/persistent points, and the
-  real phone's frame drops.
+- **Surfaces** (Andrew's splat rows, `SceneCapture.surfaceSamples` format): one per 4th depth
+  sample, ≤ 512 per scene, with the hit's normal and a colour from **what was hit** (labels as
+  in the 2D editor, walls grey, floor dark), not from a camera image. Andrew's `Map` keeps them
+  and his room view draws them as Gaussian patches (**Surface** button).
+- Not modelled: the confidence map, real RGB, inference/persistent points, and the real phone's
+  frame drops.
 
 ## Things to know
 
