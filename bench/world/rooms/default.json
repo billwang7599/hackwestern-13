@@ -1,0 +1,18 @@
+{
+  "name": "default",
+  "about": "Go to the trash can around a wall. The bin sits behind a partition. goto remembers it from an earlier SCAN (memory seed), so it plans a route around the wall over the phone's map. Also a chair, and a doorway into a second room with a box.",
+  "start": {"x": 0.0, "y": 0.0, "th": 0.0},
+  "wall_h": 2.0,
+  "walls": [
+    [-1.0, -2.0, 5.0, -2.0], [5.0, -2.0, 5.0, 2.0], [5.0, 2.0, -1.0, 2.0], [-1.0, 2.0, -1.0, -2.0],
+    [1.3, -0.6, 1.3, 0.6],
+    [3.6, -2.0, 3.6, -1.4], [3.6, -0.6, 3.6, 2.0]
+  ],
+  "objects": [
+    {"id": "bin",   "label": "trash can", "x": 2.4, "y": 0.0,  "r": 0.15, "h": 0.40},
+    {"id": "chair", "label": "chair",     "x": 0.9, "y": 1.45, "w": 0.45, "d": 0.45, "h": 0.85},
+    {"id": "door",  "label": "door",      "x": 3.6, "y": -1.0, "w": 0.04, "d": 0.8, "h": 2.0, "solid": false},
+    {"id": "box",   "label": "box",       "x": 4.4, "y": 1.2,  "w": 0.40, "d": 0.30, "h": 0.30}
+  ],
+  "memory": [{"id": "bin"}]
+}

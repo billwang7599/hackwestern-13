@@ -1,0 +1,11 @@
+{
+  "name": "open_bin",
+  "about": "A bin in plain view 2 m ahead and a little left, no memory: the visual-only GOTO path (search, align, approach, dock).",
+  "start": {"x": 0.0, "y": 0.0, "th": 0.0},
+  "wall_h": 2.0,
+  "walls": [[-1.0, -2.0, 4.0, -2.0], [4.0, -2.0, 4.0, 2.0], [4.0, 2.0, -1.0, 2.0], [-1.0, 2.0, -1.0, -2.0]],
+  "objects": [
+    {"id": "bin", "label": "trash can", "x": 2.0, "y": 0.3, "r": 0.15, "h": 0.40},
+    {"id": "bottle", "label": "water bottle", "x": 1.2, "y": -1.2, "r": 0.04, "h": 0.25}
+  ]
+}

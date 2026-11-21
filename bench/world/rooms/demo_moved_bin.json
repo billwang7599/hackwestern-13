@@ -1,0 +1,12 @@
+{
+  "name": "demo_moved_bin",
+  "about": "The bin moved after it was remembered. goto's memory says the bin is at A (ahead-left, ghost marker), but it is now at B (off to the right). Say 'go to the trash can': it routes to A, sees nothing (not_there), searches, finds it at B, docks, and downgrades A in memory.",
+  "start": {"x": 0.0, "y": 0.0, "th": 0.0},
+  "wall_h": 2.0,
+  "walls": [[-1.0, -2.0, 3.6, -2.0], [3.6, -2.0, 3.6, 2.2], [3.6, 2.2, -1.0, 2.2], [-1.0, 2.2, -1.0, -2.0]],
+  "objects": [
+    {"id": "bin",   "label": "trash can", "x": 0.3, "y": 1.4, "r": 0.15, "h": 0.40},
+    {"id": "chair", "label": "chair",     "x": 2.9, "y": 1.5, "w": 0.45, "d": 0.45, "h": 0.85}
+  ],
+  "memory": [{"id": "bin", "x": 2.2, "y": -0.4}]
+}

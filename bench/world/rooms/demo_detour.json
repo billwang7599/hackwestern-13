@@ -1,0 +1,12 @@
+{
+  "name": "demo_detour",
+  "about": "An obstacle dropped mid-route forces a detour. goto remembers the bin 3.2 m ahead down a wide hall and plans a straight route. While it drives, drop a box (palette: box) on the route in front of it. The guard stops it, the phone's map marks the box, and goto re-plans around it. Nothing is scripted: put the box anywhere.",
+  "start": {"x": 0.0, "y": 0.0, "th": 0.0},
+  "wall_h": 2.0,
+  "walls": [[-0.8, -1.6, 4.4, -1.6], [4.4, -1.6, 4.4, 1.6], [4.4, 1.6, -0.8, 1.6], [-0.8, 1.6, -0.8, -1.6]],
+  "objects": [
+    {"id": "bin", "label": "trash can", "x": 3.2, "y": 0.0, "r": 0.15, "h": 0.40},
+    {"id": "backpack", "label": "backpack", "x": 1.0, "y": 1.2, "w": 0.32, "d": 0.22, "h": 0.45}
+  ],
+  "memory": [{"id": "bin"}]
+}
