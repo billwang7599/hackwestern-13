@@ -23,7 +23,8 @@ def serve_room(link, stop):
                 room = latest.get('surroundings', {})
                 keys = ('session', 'frames', 'tracking_live', 'tracking', 'pose', 'origin', 'resolution',
                         'size', 'grid', 'path', 'objects', 'points3d', 'estimated3d', 'distant3d', 'distant_confidence',
-                        'surface_splats', 'floor_y', 'voxels', 'scan_degrees',
+                        'surface_splats', 'floor_y', 'floor_assumed', 'floor_ready', 'camera_height_m',
+                        'lidar_height_m', 'voxels', 'scan_degrees',
                         'grid_source', 'grid_version', 'grid_epoch', 'native_map_live', 'plan_status')
                 data = {k: room[k] for k in keys if k in room}
                 data['publisher_live'] = stamp > 0 and time.monotonic()-stamp < 3

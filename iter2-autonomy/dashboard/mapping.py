@@ -31,7 +31,22 @@ MAX_PERSISTENT_VOXELS = 5000
 PERSISTENT_SECONDS = 120.0
 PERSISTENT_RANGE = 20.0
 OBJECT_VISIBLE_SECONDS = 1.5
-ASSUMED_PHONE_HEIGHT = 0.25  # Display only; never a floor measurement or clearance input.
+# iPhone 17 Pro Max, power-button edge up. Measured from the midpoint of that
+# edge in the rear-face plane. Coordinates are ARKit landscape +X towards USB,
+# +Y towards the power edge. Apple mechanical drawing, sheet 1, detail D (mm).
+MOUNT_EDGE_HEIGHT = 0.1524
+CAMERA_FROM_EDGE = ((33.61 - 163.43 / 2) / 1000, -0.01437)
+LIDAR_FROM_EDGE = ((34.16 - 163.43 / 2) / 1000, -0.06416)
+
+
+def mount_heights(columns):
+    # Older senders may omit the attitude. Use the upright mounting estimate.
+    up_x, up_y = 0., 1.
+    if isinstance(columns, list) and len(columns) == 4 and all(_vector(c, 4) for c in columns):
+        vertical = [columns[i][1] for i in range(3)]
+        if abs(sum(v*v for v in vertical) - 1) < .01:
+            up_x, up_y = vertical[:2]
+    return tuple(MOUNT_EDGE_HEIGHT + x*up_x + y*up_y for x,y in (CAMERA_FROM_EDGE, LIDAR_FROM_EDGE))
 ROBOT_RADIUS = 0.35  # Provisional footprint for path preview only.
 MIN_HEIGHT, MAX_HEIGHT = 0.08, 1.2
 
@@ -221,6 +236,7 @@ class Map:
         self.source = None
         self.tracking = 'unavailable'
         self.floor_y = None
+        self.mount_camera, self.mount_lidar = mount_heights(None)
         self.pose = [0.0, 0.0, 0.0, 0.0]
         self.frames = 0
         self.message = ''
@@ -293,6 +309,7 @@ class Map:
             self.source = source
             self.tracking = scene['tracking']
             self.pose = list(scene['pose'])
+            self.mount_camera, self.mount_lidar = mount_heights(scene.get('camera_transform_columns'))
             self.frames += 1
             self.plan_dirty = True
             if self.tracking != 'normal':
@@ -731,7 +748,7 @@ class Map:
             # A horizontal visual reference is useful before floor calibration,
             # but it must not enter the occupancy model or the guard stream.
             floor_assumed = self.floor_y is None and self.frames > 0
-            display_floor = self.pose[1] - ASSUMED_PHONE_HEIGHT if floor_assumed else self.floor_y
+            display_floor = self.pose[1] - self.mount_camera if floor_assumed else self.floor_y
             objects = []
             for obj in self.objects.values():
                 age = max(0, now - obj['seen']) if obj['seen'] is not None else None
@@ -750,7 +767,7 @@ class Map:
                     'grid': ''.join(str(v) for v in fused_grid), 'resolution': RESOLUTION,
                     'origin': list(ORIGIN), 'size': SIZE, 'pose': list(self.pose),
                     'floor_y': display_floor, 'floor_assumed': floor_assumed,
-                    'assumed_phone_height_m': ASSUMED_PHONE_HEIGHT,
+                    'assumed_phone_height_m': self.mount_camera,
                     'surface_splats': base64.b64encode(b''.join(
                         SURFACE_RECORD.pack(*row) for row in list(self.surfaces.values())
                         [::max(1, math.ceil(len(self.surfaces)/1500))])).decode('ascii'),
@@ -774,6 +791,13 @@ class Map:
                 # Replace all occupancy/route fields atomically. No Python-map fallback.
                 result.update(self.native.snapshot())
                 result['inferred_obstacle_cells'] = 0
+                if not result.get('floor_ready') and floor_assumed:
+                    result.update(floor_assumed=True, floor_y=display_floor)
+            if self.frames and display_floor is not None:
+                # Use one scene timestamp for pose, attitude and floor height.
+                camera_height = self.pose[1] - display_floor
+                result['camera_height_m'] = camera_height
+                result['lidar_height_m'] = camera_height + self.mount_lidar - self.mount_camera
             return result
 
     def _saved(self):

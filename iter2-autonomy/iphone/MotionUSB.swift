@@ -123,6 +123,12 @@ struct MotionUSBApp: App {
                     Text(camera.roomTagStatus).lineLimit(2)
                     if controls {
                         Text(camera.status)
+                        if let rgb = pi.surroundings["camera_height_m"] as? NSNumber,
+                           let lidar = pi.surroundings["lidar_height_m"] as? NSNumber {
+                            let assumed = pi.surroundings["floor_assumed"] as? Bool == true
+                            Text(String(format: "%@ · RGB %.1f cm · LiDAR %.1f cm",
+                                        assumed ? "Mount estimate" : "Above floor", rgb.doubleValue * 100, lidar.doubleValue * 100))
+                        }
                         Toggle("Speak actions", isOn: $speakActions)
                         ManualDrivePanel(pi: pi)
                         Button("Reset scan") { camera.resetMap() }

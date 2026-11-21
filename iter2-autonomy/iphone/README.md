@@ -94,7 +94,19 @@ and panned separately.
 
 The floor is modeled as one horizontal plane in ARKit's gravity-aligned world.
 Until a classified floor or **Set floor** measurement is available, the display
-shows an explicitly assumed plane 0.25 m below the phone. That provisional
+uses the mounted phone to estimate the plane. The power-button edge is uppermost and its
+midpoint is about 152.4 mm above the ground. In the upright mount the main camera
+is about 138 mm high and the LiDAR scanner about 88 mm high. Pitch and roll project
+the in-plane offsets onto gravity. These estimates use the housing dimensions and
+omit the small out-of-plane optical offsets and case thickness. Measured floor data
+takes precedence. The Controls panel displays both heights.
+[Apple mechanical drawing, sheet 1, detail D](https://developer.apple.com/download/files/accessories/dimensional-drawings/iphone-17-pro-max.pdf).
+
+The phone's YOLO and measured LiDAR tiles and the USB preview use a virtual level
+camera at the captured camera position. Each image and its annotations share the
+original frame's gravity-aligned ARKit pose and intrinsics. Looking steeply down
+keeps the source view for floor calibration. Detection, depth backprojection and
+the QNX guard use their original registered observations. The provisional
 mounting height is only a visual reference: it never marks space free, enables
 path planning or permits motor commands. Slowly scan the room and floor. If
 floor classification does not complete, aim the center at clear ground and tap

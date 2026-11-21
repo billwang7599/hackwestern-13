@@ -16,6 +16,22 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String) {
 func close(_ a: Double,_ b: Double,_ tolerance: Double = 0.0001) -> Bool { abs(a-b)<tolerance }
 let k = simd_float3x3(SIMD3(500,0,0),SIMD3(0,500,0),SIMD3(320,240,1))
 let camera = DepthCameraGeometry(intrinsics:k,transform:matrix_identity_float4x4,resolution:SIMD2(640,480))
+let uv = SIMD2<Float>(0.25,0.73)
+check(simd_distance(camera.levelCorner(uv)!, uv) < 1e-5, "level camera preserves pixels")
+let yaw = simd_quatf(angle:0.8,axis:SIMD3<Float>(0,1,0))
+let pitch = simd_quatf(angle:0.14,axis:SIMD3<Float>(1,0,0))
+let roll = simd_quatf(angle:-0.11,axis:SIMD3<Float>(0,0,1))
+var r = simd_float4x4(yaw * pitch * roll); r.columns.3 = SIMD4(1,2,3,1)
+let corrected = DepthCameraGeometry(intrinsics:k,transform:r,resolution:SIMD2(640,480))
+for side: Float in [-0.3, 0.3] {
+    // A world horizon ray must land at principal-point height despite pitch/roll/yaw.
+    let ray = (yaw * pitch * roll).inverse.act(yaw.act(SIMD3<Float>(side,0,-1)))
+    let source = SIMD2(0.5 + 500/640 * ray.x / -ray.z, 0.5 + 500/480 * ray.y / -ray.z)
+    let pixel = corrected.levelCorner(source)!
+    check(abs(pixel.y-0.5) < 1e-5 && abs(pixel.x-(0.5+500/640*side)) < 1e-5, "horizon rectified")
+}
+let vertical = DepthCameraGeometry(intrinsics:k,transform:simd_float4x4(simd_quatf(angle:.pi/2,axis:SIMD3<Float>(1,0,0))),resolution:SIMD2(640,480))
+check(vertical.levelCorner(uv) == nil, "floor calibration retains its downward view")
 let world = camera.world(u:0.3,v:0.6,meters:3)!
 let roundtrip = camera.project(world)!
 check(close(roundtrip.u,0.3) && close(roundtrip.v,0.6) && close(roundtrip.meters,3), "portrait reprojection roundtrip")

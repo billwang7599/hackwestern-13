@@ -230,7 +230,31 @@ private struct SceneDepthGrid {
 
 // A single raster is used by both the phone and optional Pi viewer. UIKit draws
 // into this private bitmap on the inference queue; no view is touched off-main.
+private extension DepthCameraGeometry {
+    init(_ camera: ARCamera) {
+        self.init(intrinsics: camera.intrinsics, transform: camera.transform,
+                  resolution: SIMD2(Float(camera.imageResolution.width), Float(camera.imageResolution.height)))
+    }
+}
+
 private enum InspectionRenderer {
+    // A single homography moves annotations and pixels together. Keep uncovered pixels
+    // black and use the original view when looking nearly straight at the floor.
+    static func level(_ raw: CIImage, geometry: DepthCameraGeometry?) -> CIImage {
+        guard let geometry else { return raw }
+        let corners: [(String, SIMD2<Float>)] = [("inputTopLeft", [0,1]), ("inputTopRight", [1,1]),
+                                                 ("inputBottomRight", [1,0]), ("inputBottomLeft", [0,0])]
+        let rect = raw.extent
+        var parameters = [String: Any]()
+        for (key, corner) in corners {
+            guard let p = geometry.levelCorner(corner) else { return raw }
+            parameters[key] = CIVector(x: rect.minX + CGFloat(p.x)*rect.width,
+                                       y: rect.minY + CGFloat(p.y)*rect.height)
+        }
+        let warped = raw.applyingFilter("CIPerspectiveTransform", parameters: parameters)
+        return warped.composited(over: CIImage(color: .black).cropped(to: rect)).cropped(to: rect)
+    }
+
     static func heatColor(_ value: Float) -> (UInt8, UInt8, UInt8) {
         let q = max(0, min(1, (value - 0.2) / 3.8)) * 4
         let r = q <= 1 ? 1 : max(0, 2 - q)
@@ -239,7 +263,7 @@ private enum InspectionRenderer {
         return (UInt8(r * 255), UInt8(g * 255), UInt8(b * 255))
     }
 
-    static func depthImage(_ depth: SceneDepthGrid, context: CIContext) -> UIImage? {
+    static func depthImage(_ depth: SceneDepthGrid, geometry: DepthCameraGeometry?, context: CIContext) -> UIImage? {
         var bytes = [UInt8](repeating: 0, count: depth.width * depth.height * 4)
         for y in 0..<depth.height {
             for x in 0..<depth.width {
@@ -263,19 +287,18 @@ private enum InspectionRenderer {
                 bitsPerPixel: 32, bytesPerRow: depth.width * 4, space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue), provider: provider,
                 decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
-        let portrait = CIImage(cgImage: raw).oriented(.right)
+        let portrait = level(CIImage(cgImage: raw), geometry: geometry).oriented(.right)
         guard let image = context.createCGImage(portrait, from: portrait.extent) else { return nil }
         return UIImage(cgImage: image)
     }
 
-    static func render(frame: ARFrame, depth: SceneDepthGrid?, detections: [DetectedObject],
+    static func render(frame: ARFrame, depthView: UIImage?, geometry: DepthCameraGeometry?, detections: [DetectedObject],
                        caption: String, context: CIContext) -> UIImage? {
-        let portrait = CIImage(cvPixelBuffer: frame.capturedImage).oriented(.right)
+        let portrait = level(CIImage(cvPixelBuffer: frame.capturedImage), geometry: geometry).oriented(.right)
         // Materialize only the pixels that can appear in the 320 px panel.
         let scale = min(1, 320 / portrait.extent.width)
         let resized = portrait.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         guard let rgb = context.createCGImage(resized, from: resized.extent) else { return nil }
-        let depthView = depth.flatMap { depthImage($0, context: context) }
         return render(rgb: rgb, depthView: depthView, detections: detections, caption: caption)
     }
 
@@ -545,6 +568,24 @@ struct DepthCameraGeometry {
     let intrinsics: simd_float3x3
     let transform: simd_float4x4
     let resolution: SIMD2<Float>
+
+    // Native landscape image coordinates, normalized, with Core Image's upward Y.
+    // Project rays into a virtual horizontal camera with the same optical centre and yaw.
+    func levelCorner(_ uv: SIMD2<Float>) -> SIMD2<Float>? {
+        let back = SIMD3(transform.columns.2.x, 0, transform.columns.2.z)
+        guard simd_length(back) > 0.70, resolution.x > 0, resolution.y > 0 else { return nil }
+        let z = simd_normalize(back)
+        let right = SIMD3(z.z, 0, -z.x)
+        let fx = intrinsics.columns.0.x / resolution.x, fy = intrinsics.columns.1.y / resolution.y
+        let cx = intrinsics.columns.2.x / resolution.x, cy = 1 - intrinsics.columns.2.y / resolution.y
+        guard fx > 0, fy > 0 else { return nil }
+        let ray = transform * SIMD4<Float>((uv.x-cx)/fx, (uv.y-cy)/fy, -1, 0)
+        let world = SIMD3(ray.x, ray.y, ray.z)
+        let depth = -simd_dot(world, z)
+        guard depth > 0.25 else { return nil }
+        let result = SIMD2(cx + fx*simd_dot(world,right)/depth, cy + fy*world.y/depth)
+        return result.x.isFinite && result.y.isFinite ? result : nil
+    }
 
     struct Projection {
         let u: Double
@@ -1083,8 +1124,9 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
             guard self.current(token) else { self.queue.async { self.previewBusy = false }; return }
             let depth = SceneDepthGrid(frame)
             let caption = "Live RGB + measured LiDAR • AI on QNX"
-            let rendered = depth.flatMap { InspectionRenderer.depthImage($0, context: self.previewContext) }
-            let jpeg = self.video.available ? InspectionRenderer.render(frame: frame, depth: depth, detections: [], caption: caption, context: self.previewContext)?.jpegData(compressionQuality: 0.7) : nil
+            let geometry = tracking == "normal" ? DepthCameraGeometry(frame.camera) : nil
+            let rendered = depth.flatMap { InspectionRenderer.depthImage($0, geometry: geometry, context: self.previewContext) }
+            let jpeg = self.video.available ? InspectionRenderer.render(frame: frame, depthView: rendered, geometry: geometry, detections: [], caption: caption, context: self.previewContext)?.jpegData(compressionQuality: 0.7) : nil
             let processing = ProcessInfo.processInfo.systemUptime - started
             if self.current(token), let jpeg { self.video.send(jpeg) }
             self.queue.async {
@@ -1178,9 +1220,14 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
             self.resultBusy = true
             let matched = detections
             self.resultQueue.async {
-                let depthImage = source.depth.flatMap { InspectionRenderer.depthImage($0, context: self.rgbContext) }
-                let image = InspectionRenderer.render(rgb: source.image, depthView: depthImage, detections: matched,
+                let image = InspectionRenderer.render(rgb: source.image, depthView: nil, detections: matched,
                                                        caption: "QNX detections • matched source frame")
+                let panel = CGRect(x: 12, y: 42, width: 320, height: 320 * CGFloat(source.image.height) / CGFloat(source.image.width))
+                let display = image.cgImage?.cropping(to: panel).flatMap { boxed -> UIImage? in
+                    let raw = CIImage(cgImage: boxed).oriented(.left)
+                    let leveled = InspectionRenderer.level(raw, geometry: source.tracking == "normal" ? source.geometry : nil).oriented(.right)
+                    return self.rgbContext.createCGImage(leveled, from: leveled.extent).map { UIImage(cgImage: $0) }
+                }
                 self.queue.async {
                     guard self.current(source.epoch) else { self.resultBusy = false; return }
                     let age = ProcessInfo.processInfo.systemUptime - source.timestamp
@@ -1193,7 +1240,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
                         }
                     }
                     DispatchQueue.main.async {
-                        self.qnxInspectionImage = image.cgImage?.cropping(to: CGRect(x: 12, y: 42, width: 320, height: 320 * CGFloat(source.image.height) / CGFloat(source.image.width))).map { UIImage(cgImage: $0) }
+                        self.qnxInspectionImage = display
                         self.qnxInspectionTimestamp = source.timestamp
                         self.qnxStatusString = "\(matched.count) QNX detections • \(String(format: "%.1f", age)) s source age"
                         self.detections = matched

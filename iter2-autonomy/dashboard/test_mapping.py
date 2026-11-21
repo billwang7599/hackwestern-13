@@ -158,11 +158,28 @@ class MappingTests(unittest.TestCase):
         self.assertTrue(state['objects'][0]['currently_seen'])
         self.assertFalse(state['floor_ready'])
         self.assertTrue(state['floor_assumed'])
-        self.assertAlmostEqual(state['floor_y'], state['pose'][1] - 0.25)
+        self.assertAlmostEqual(state['floor_y'], state['pose'][1] - 0.13803)
         self.assertIsNone(self.mapper.floor_y)
         self.assertFalse(state['live'])
         self.assertEqual(state['path'], [])
         self.assertEqual(set(state['grid']), {'0'})
+
+    def test_tilted_mount_heights_and_native_floor_authority(self):
+        theta = math.radians(12)
+        rot = [[1,0,0,0], [0,math.cos(theta),math.sin(theta),0],
+               [0,-math.sin(theta),math.cos(theta),0], [0,.5,0,1]]
+        from native_map import NativeGrid
+        self.mapper.native = NativeGrid()
+        self.mapper.update(frame(camera_transform_columns=rot, floor_y=None))
+        state = self.mapper.snapshot()
+        self.assertAlmostEqual(state['camera_height_m'], .1524 - .01437*math.cos(theta))
+        self.assertAlmostEqual(state['lidar_height_m'], .1524 - .06416*math.cos(theta))
+        self.assertTrue(state['floor_assumed'])
+        self.assertFalse(state['floor_ready'])
+        self.assertEqual(set(state['grid']), {'0'})
+        self.assertAlmostEqual(state['floor_y'], .5-state['camera_height_m'])
+        roll = [[0,1,0,0], [-1,0,0,0], [0,0,1,0], [0,0,0,1]]
+        self.assertAlmostEqual(mapping.mount_heights(roll)[0], .1524+(.03361-.16343/2))
 
     def test_assumed_floor_is_replaced_by_measured_level(self):
         self.mapper.update(frame(floor_y=None))
