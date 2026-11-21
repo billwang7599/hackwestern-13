@@ -15,7 +15,8 @@ the fake phone reports it in the ARKit frame goto expects (x_ark = -y, z_ark = x
 Sim speed-up: WHEELCAL 260 400 (4x the stepper's linear speed, same turn rate). Not physical.
 
 Scenarios: obstacle (wall between robot and remembered bin), occlusion (something steps
-between robot and bin at the spot -> OCCLUDED -> DETOUR), moved object (memory says A, bin is
+between robot and bin at the spot -> OCCLUDED -> DETOUR), occlusion_close (the same, 0.39 m in
+front of the robot: inside its footprint and the guard zone -> pivot away + forward, DETOUR), moved object (memory says A, bin is
 at B), STOP mid-path (S from another client, like voice), visual-only fallback (no phone),
 voice memory query (MEMORY SAY -> print + BEEP + SAY to the phone) and voice "go back to
 where the bin was" (RECALL). Ports: every process gets free ephemeral ports so runs don't clash;
@@ -459,8 +460,13 @@ def sc_obstacle():
         st.close()
 
 
-def sc_occlusion():
-    print("full-stack: OCCLUSION: something steps between the robot and the bin at the spot")
+def sc_occlusion(ahead: float | None = None):
+    """ahead=None: the board lands 0.36 m in front of the bin, wherever the robot stopped.
+    ahead=k: the board lands k m in front of the ROBOT (occlusion_close: 0.39 m, inside its own
+    footprint square and lidar_guard's 0.55 m stop zone; that used to end in not_found)."""
+    tag = "occlusion" if ahead is None else "occlusion_close"
+    print(f"full-stack: {tag.upper()}: something steps between the robot and the bin at the spot"
+          + ("" if ahead is None else f", {ahead:.2f} m in front of the robot"))
     w = World()
     w.cans.append([2.2, 0.0])
     st = Stack(w, mem_file([(2.2, 0.0)]))
@@ -477,7 +483,7 @@ def sc_occlusion():
             d = math.hypot(2.2 - x, -y)
             if d < 1.3:
                 ux, uy = (2.2 - x) / d, (0.0 - y) / d
-                k = d - 0.36                     # 0.36 m in front of the bin
+                k = d - 0.36 if ahead is None else ahead    # 0.36 m in front of the bin / k ahead of us
                 cx, cy = x + ux * k, y + uy * k
                 with w.lock:
                     w.walls.append(((cx - uy * 0.3, cy + ux * 0.3), (cx + uy * 0.3, cy - ux * 0.3)))
@@ -485,14 +491,21 @@ def sc_occlusion():
     try:
         st.goto.cmd("GOTO trash can")
         s = st.goto.wait_idle(200, hook)
-        st.dump("occlusion")
+        st.dump(tag)
         ev = st.goto.events
         check(bool(placed), f"occluder placed at the spot ({placed[0][2]:.2f} m from the bin)" if placed else "occluder placed")
+        if ahead is not None:
+            check(bool(placed) and placed[0][2] - ahead > 0.36,
+                  f"the board is {ahead:.2f} m ahead, inside the guard zone ({GUARD_M} m), the bin behind it")
         check(any(e.startswith("occluded trash can #1") for e in ev), "LOOK fails + map occupied -> OCCLUDED")
         check(not any(e.startswith("not_there trash can #1") for e in ev[:ev.index(next((e for e in ev if e.startswith('occluded')), ev[-1])) + 1]),
               "occluded is not 'gone' (no not_there before it)")
         check(any(e.startswith("detour trash can #1") for e in ev), "-> DETOUR to a vantage cell")
-        check(s["result"] == "arrived", f"arrived after the detour ({s['result']})")
+        x, y, _ = st.sens.pose
+        dk = math.hypot(x - 2.2, y)
+        # docked at the BIN: a guard stop on the board's edge must not pass as "arrived"
+        # (guard zone 0.55 m + bin radius 0.15 m: a real dock is <= ~0.75 m centre to centre)
+        check(s["result"] == "arrived" and dk < 0.8, f"arrived after the detour, at the bin ({s['result']}, {dk:.2f} m)")
     finally:
         st.close()
 
@@ -656,7 +669,8 @@ def sc_voice():
         st.close()
 
 
-SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion, "moved": sc_moved, "stop": sc_stop,
+SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion,
+             "occlusion_close": lambda: sc_occlusion(ahead=0.39), "moved": sc_moved, "stop": sc_stop,
              "visual": sc_visual_only, "voice": sc_voice}
 
 
