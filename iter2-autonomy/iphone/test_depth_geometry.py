@@ -16,6 +16,16 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String) {
 func close(_ a: Double,_ b: Double,_ tolerance: Double = 0.0001) -> Bool { abs(a-b)<tolerance }
 let k = simd_float3x3(SIMD3(500,0,0),SIMD3(0,500,0),SIMD3(320,240,1))
 let camera = DepthCameraGeometry(intrinsics:k,transform:matrix_identity_float4x4,resolution:SIMD2(640,480))
+var mounted = matrix_identity_float4x4
+mounted.columns.3.y = 0.914
+check(close(Double(MountedFloor.worldY(camera:mounted)!),0.914-0.13803), "forward camera sets floor with no LiDAR point")
+let mountRoll = Float.pi/12
+mounted = simd_float4x4(simd_quatf(angle:mountRoll,axis:SIMD3<Float>(0,0,1)))
+let rolledHeight: Float = 0.1524 - 0.048105*sin(mountRoll) - 0.01437*cos(mountRoll)
+mounted.columns.3.y = rolledHeight - 0.4
+check(close(Double(MountedFloor.worldY(camera:mounted)!),-0.4), "tilted mount sets world floor independent of AR origin")
+mounted.columns.3.y = .nan
+check(MountedFloor.worldY(camera:mounted) == nil, "invalid pose cannot set a floor")
 let uv = SIMD2<Float>(0.25,0.73)
 check(simd_distance(camera.levelCorner(uv)!, uv) < 1e-5, "level camera preserves pixels")
 let yaw = simd_quatf(angle:0.8,axis:SIMD3<Float>(0,1,0))

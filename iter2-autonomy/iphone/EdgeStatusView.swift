@@ -115,7 +115,7 @@ struct ObstaclePresentation {
             case "tracking_limited":
                 title = "STOP · tracking limited"; detail = "Keep the camera steady with room features in view."
             case "set_floor":
-                title = "STOP · set floor"; detail = "Aim at the floor and tap Set floor, then aim forward."
+                title = "STOP · set floor"; detail = "Leave the phone mounted, place the rover on the floor and tap Set floor."
             case "aim_forward":
                 title = "STOP · aim forward"; detail = "Point the rear camera along the robot’s direction of travel."
             case "no_depth_points":

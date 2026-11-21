@@ -88,6 +88,7 @@ struct MotionUSBApp: App {
                     else { server.start(); if server.running { camera.start() } }
                 }.buttonStyle(.borderedProminent)
                 Button("Set floor") { camera.setFloor() }
+                    .accessibilityHint("Uses the mounted phone height with the rover resting on the floor.")
                 Button { controls.toggle() } label: {
                     Image(systemName: controls ? "xmark" : "slider.horizontal.3")
                 }.accessibilityLabel(controls ? "Close controls" : "More controls")

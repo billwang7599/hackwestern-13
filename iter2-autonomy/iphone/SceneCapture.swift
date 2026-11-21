@@ -564,6 +564,17 @@ struct RelativeDepthCalibration {
 }
 
 // BEGIN REMEMBERED_DEPTH_MATH — Foundation + simd only; exercised by test_depth_geometry.py.
+enum MountedFloor {
+    // Same rear-face geometry as mapping.mount_heights: the midpoint of the
+    // power-button edge sits six inches above the ground, +X points toward USB.
+    static func worldY(camera: simd_float4x4) -> Float? {
+        let cameraHeight = Float(0.1524) + ((0.03361 - 0.16343 / 2) * camera.columns.0.y)
+            - 0.01437 * camera.columns.1.y
+        let floor = camera.columns.3.y - cameraHeight
+        return floor.isFinite ? floor : nil
+    }
+}
+
 struct DepthCameraGeometry {
     let intrinsics: simd_float3x3
     let transform: simd_float4x4
@@ -1464,12 +1475,15 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
     func setFloor() {
         queue.async {
             guard self.wanted, self.lastTracking == "normal", let frame = self.latestFrame,
-                  let depth = SceneDepthGrid(frame),
-                  let point = depth.centerPosition(x: depth.width / 2, y: depth.height / 2) else {
-                self.report("Aim center at the floor with normal tracking and valid LiDAR depth"); return
+                  (0...0.5).contains(ProcessInfo.processInfo.systemUptime - frame.timestamp),
+                  let floor = MountedFloor.worldY(camera: frame.camera.transform) else {
+                self.report("Set floor needs a current tracked camera pose. Keep the phone mounted and try again.")
+                return
             }
-            self.floorY = point.y; self.explicitFloor = true
-            self.report("Floor set at center depth point; keep phone aimed at the ground when setting")
+            self.floorY = floor
+            self.explicitFloor = true
+            let heightCM = (frame.camera.transform.columns.3.y - floor) * 100
+            self.report(String(format: "Floor set from mount · camera %.1f cm above floor", heightCM))
         }
     }
 

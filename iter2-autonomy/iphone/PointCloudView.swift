@@ -56,7 +56,7 @@ struct PointCloudView: View {
             Text("\(cloud.objects.count) remembered objects · labels show last-seen locations, which can change.")
                 .font(.caption).foregroundStyle(.secondary)
             Text(cloud.floorAssumed
-                 ? "Level floor assumed 0.25 m below phone for display only. Set floor to calibrate clearance. Grid: 1 m."
+                 ? "Mount height estimates the floor. Tap Set floor with the rover on the ground to confirm. Grid spacing is 1 m."
                  : (cloud.floor == nil ? "White marker: estimated phone pose. Waiting for floor reference."
                     : "Level floor at calibrated height · grid: 1 m · white marker: estimated phone pose."))
                 .font(.caption).foregroundStyle(cloud.floorAssumed ? Color.orange : Color.secondary)

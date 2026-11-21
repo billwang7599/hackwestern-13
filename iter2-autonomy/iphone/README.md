@@ -93,24 +93,25 @@ surveyed map or a surface-reconstruction guarantee. The floor map can be zoomed
 and panned separately.
 
 The floor is modeled as one horizontal plane in ARKit's gravity-aligned world.
-Until a classified floor or **Set floor** measurement is available, the display
+Until a classified floor or **Set floor** calibration is available, the display
 uses the mounted phone to estimate the plane. The power-button edge is uppermost and its
 midpoint is about 152.4 mm above the ground. In the upright mount the main camera
 is about 138 mm high and the LiDAR scanner about 88 mm high. Pitch and roll project
 the in-plane offsets onto gravity. These estimates use the housing dimensions and
-omit the small out-of-plane optical offsets and case thickness. Measured floor data
-takes precedence. The Controls panel displays both heights.
+omit the small out-of-plane optical offsets and case thickness. Tap **Set floor** with the rover resting on the intended floor and the phone in its
+normal driving position. The app subtracts the tilt-adjusted camera height from the
+current tracked camera altitude and locks that world-space floor elevation. The
+button works while looking forward, without a center-pixel depth sample. Save map
+stores that elevation. Automatic floor detection operates until a floor is explicitly set. The Controls panel displays both heights.
 [Apple mechanical drawing, sheet 1, detail D](https://developer.apple.com/download/files/accessories/dimensional-drawings/iphone-17-pro-max.pdf).
 
 The phone's YOLO and measured LiDAR tiles and the USB preview use a virtual level
 camera at the captured camera position. Each image and its annotations share the
 original frame's gravity-aligned ARKit pose and intrinsics. Looking steeply down
-keeps the source view for floor calibration. Detection, depth backprojection and
+keeps the source view for inspection. Detection, depth backprojection and
 the QNX guard use their original registered observations. The provisional
 mounting height is only a visual reference: it never marks space free, enables
-path planning or permits motor commands. Slowly scan the room and floor. If
-floor classification does not complete, aim the center at clear ground and tap
-**Set floor**. The optional target selector previews routes only; selecting a
+path planning or permits motor commands. Once confirmed, the floor is available to mapping and the guard; obstacle checks still require fresh observations. The optional target selector previews routes only; selecting a
 remembered object does not drive the robot to it.
 
 The Pi remembers up to 100 located objects for the current AR session, matching
