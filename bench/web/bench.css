@@ -107,3 +107,17 @@ abbr[title] { text-decoration: underline dotted; cursor: help; }
 
 @media (max-width: 1366px) { :root { --side-w: 290px; } .activity { max-width: 36vw; } #topbar { gap: 8px; } }
 @media (max-width: 1100px) { :root { --side-w: 270px; --drawer-w: min(520px, 46vw); } .light { padding: 3px 6px; } }
+
+/* short screens (13" laptops): keep talk + drive in the left column without scrolling */
+@media (max-height: 860px) {
+  #side { gap: 8px; padding: 8px; }
+  #side .panel { padding: 8px 10px; }
+  #side .panel-help { display: none; }
+  .cmd-mic { padding: 6px !important; margin-top: 4px !important; }
+  .cmd-send { margin: 6px 0 2px !important; padding: 4px 8px !important; }
+  .cmd-send .sw-note { display: none; }
+  .cmd-chips { margin: 4px 0 0 !important; gap: 4px !important; }
+  .cmd-chips button { padding: 2px 8px !important; font-size: 12px !important; }
+  .cmd-item:nth-child(n+3) { display: none; }
+  .drv-keys span { padding: 4px 0 !important; }
+}
