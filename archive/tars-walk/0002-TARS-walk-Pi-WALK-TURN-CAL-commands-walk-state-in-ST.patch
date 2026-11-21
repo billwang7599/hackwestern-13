@@ -1,0 +1,1234 @@
+From 8581f7cee5b9dea6ecb6aeec91cfb3ab9b3652a3 Mon Sep 17 00:00:00 2001
+From: Bill <billwang7599@gmail.com>
+Date: Sat, 21 Nov 2026 01:30:49 -0500
+Subject: [PATCH 2/2] TARS walk: Pi WALK/TURN/CAL commands, walk state in
+ STATUS, Uno DONE/ABORT/CAL parsing, stub walk sim, iPhone yaw turn correction
+ (-y)
+
+---
+ pi/src/main.c             | 407 +++++++++++++++++++++++++++++++++++++-
+ pi/src/motor.h            |  16 ++
+ pi/src/motor_stub.c       | 156 ++++++++++++++-
+ pi/src/motor_uno_serial.c |  77 +++++++-
+ pi/test_server.py         | 241 ++++++++++++++++++++++
+ 5 files changed, 881 insertions(+), 16 deletions(-)
+
+diff --git a/pi/src/main.c b/pi/src/main.c
+index 6ba72c5..41ce364 100644
+--- a/pi/src/main.c
++++ b/pi/src/main.c
+@@ -10,19 +10,35 @@
+  *   LEVEL                "the robot is upright now" (recapture tilt reference)
+  *   RESET                clear a tip-over latch (refused while still tipped)
+  *   GESTURES             -> "OK wave point ..."
++ *   WALK <n>             walk n crank steps (+ forward, - back, 1..50) -> "OK <est_ms>"
++ *   TURN <deg>           turn in place, multiple of 30 (+ = left/CCW, |deg| <= 720)
++ *                        -> "OK <est_ms>". Completion shows in STATUS (walk=idle,
++ *                        walk_last=DONE_R_90 / ABORT_W_1_stall, walk_seq=N).
++ *                        Refused while tipped, bumped or already walking.
++ *   CAL                  -> "OK ms=<l>,<r> deg=<deg/step> mode=<1|0> yawsign=<1|-1>"
++ *   CAL MS <0|1|2> <ms>  ms per crank step, side 0=L 1=R 2=both (Uno EEPROM)
++ *   CAL DEG <deg>        degrees turned per turn step (Uno EEPROM)
++ *   CAL MODE <1|0>       1 = count crank switches, 0 = timed fallback
++ *   CAL COUNTS           Uno prints its switch counts (shows in the server log)
++ *   CAL YAWSIGN <1|-1>   iPhone yaw direction (+1: yaw grows turning left)
+  *   PING                 -> "OK PONG" (also feeds the watchdog)
+  *   STATUS               -> "OK <l> <r> <ms_since_cmd> <dist_m> <estop> key=val..."
+  *   SIM T|B|READY [n]    stub backend only: inject a co-processor event (tests)
+  *
++ * iPhone yaw (optional, -y <udp_port>): datagrams "YAW <deg>" (see
++ * laptop/iphone_yaw_bridge.py). After a TURN finishes, if yaw is fresh, the
++ * server measures the real turn and sends up to 2 raw correction steps.
++ *
+  * Threads:
+  *   main      accept loop, one detached thread per client
++ *   yaw       (with -y) receives iPhone yaw datagrams, stores them under lock
+  *   control   SCHED_RR high priority, fixed-rate tick. The ONLY thread that
+  *             talks to the backend: drains events (tip/bump/ready), applies
+  *             the watchdog / obstacle / tip / bump stops, slews the wheels,
+  *             plays gesture keyframes and keeps a model of the arm angles.
+  *
+  * Usage: tars_motor [-b uno|stub|pico] [-d dev] [-p port] [-w watchdog_ms]
+- *                   [-r rt_priority] [-k bump_hold_ms]
++ *                   [-r rt_priority] [-k bump_hold_ms] [-y yaw_udp_port]
+  */
+ #include <errno.h>
+ #include <math.h>
+@@ -35,6 +51,8 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <strings.h>
++#include <ctype.h>
++#include <sys/select.h>
+ #include <sys/socket.h>
+ #include <time.h>
+ #include <unistd.h>
+@@ -47,6 +65,11 @@
+ #define SLEW_PER_TICK    0.08f   /* max change per tick: 0 -> full in ~0.25 s */
+ #define OBSTACLE_STOP_M  0.25f   /* block forward motion closer than this */
+ #define TIP_CLEAR_MS     1000    /* RESET refused if a T event came this recently */
++#define WALK_MAX_STEPS   50
++#define TURN_MAX_DEG     720
++#define WALK_TIMEOUT_PAD_MS 2000 /* no DONE/ABORT by 2x estimate + this = give up */
++#define YAW_FRESH_MS     500     /* yaw older than this is ignored */
++#define YAW_MAX_FIXES    2       /* correction turns after a TURN */
+ 
+ static const motor_backend_t *motor_backends[] = { &motor_uno_serial, &motor_stub, &motor_pico_uart };
+ 
+@@ -57,6 +80,7 @@ static int cfg_port      = 5555;
+ static int cfg_wd_ms     = 500;
+ static int cfg_rt_prio   = 30;
+ static int cfg_bump_ms   = 1000;
++static int cfg_yaw_port  = 0;               /* 0 = no iPhone yaw input */
+ 
+ /* ---- shared state (all under `lock`) ---- */
+ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+@@ -71,6 +95,10 @@ static struct timespec last_cmd;
+ typedef struct { int set; float deg, dps; } arm_req_t;
+ static arm_req_t arm_req[2];
+ static int   req_halt, req_zero, req_level, req_stop_gesture, req_reset;
++typedef struct { int set; char kind; int val; } walk_req_t;   /* kind 'W' | 'R' */
++static walk_req_t req_walk;
++static int   req_walk_stop;
++static char  req_cal[32];                 /* co-processor calibration line */
+ static const gesture_t *req_gesture;
+ static char  req_dev_gesture[48];         /* pico: device-side gesture */
+ #define SIMQ 8
+@@ -83,6 +111,18 @@ static const char *gesture_name = "none";
+ static int   tipped, tilt_deg, bumps;
+ static long long last_tip_ms, bump_until_ms;
+ static int   ready_count;
++/* walking: published by the control thread (walk_kind is also set by the
++ * client thread when it accepts a command, so a 2nd WALK is refused at once) */
++static char  walk_kind;                   /* 0 idle, 'W' walking, 'R' turning */
++static int   walk_cmd, walk_seq, walks_done;
++static char  walk_last[40] = "none";
++static int   cal_ms[2] = { 600, 600 }, cal_mode = 1, yaw_sign = 1;
++static float cal_deg = 30.0f;
++/* iPhone yaw (written by the yaw thread) */
++static float yaw_deg;
++static long long yaw_ms;                  /* when it arrived, 0 = never */
++static float yaw_err;                     /* last TURN's measured error */
++static int   yaw_err_valid;
+ 
+ static volatile sig_atomic_t running = 1;
+ static const motor_backend_t *motor;
+@@ -189,6 +229,139 @@ static void ctl_arm_model(float dt)
+     }
+ }
+ 
++/* ---- walking (control thread) ---- */
++static struct {
++    int active;
++    char kind;            /* 'W' | 'R' */
++    int cmd;
++    long long deadline;
++    int fixes;            /* yaw correction turns sent */
++    int yaw_ok;
++    float yaw_start;
++} ctl_mv;
++
++static float wrap180(float a)
++{
++    while (a > 180.0f) a -= 360.0f;
++    while (a <= -180.0f) a += 360.0f;
++    return a;
++}
++
++/* Fresh iPhone yaw, signed so + = turned left. 0 = none. Takes `lock`. */
++static int yaw_now(float *out)
++{
++    pthread_mutex_lock(&lock);
++    int ok = yaw_ms && now_ms() - yaw_ms <= YAW_FRESH_MS;
++    *out = yaw_deg * (float)yaw_sign;
++    pthread_mutex_unlock(&lock);
++    return ok;
++}
++
++static int walk_est_ms(char kind, int val)
++{
++    int steps = kind == 'W' ? abs(val) : (int)lroundf(fabsf((float)val) / cal_deg);
++    if (steps < 1) steps = 1;
++    int ms = cal_ms[0] > cal_ms[1] ? cal_ms[0] : cal_ms[1];
++    return steps * ms;
++}
++
++static void ctl_walk_finish(const char *result, int ok)
++{
++    pthread_mutex_lock(&lock);
++    snprintf(walk_last, sizeof walk_last, "%s", result);
++    walk_kind = 0;
++    if (ok) walks_done++;
++    pthread_mutex_unlock(&lock);
++    fprintf(stderr, "[ctl] walk: %s\n", result);
++    ctl_mv.active = 0;
++}
++
++static void ctl_walk_start(char kind, int val, long long now)
++{
++    memset(&ctl_mv, 0, sizeof ctl_mv);
++    ctl_mv.active = 1;
++    ctl_mv.kind = kind;
++    ctl_mv.cmd = val;
++    ctl_mv.deadline = now + 2LL * walk_est_ms(kind, val) + WALK_TIMEOUT_PAD_MS;
++    if (kind == 'R') ctl_mv.yaw_ok = yaw_now(&ctl_mv.yaw_start);
++    fprintf(stderr, "[ctl] walk: %s %d start (~%d ms)%s\n", kind == 'W' ? "WALK" : "TURN", val,
++            walk_est_ms(kind, val), kind == 'R' && ctl_mv.yaw_ok ? " yaw-corrected" : "");
++    if (kind == 'W' && motor->walk) motor->walk(val);
++    if (kind == 'R' && motor->turn) motor->turn(val);
++}
++
++/* A TURN (or one of its correction steps) finished. Correct with the iPhone
++ * yaw if we have it, else report done. */
++static void ctl_turn_done(long long now)
++{
++    char res[40];
++    float y;
++    if (ctl_mv.yaw_ok && yaw_now(&y)) {
++        float actual = wrap180(y - ctl_mv.yaw_start);
++        if (abs(ctl_mv.cmd) >= 360) actual += 360.0f * (float)(ctl_mv.cmd / 360);  /* full turns */
++        float err = wrap180((float)ctl_mv.cmd - actual);
++        int steps = (int)lroundf(err / cal_deg);
++        pthread_mutex_lock(&lock);
++        yaw_err = err;
++        yaw_err_valid = 1;
++        pthread_mutex_unlock(&lock);
++        if (steps != 0 && ctl_mv.fixes < YAW_MAX_FIXES && motor->turn_steps) {
++            ctl_mv.fixes++;
++            ctl_mv.deadline = now + 2LL * abs(steps) * (cal_ms[0] > cal_ms[1] ? cal_ms[0] : cal_ms[1])
++                              + WALK_TIMEOUT_PAD_MS;
++            fprintf(stderr, "[ctl] walk: yaw says %.1f of %d deg (err %.1f) -> correct %d step(s)\n",
++                    actual, ctl_mv.cmd, err, steps);
++            motor->turn_steps(steps);
++            return;
++        }
++        fprintf(stderr, "[ctl] walk: yaw says %.1f of %d deg (err %.1f)\n", actual, ctl_mv.cmd, err);
++    }
++    snprintf(res, sizeof res, "DONE_R_%d", ctl_mv.cmd);
++    ctl_walk_finish(res, 1);
++}
++
++static void ctl_walk_event(const motor_event_t *ev, long long now)
++{
++    char res[40];
++    if (ev->kind == MOTOR_EV_CAL) {
++        pthread_mutex_lock(&lock);
++        cal_ms[0] = ev->cal_ms[0];
++        cal_ms[1] = ev->cal_ms[1];
++        cal_deg = ev->cal_deg > 0.5f ? ev->cal_deg : 30.0f;
++        cal_mode = ev->cal_mode;
++        pthread_mutex_unlock(&lock);
++        fprintf(stderr, "[ctl] cal: ms=%d,%d deg/step=%.2f mode=%s\n", ev->cal_ms[0], ev->cal_ms[1],
++                ev->cal_deg, ev->cal_mode ? "switch" : "timed");
++        return;
++    }
++    if (!ctl_mv.active) {
++        fprintf(stderr, "[ctl] walk: stray %s %c %d (no move active)\n",
++                ev->kind == MOTOR_EV_DONE ? "DONE" : "ABORT", ev->move, ev->value);
++        return;
++    }
++    if (ev->kind == MOTOR_EV_ABORT) {
++        if (!strcmp(ev->why, "new")) return;   /* we replaced it ourselves */
++        snprintf(res, sizeof res, "ABORT_%c_%d_%s", ev->move, ev->value, ev->why);
++        ctl_walk_finish(res, 0);
++        return;
++    }
++    /* DONE */
++    if (ctl_mv.kind == 'W' && ev->move == 'W') {
++        snprintf(res, sizeof res, "DONE_W_%d", ev->value);
++        ctl_walk_finish(res, 1);
++    } else if (ctl_mv.kind == 'R' && (ev->move == 'R' || ev->move == 'Q')) {
++        ctl_turn_done(now);
++    }
++}
++
++static void ctl_walk_tick(long long now)
++{
++    if (ctl_mv.active && now > ctl_mv.deadline) {
++        if (motor->walk_stop) motor->walk_stop();
++        ctl_walk_finish(ctl_mv.kind == 'W' ? "ABORT_W_?_timeout" : "ABORT_R_?_timeout", 0);
++    }
++}
++
+ static void ctl_event(const motor_event_t *ev, long long now)
+ {
+     switch (ev->kind) {
+@@ -204,6 +377,11 @@ static void ctl_event(const motor_event_t *ev, long long now)
+             fprintf(stderr, "[ctl] TIPPED (%d deg) -> stop, latched until RESET\n", ev->value);
+             ctl_gesture_stop("cancelled (tipped)");
+             ctl_halt_arms();
++            /* the Uno aborts its own move on a tip (ABORT ... tip); make sure */
++            if (ctl_mv.active) {
++                if (motor->walk_stop) motor->walk_stop();
++                ctl_walk_finish(ctl_mv.kind == 'W' ? "ABORT_W_?_tip" : "ABORT_R_?_tip", 0);
++            }
+         }
+         break;
+     case MOTOR_EV_BUMP:
+@@ -225,6 +403,12 @@ static void ctl_event(const motor_event_t *ev, long long now)
+             fprintf(stderr, "[ctl] co-processor READY\n");
+         ctl_gesture_stop("cancelled (co-processor reboot)");
+         ctl_pos[0] = ctl_pos[1] = ctl_tgt[0] = ctl_tgt[1] = 0.0f;
++        if (ctl_mv.active) ctl_walk_finish("ABORT_?_?_reboot", 0);
++        break;
++    case MOTOR_EV_DONE:
++    case MOTOR_EV_ABORT:
++    case MOTOR_EV_CAL:
++        ctl_walk_event(ev, now);
+         break;
+     default:
+         break;
+@@ -267,6 +451,13 @@ static void *control_thread(void *arg)
+         const gesture_t *start_g = req_gesture;
+         char dev_g[48];
+         memcpy(dev_g, req_dev_gesture, sizeof dev_g);
++        walk_req_t wreq = req_walk;
++        int wstop = req_walk_stop;
++        char calq[32];
++        memcpy(calq, req_cal, sizeof calq);
++        memset(&req_walk, 0, sizeof req_walk);
++        req_walk_stop = 0;
++        req_cal[0] = '\0';
+         req_halt = req_zero = req_level = req_stop_gesture = req_reset = 0;
+         req_gesture = NULL;
+         req_dev_gesture[0] = '\0';
+@@ -279,13 +470,17 @@ static void *control_thread(void *arg)
+         int blocked = dist >= 0.0f && dist < OBSTACLE_STOP_M && (tl + tr) > 0.0f;
+         int bumped = now < bump_until_ms;
+         if (blocked || tipped || bumped) { tl = tr = 0.0f; }
++        /* A walk owns the motors on the co-processor: send the idle D 0 0
++         * (the Uno ignores it during a move) and hard-zero the slew. */
++        int walking = ctl_mv.active || wreq.set;
++        if (walking) { tl = tr = 0.0f; out_l = out_r = 0.0f; }
+         estop = wd_tripped || blocked || tipped || bumped;
+         estop_why = tipped ? "tipped" : bumped ? "bump" : blocked ? "obstacle"
+                   : wd_tripped ? "watchdog" : "none";
+         last_dist = dist;
+         /* Hard stop on estop (no slew); smooth otherwise. */
+-        out_l = estop ? tl : slew(out_l, tl);
+-        out_r = estop ? tr : slew(out_r, tr);
++        out_l = estop || walking ? tl : slew(out_l, tl);
++        out_r = estop || walking ? tr : slew(out_r, tr);
+         float l = out_l, r = out_r;
+         int is_tipped = tipped;
+         pthread_mutex_unlock(&lock);
+@@ -304,6 +499,19 @@ static void *control_thread(void *arg)
+             if (motor->arm_zero) motor->arm_zero();
+         }
+         if (level && motor->level) motor->level();
++        if (calq[0] && motor->cal) motor->cal(calq);
++        if (wstop && ctl_mv.active) {
++            /* S already sent X via ctl_halt_arms (aborts the move: ABORT ... stop);
++             * a disconnect sends an explicit stop */
++            if (!halt && motor->walk_stop) motor->walk_stop();
++        }
++        if (wreq.set && !is_tipped) ctl_walk_start(wreq.kind, wreq.val, now);
++        else if (wreq.set) {
++            pthread_mutex_lock(&lock);
++            walk_kind = 0;
++            pthread_mutex_unlock(&lock);
++        }
++        ctl_walk_tick(now);
+         if (!is_tipped) {
+             for (int i = 0; i < 2; i++)
+                 if (areq[i].set) ctl_arm(i, areq[i].deg, areq[i].dps);
+@@ -337,6 +545,121 @@ static const char *motion_refused(void)
+     return NULL;
+ }
+ 
++/* Parse a whole number, rejecting "1.5", "3x", "". */
++static int parse_int(const char *s, int *out)
++{
++    char *end;
++    while (*s == ' ' || *s == '\t') s++;
++    long v = strtol(s, &end, 10);
++    if (end == s) return 0;
++    while (*end == ' ' || *end == '\t') end++;
++    if (*end) return 0;
++    *out = (int)v;
++    return 1;
++}
++
++static void handle_walk(char kind, const char *args, char *reply, size_t rlen)
++{
++    int v;
++    const char *why;
++    if (kind == 'W') {
++        if (!parse_int(args, &v) || v == 0 || abs(v) > WALK_MAX_STEPS) {
++            snprintf(reply, rlen, "ERR usage: WALK <steps 1..%d, - = back>\n", WALK_MAX_STEPS);
++            return;
++        }
++    } else {
++        if (!parse_int(args, &v) || v == 0 || abs(v) > TURN_MAX_DEG) {
++            snprintf(reply, rlen, "ERR usage: TURN <deg, multiple of 30, + = left, |deg| <= %d>\n", TURN_MAX_DEG);
++            return;
++        }
++        if (v % 30 != 0) {
++            snprintf(reply, rlen, "ERR TURN must be a multiple of 30 degrees (got %d)\n", v);
++            return;
++        }
++    }
++    if (!motor->walk) { snprintf(reply, rlen, "ERR backend can't walk\n"); return; }
++    pthread_mutex_lock(&lock);
++    feed_watchdog();
++    long long left = bump_until_ms - now_ms();
++    if ((why = motion_refused()) != NULL) {
++        snprintf(reply, rlen, "ERR %s\n", why);
++    } else if (left > 0) {
++        snprintf(reply, rlen, "ERR bumped: paused %lld ms\n", left);
++    } else if (walk_kind || req_walk.set) {
++        snprintf(reply, rlen, "ERR busy: already %s (S stops it)\n", walk_kind == 'R' ? "turning" : "walking");
++    } else {
++        req_walk.set = 1;
++        req_walk.kind = kind;
++        req_walk.val = v;
++        walk_kind = kind;
++        walk_cmd = v;
++        walk_seq++;
++        target_l = target_r = 0.0f;
++        snprintf(walk_last, sizeof walk_last, "running");
++        snprintf(reply, rlen, "OK %d\n", walk_est_ms(kind, v));
++    }
++    pthread_mutex_unlock(&lock);
++}
++
++static void handle_cal(const char *args, char *reply, size_t rlen)
++{
++    char what[16] = "";
++    int a, b;
++    float f;
++    sscanf(args, "%15s", what);
++    if (!what[0]) {
++        pthread_mutex_lock(&lock);
++        snprintf(reply, rlen, "OK ms=%d,%d deg=%.2f mode=%d yawsign=%d\n", cal_ms[0], cal_ms[1],
++                 cal_deg, cal_mode, yaw_sign);
++        pthread_mutex_unlock(&lock);
++        return;
++    }
++    char line[32] = "";
++    if (!strcasecmp(what, "MS")) {
++        if (sscanf(args, "%*s %d %d", &a, &b) != 2 || a < 0 || a > 2 || b < 100 || b > 5000) {
++            snprintf(reply, rlen, "ERR usage: CAL MS <0|1|2> <ms 100..5000>\n");
++            return;
++        }
++        snprintf(line, sizeof line, "K %d %d", a, b);
++    } else if (!strcasecmp(what, "DEG")) {
++        if (sscanf(args, "%*s %f", &f) != 1 || !(f >= 1.0f && f <= 180.0f)) {
++            snprintf(reply, rlen, "ERR usage: CAL DEG <deg per turn step 1..180>\n");
++            return;
++        }
++        snprintf(line, sizeof line, "Y %.2f", f);
++    } else if (!strcasecmp(what, "MODE")) {
++        char m[16] = "";
++        sscanf(args, "%*s %15s", m);
++        if (!strcasecmp(m, "1") || !strcasecmp(m, "switch")) snprintf(line, sizeof line, "M 1");
++        else if (!strcasecmp(m, "0") || !strcasecmp(m, "timed")) snprintf(line, sizeof line, "M 0");
++        else { snprintf(reply, rlen, "ERR usage: CAL MODE <1|switch|0|timed>\n"); return; }
++    } else if (!strcasecmp(what, "COUNTS")) {
++        snprintf(line, sizeof line, "C");
++    } else if (!strcasecmp(what, "YAWSIGN")) {
++        if (sscanf(args, "%*s %d", &a) != 1 || (a != 1 && a != -1)) {
++            snprintf(reply, rlen, "ERR usage: CAL YAWSIGN <1|-1>\n");
++            return;
++        }
++        pthread_mutex_lock(&lock);
++        yaw_sign = a;
++        pthread_mutex_unlock(&lock);
++        snprintf(reply, rlen, "OK\n");
++        return;
++    } else {
++        snprintf(reply, rlen, "ERR usage: CAL [MS|DEG|MODE|COUNTS|YAWSIGN ...]\n");
++        return;
++    }
++    if (!motor->cal) { snprintf(reply, rlen, "ERR backend has no calibration\n"); return; }
++    pthread_mutex_lock(&lock);
++    if (walk_kind) {
++        snprintf(reply, rlen, "ERR busy walking\n");
++    } else {
++        snprintf(req_cal, sizeof req_cal, "%s", line);
++        snprintf(reply, rlen, "OK\n");
++    }
++    pthread_mutex_unlock(&lock);
++}
++
+ static void handle_line(char *line, char *reply, size_t rlen)
+ {
+     char cmd[16] = "";
+@@ -357,6 +680,9 @@ static void handle_line(char *line, char *reply, size_t rlen)
+         if ((why = motion_refused()) != NULL) {
+             target_l = target_r = 0.0f;
+             snprintf(reply, rlen, "ERR %s\n", why);
++        } else if (walk_kind && (fabsf(a) >= 0.03f || fabsf(b) >= 0.03f)) {
++            target_l = target_r = 0.0f;
++            snprintf(reply, rlen, "ERR busy: %s (S stops it)\n", walk_kind == 'R' ? "turning" : "walking");
+         } else if (left > 0) {
+             target_l = target_r = 0.0f;
+             snprintf(reply, rlen, "ERR bumped: driving paused %lld ms\n", left);
+@@ -372,6 +698,8 @@ static void handle_line(char *line, char *reply, size_t rlen)
+         req_stop_gesture = req_halt = 1;
+         req_gesture = NULL;
+         memset(&arm_req, 0, sizeof arm_req);
++        if (req_walk.set) { memset(&req_walk, 0, sizeof req_walk); walk_kind = 0; snprintf(walk_last, sizeof walk_last, "ABORT_cancelled"); }
++        req_walk_stop = 1;
+         feed_watchdog();
+         pthread_mutex_unlock(&lock);
+         snprintf(reply, rlen, "OK\n");
+@@ -455,6 +783,11 @@ static void handle_line(char *line, char *reply, size_t rlen)
+             snprintf(reply, rlen, "OK\n");
+         }
+         pthread_mutex_unlock(&lock);
++    } else if (!strcasecmp(cmd, "WALK") || !strcasecmp(cmd, "TURN")) {
++        handle_walk(toupper((unsigned char)cmd[0]) == 'W' ? 'W' : 'R', line + strspn(line, " \t") + strlen(cmd),
++                    reply, rlen);
++    } else if (!strcasecmp(cmd, "CAL")) {
++        handle_cal(line + strspn(line, " \t") + strlen(cmd), reply, rlen);
+     } else if (!strcasecmp(cmd, "GESTURES")) {
+         size_t off = (size_t)snprintf(reply, rlen, "OK");
+         for (int i = 0; gesture_at(i) && off < rlen; i++)
+@@ -468,19 +801,28 @@ static void handle_line(char *line, char *reply, size_t rlen)
+     } else if (!strcasecmp(cmd, "STATUS")) {
+         pthread_mutex_lock(&lock);
+         long long bl = bump_until_ms - now_ms();
++        long long ya = yaw_ms ? now_ms() - yaw_ms : -1;
++        char yaw_s[48] = "";
++        if (yaw_ms) snprintf(yaw_s, sizeof yaw_s, " yaw=%.1f yaw_age=%lld", yaw_deg * (float)yaw_sign, ya);
++        if (yaw_err_valid) snprintf(yaw_s + strlen(yaw_s), sizeof yaw_s - strlen(yaw_s), " yaw_err=%.1f", yaw_err);
+         snprintf(reply, rlen,
+                  "OK %.2f %.2f %ld %.2f %d why=%s arm0=%.1f arm1=%.1f arm0_tgt=%.1f arm1_tgt=%.1f "
+-                 "gesture=%s tipped=%d tilt=%d bump_ms=%lld bumps=%d ready=%d backend=%s\n",
++                 "gesture=%s tipped=%d tilt=%d bump_ms=%lld bumps=%d ready=%d backend=%s "
++                 "walk=%s walk_cmd=%d walk_seq=%d walk_last=%s walks=%d deg_step=%.2f%s\n",
+                  out_l, out_r, ms_since(&last_cmd), last_dist, estop, estop_why,
+                  arm_pos[0], arm_pos[1], arm_tgt[0], arm_tgt[1], gesture_name,
+-                 tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name);
++                 tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name,
++                 walk_kind == 'W' ? "walk" : walk_kind == 'R' ? "turn" : "idle", walk_cmd, walk_seq,
++                 walk_last, walks_done, cal_deg, yaw_s);
+         pthread_mutex_unlock(&lock);
+     } else if (!strcasecmp(cmd, "SIM")) {
+         char kind[16] = "";
+         int v = 0;
+         if (motor != &motor_stub) { snprintf(reply, rlen, "ERR SIM is only for -b stub\n"); return; }
+         if (sscanf(line, "%*s %15s %d", kind, &v) < 1) { snprintf(reply, rlen, "ERR usage: SIM T|B|READY [n]\n"); return; }
+-        motor_event_t ev = { MOTOR_EV_NONE, v };
++        motor_event_t ev;
++        memset(&ev, 0, sizeof ev);
++        ev.value = v;
+         if (!strcasecmp(kind, "T")) ev.kind = MOTOR_EV_TIP;
+         else if (!strcasecmp(kind, "B")) ev.kind = MOTOR_EV_BUMP;
+         else if (!strcasecmp(kind, "READY")) ev.kind = MOTOR_EV_READY;
+@@ -499,7 +841,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
+ static void *client_thread(void *arg)
+ {
+     int fd = (int)(long)arg;
+-    char buf[512], reply[320];
++    char buf[512], reply[512];
+     size_t used = 0;
+ 
+     fprintf(stderr, "[net] client connected\n");
+@@ -525,12 +867,57 @@ static void *client_thread(void *arg)
+      * watchdog. Arms finish their current move (a gesture is harmless). */
+     pthread_mutex_lock(&lock);
+     target_l = target_r = 0.0f;
++    if (walk_kind) req_walk_stop = 1;    /* and stop walking: nobody's watching */
+     pthread_mutex_unlock(&lock);
+     fprintf(stderr, "[net] client disconnected -> stop\n");
+     close(fd);
+     return NULL;
+ }
+ 
++/* ------------------------------------------------------------------ iPhone yaw */
++static void *yaw_thread(void *arg)
++{
++    int fd = (int)(long)arg;
++    char buf[256];
++    while (running) {
++        fd_set rf;
++        FD_ZERO(&rf);
++        FD_SET(fd, &rf);
++        struct timeval tv = { 0, 200000 };
++        if (select(fd + 1, &rf, NULL, NULL, &tv) <= 0) continue;
++        ssize_t n = recv(fd, buf, sizeof buf - 1, 0);
++        if (n <= 0) continue;
++        buf[n] = '\0';
++        float y;
++        if (sscanf(buf, "YAW %f", &y) == 1 && !isnan(y)) {
++            pthread_mutex_lock(&lock);
++            yaw_deg = y;
++            yaw_ms = now_ms();
++            pthread_mutex_unlock(&lock);
++        }
++    }
++    close(fd);
++    return NULL;
++}
++
++static void yaw_start(void)
++{
++    int fd = socket(AF_INET, SOCK_DGRAM, 0);
++    struct sockaddr_in a;
++    memset(&a, 0, sizeof a);
++    a.sin_family = AF_INET;
++    a.sin_addr.s_addr = htonl(INADDR_ANY);
++    a.sin_port = htons((unsigned short)cfg_yaw_port);
++    if (fd < 0 || bind(fd, (struct sockaddr *)&a, sizeof a) < 0) {
++        perror("yaw udp bind");
++        if (fd >= 0) close(fd);
++        return;
++    }
++    pthread_t t;
++    if (pthread_create(&t, NULL, yaw_thread, (void *)(long)fd) == 0) pthread_detach(t);
++    fprintf(stderr, "tars_motor: iPhone yaw on udp %d\n", cfg_yaw_port);
++}
++
+ /* ------------------------------------------------------------------ main */
+ static void on_signal(int sig) { (void)sig; running = 0; }
+ 
+@@ -538,13 +925,13 @@ static void usage(const char *argv0)
+ {
+     fprintf(stderr,
+         "usage: %s [-b uno|stub|pico] [-d serial_dev] [-p port] [-w watchdog_ms]\n"
+-        "          [-r rt_prio] [-k bump_hold_ms]\n", argv0);
++        "          [-r rt_prio] [-k bump_hold_ms] [-y yaw_udp_port]\n", argv0);
+ }
+ 
+ int main(int argc, char **argv)
+ {
+     int opt;
+-    while ((opt = getopt(argc, argv, "b:d:p:w:r:k:h")) != -1) {
++    while ((opt = getopt(argc, argv, "b:d:p:w:r:k:y:h")) != -1) {
+         switch (opt) {
+         case 'b': cfg_backend = optarg; break;
+         case 'd': cfg_dev = optarg; break;
+@@ -552,6 +939,7 @@ int main(int argc, char **argv)
+         case 'w': cfg_wd_ms = atoi(optarg); break;
+         case 'r': cfg_rt_prio = atoi(optarg); break;
+         case 'k': cfg_bump_ms = atoi(optarg); break;
++        case 'y': cfg_yaw_port = atoi(optarg); break;
+         default:  usage(argv[0]); return opt == 'h' ? 0 : 2;
+         }
+     }
+@@ -572,6 +960,7 @@ int main(int argc, char **argv)
+ 
+     clock_gettime(CLOCK_MONOTONIC, &last_cmd);
+     last_cmd.tv_sec -= 10;              /* start in watchdog-stop state */
++    if (cfg_yaw_port > 0) yaw_start();
+ 
+     /* Real-time control thread. */
+     pthread_attr_t attr;
+diff --git a/pi/src/motor.h b/pi/src/motor.h
+index 34bda7e..aba5405 100644
+--- a/pi/src/motor.h
++++ b/pi/src/motor.h
+@@ -12,11 +12,19 @@ typedef enum {
+     MOTOR_EV_READY,   /* co-processor (re)booted: arm zero is lost */
+     MOTOR_EV_TIP,     /* tipped over; value = tilt in degrees */
+     MOTOR_EV_BUMP,    /* bump; value = peak deviation in milli-g */
++    MOTOR_EV_DONE,    /* walk/turn finished; move = 'W'|'R'|'Q', value = steps or deg */
++    MOTOR_EV_ABORT,   /* walk/turn stopped early; value = done so far, why = reason */
++    MOTOR_EV_CAL,     /* calibration report: cal_ms[], cal_deg, cal_mode */
+ } motor_event_kind_t;
+ 
+ typedef struct {
+     motor_event_kind_t kind;
+     int value;
++    char move;          /* DONE / ABORT: 'W' walk, 'R' turn (deg), 'Q' raw turn steps */
++    char why[12];       /* ABORT: stop stall tip drive new timeout */
++    int cal_ms[2];      /* CAL: ms per step, left / right */
++    float cal_deg;      /* CAL: degrees per turn step */
++    int cal_mode;       /* CAL: 1 = crank switches, 0 = timed */
+ } motor_event_t;
+ 
+ typedef struct motor_backend {
+@@ -40,6 +48,14 @@ typedef struct motor_backend {
+     int  (*arm_zero)(void);   /* current position := 0 deg */
+     int  (*level)(void);      /* "robot is upright now": recapture tilt reference */
+ 
++    /* ---- walking (crank legs). All NULL if the backend can't walk. ----
++     * Self-timed on the co-processor; completion arrives as DONE / ABORT. */
++    int  (*walk)(int steps);        /* + forward, - back */
++    int  (*turn)(int deg);          /* multiple of 30, + = left (CCW) */
++    int  (*turn_steps)(int steps);  /* raw turn steps (yaw correction), + = left */
++    int  (*walk_stop)(void);        /* abort a move (also stops wheels + arms) */
++    int  (*cal)(const char *line);  /* co-processor calibration line: "K 0 600", "Y 28.5", "M 1", "C" */
++
+     /* ---- events from the co-processor. NULL = none. 1 = *ev filled. ---- */
+     int  (*poll)(motor_event_t *ev);
+ } motor_backend_t;
+diff --git a/pi/src/motor_stub.c b/pi/src/motor_stub.c
+index 67e1467..8adc5f3 100644
+--- a/pi/src/motor_stub.c
++++ b/pi/src/motor_stub.c
+@@ -1,12 +1,71 @@
+ /* Stub backend: prints commands instead of moving anything.
+  * Use it to test networking, watchdog, gestures and tip/bump handling with no
+- * hardware attached (inject Uno events with the SIM command, stub only). */
+-#include <stdio.h>
++ * hardware attached (inject Uno events with the SIM command, stub only).
++ *
++ * Walking is simulated like the Uno does it: a move takes
++ * steps x ms-per-step (CAL MS changes it, default 600 ms), then poll()
++ * reports DONE. A turn is round(|deg| / deg-per-step) steps (CAL DEG). */
+ #include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
+ #include "motor.h"
+ 
+ static float last_l = 99.0f, last_r = 99.0f;
+ 
++/* simulated co-processor walking state */
++static int  cal_ms[2] = { 600, 600 };
++static float cal_deg = 30.0f;
++static int  cal_mode = 1;
++static int  cal_pending = 1;           /* report CAL once at start, like the Uno's boot line */
++static char mv_kind;                   /* 0 idle, 'W' 'R' 'Q' */
++static int  mv_cmd, mv_steps;
++static long long mv_start, mv_end;
++static motor_event_t pend[4];
++static int  npend;
++
++static long long now_ms(void)
++{
++    struct timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
++}
++
++static void push(const motor_event_t *e)
++{
++    if (npend < (int)(sizeof pend / sizeof *pend)) pend[npend++] = *e;
++}
++
++static int ms_per_step(void) { return cal_ms[0] > cal_ms[1] ? cal_ms[0] : cal_ms[1]; }
++
++static void mv_abort(const char *why)
++{
++    if (!mv_kind) return;
++    motor_event_t e;
++    memset(&e, 0, sizeof e);
++    e.kind = MOTOR_EV_ABORT;
++    e.move = mv_kind;
++    int done = (int)((now_ms() - mv_start) / ms_per_step());
++    if (done > mv_steps) done = mv_steps;
++    int v = mv_kind == 'R' ? (int)lroundf(done * cal_deg) : done;
++    e.value = mv_cmd < 0 ? -v : v;
++    snprintf(e.why, sizeof e.why, "%s", why);
++    fprintf(stderr, "[stub] ABORT %c %d %s\n", e.move, e.value, why);
++    push(&e);
++    mv_kind = 0;
++}
++
++static void mv_start_sim(char kind, int cmd, int steps)
++{
++    if (mv_kind) mv_abort("new");
++    mv_kind = kind;
++    mv_cmd = cmd;
++    mv_steps = steps;
++    mv_start = now_ms();
++    mv_end = mv_start + (long long)steps * ms_per_step();
++}
++
+ static int stub_init(const char *dev)
+ {
+     (void)dev;
+@@ -21,6 +80,8 @@ static int stub_drive(float l, float r)
+         fprintf(stderr, "[stub] drive L=%+.2f R=%+.2f\n", l, r);
+         last_l = l; last_r = r;
+     }
++    /* like the Uno: a real drive command aborts a walk, the idle tick doesn't */
++    if (mv_kind && (fabsf(l) >= 0.03f || fabsf(r) >= 0.03f)) mv_abort("drive");
+     return 0;
+ }
+ 
+@@ -30,10 +91,92 @@ static int stub_arm(int arm, float deg, float dps)
+     return 0;
+ }
+ 
+-static int stub_arm_halt(void) { fprintf(stderr, "[stub] arms halt\n"); return 0; }
++static int stub_arm_halt(void)
++{
++    fprintf(stderr, "[stub] arms halt\n");
++    mv_abort("stop");                  /* the Uno's X also aborts a move */
++    return 0;
++}
+ static int stub_arm_zero(void) { fprintf(stderr, "[stub] arms zero\n"); return 0; }
+ static int stub_level(void)    { fprintf(stderr, "[stub] level (upright recaptured)\n"); return 0; }
+ 
++static int stub_walk(int steps)
++{
++    fprintf(stderr, "[stub] walk %d steps (~%d ms)\n", steps, abs(steps) * ms_per_step());
++    mv_start_sim('W', steps, abs(steps));
++    return 0;
++}
++
++static int stub_turn(int deg)
++{
++    int steps = (int)lroundf(fabsf((float)deg) / cal_deg);
++    if (steps < 1) steps = 1;
++    fprintf(stderr, "[stub] turn %d deg = %d steps (%.2f deg/step)\n", deg, steps, cal_deg);
++    mv_start_sim('R', deg, steps);
++    return 0;
++}
++
++static int stub_turn_steps(int steps)
++{
++    fprintf(stderr, "[stub] turn raw %d steps\n", steps);
++    mv_start_sim('Q', steps, abs(steps));
++    return 0;
++}
++
++static int stub_walk_stop(void)
++{
++    fprintf(stderr, "[stub] walk stop\n");
++    mv_abort("stop");
++    return 0;
++}
++
++static int stub_cal(const char *line)
++{
++    int side, ms, mode;
++    float deg;
++    fprintf(stderr, "[stub] cal '%s'\n", line);
++    if (sscanf(line, "K %d %d", &side, &ms) == 2) {
++        if (side != 1) cal_ms[0] = ms;
++        if (side != 0) cal_ms[1] = ms;
++    } else if (sscanf(line, "Y %f", &deg) == 1) {
++        cal_deg = deg;
++    } else if (sscanf(line, "M %d", &mode) == 1) {
++        cal_mode = mode;
++    } else if (line[0] == 'C') {
++        fprintf(stderr, "[stub] # counts L 0 R 0 sw 0 0 rocks 0\n");
++    }
++    cal_pending = 1;
++    return 0;
++}
++
++static int stub_poll(motor_event_t *ev)
++{
++    if (cal_pending) {
++        cal_pending = 0;
++        memset(ev, 0, sizeof *ev);
++        ev->kind = MOTOR_EV_CAL;
++        ev->cal_ms[0] = cal_ms[0];
++        ev->cal_ms[1] = cal_ms[1];
++        ev->cal_deg = cal_deg;
++        ev->cal_mode = cal_mode;
++        return 1;
++    }
++    if (mv_kind && now_ms() >= mv_end) {
++        motor_event_t e;
++        memset(&e, 0, sizeof e);
++        e.kind = MOTOR_EV_DONE;
++        e.move = mv_kind;
++        e.value = mv_cmd;
++        fprintf(stderr, "[stub] DONE %c %d\n", e.move, e.value);
++        push(&e);
++        mv_kind = 0;
++    }
++    if (!npend) return 0;
++    *ev = pend[0];
++    memmove(pend, pend + 1, (size_t)(--npend) * sizeof *pend);
++    return 1;
++}
++
+ static void stub_shutdown(void)
+ {
+     fprintf(stderr, "[stub] shutdown (motors stopped)\n");
+@@ -50,5 +193,10 @@ const motor_backend_t motor_stub = {
+     .arm_halt = stub_arm_halt,
+     .arm_zero = stub_arm_zero,
+     .level = stub_level,
+-    .poll = NULL,                 /* events come from SIM in main.c */
++    .walk = stub_walk,
++    .turn = stub_turn,
++    .turn_steps = stub_turn_steps,
++    .walk_stop = stub_walk_stop,
++    .cal = stub_cal,
++    .poll = stub_poll,            /* walk completion + CAL; tip/bump come from SIM in main.c */
+ };
+diff --git a/pi/src/motor_uno_serial.c b/pi/src/motor_uno_serial.c
+index a13a5b6..4cfdfa0 100644
+--- a/pi/src/motor_uno_serial.c
++++ b/pi/src/motor_uno_serial.c
+@@ -3,7 +3,10 @@
+  *
+  *   Pi -> Uno   "D <l> <r>"  every tick (also feeds the Uno's 200 ms watchdog)
+  *               "S"  "A <arm> <deg> <dps>"  "X" (halt arms)  "Z"  "U"
++ *               "W <steps>"  "R <deg>"  "Q <steps>"  "K/Y/M/C ..." (calibration)
+  *   Uno -> Pi   "READY"  "T <deg>"  "B <mg>"  "# ..." (diagnostics, logged only)
++ *               "DONE W|R|Q <n>"  "ABORT W|R|Q <done> <why>"
++ *               "CAL <msL> <msR> <degPerTurnStep> <mode>"
+  *
+  * Fully non-blocking: output goes through a small buffer so a partial write
+  * never splits a line; input is split into lines and parsed into events that
+@@ -74,15 +77,23 @@ static void uno_lost(const char *why)
+     fd = -1;
+ }
+ 
+-static void ev_push(motor_event_kind_t k, int v)
++static void ev_push_full(const motor_event_t *e)
+ {
+     int next = (ev_head + 1) % EV_CAP;
+     if (next == ev_tail) return;          /* full: drop (they repeat anyway) */
+-    evq[ev_head].kind = k;
+-    evq[ev_head].value = v;
++    evq[ev_head] = *e;
+     ev_head = next;
+ }
+ 
++static void ev_push(motor_event_kind_t k, int v)
++{
++    motor_event_t e;
++    memset(&e, 0, sizeof e);
++    e.kind = k;
++    e.value = v;
++    ev_push_full(&e);
++}
++
+ static void parse_line(char *s)
+ {
+     if (s[0] == '#') {                     /* diagnostics: log, never act on */
+@@ -96,6 +107,31 @@ static void parse_line(char *s)
+         long v = strtol(s + 2, &end, 10);
+         if (end == s + 2 || *end) return;  /* malformed */
+         ev_push(s[0] == 'T' ? MOTOR_EV_TIP : MOTOR_EV_BUMP, (int)v);
++    } else if (!strncmp(s, "DONE ", 5) || !strncmp(s, "ABORT ", 6)) {
++        motor_event_t e;
++        memset(&e, 0, sizeof e);
++        char mv = 0, why[12] = "";
++        int v = 0, n;
++        if (s[0] == 'D') {
++            n = sscanf(s, "DONE %c %d", &mv, &v);
++            if (n != 2) return;
++            e.kind = MOTOR_EV_DONE;
++        } else {
++            n = sscanf(s, "ABORT %c %d %11s", &mv, &v, why);
++            if (n != 3) return;
++            e.kind = MOTOR_EV_ABORT;
++            snprintf(e.why, sizeof e.why, "%s", why);
++        }
++        if (mv != 'W' && mv != 'R' && mv != 'Q') return;
++        e.move = mv;
++        e.value = v;
++        ev_push_full(&e);
++    } else if (!strncmp(s, "CAL ", 4)) {
++        motor_event_t e;
++        memset(&e, 0, sizeof e);
++        if (sscanf(s, "CAL %d %d %f %d", &e.cal_ms[0], &e.cal_ms[1], &e.cal_deg, &e.cal_mode) != 4) return;
++        e.kind = MOTOR_EV_CAL;
++        ev_push_full(&e);
+     }
+     /* anything else: ignore */
+ }
+@@ -189,6 +225,36 @@ static int uno_arm_halt(void) { return send_line("X\n"); }
+ static int uno_arm_zero(void) { return send_line("Z\n"); }
+ static int uno_level(void)    { return send_line("U\n"); }
+ 
++static int uno_walk(int steps)
++{
++    char line[24];
++    snprintf(line, sizeof line, "W %d\n", steps);
++    return send_line(line);
++}
++
++static int uno_turn(int deg)
++{
++    char line[24];
++    snprintf(line, sizeof line, "R %d\n", deg);
++    return send_line(line);
++}
++
++static int uno_turn_steps(int steps)
++{
++    char line[24];
++    snprintf(line, sizeof line, "Q %d\n", steps);
++    return send_line(line);
++}
++
++static int uno_walk_stop(void) { return send_line("S\n"); }
++
++static int uno_cal(const char *l)
++{
++    char line[48];
++    snprintf(line, sizeof line, "%s\n", l);
++    return send_line(line);
++}
++
+ static int uno_poll(motor_event_t *ev)
+ {
+     if (ev_tail == ev_head) return 0;
+@@ -224,5 +290,10 @@ const motor_backend_t motor_uno_serial = {
+     .arm_halt = uno_arm_halt,
+     .arm_zero = uno_arm_zero,
+     .level = uno_level,
++    .walk = uno_walk,
++    .turn = uno_turn,
++    .turn_steps = uno_turn_steps,
++    .walk_stop = uno_walk_stop,
++    .cal = uno_cal,
+     .poll = uno_poll,
+ };
+diff --git a/pi/test_server.py b/pi/test_server.py
+index a6d05d7..ecebe91 100644
+--- a/pi/test_server.py
++++ b/pi/test_server.py
+@@ -417,6 +417,244 @@ def test_uno() -> None:
+     uno.close()
+ 
+ 
++# ------------------------------------------------------------------ walking (stub)
++def wait_walk_idle(c: Client, timeout: float = 5.0) -> dict:
++    end = time.monotonic() + timeout
++    st = c.status()
++    while time.monotonic() < end and st["walk"] != "idle":
++        time.sleep(0.05)
++        st = c.status()
++    return st
++
++
++def test_walk_stub() -> None:
++    print("walk: stub WALK / TURN / CAL")
++    srv = Server("-b", "stub", "-w", "300", "-k", "500")
++    c = Client(srv.port)
++    try:
++        time.sleep(0.1)
++        check(c.cmd("CAL") == "OK ms=600,600 deg=30.00 mode=1 yawsign=1", "CAL defaults from backend")
++        check(c.cmd("CAL MS 2 200") == "OK", "CAL MS")
++        time.sleep(0.1)
++        check(c.cmd("CAL").startswith("OK ms=200,200"), "CAL MS took effect")
++        st = c.status()
++        check(st["walk"] == "idle" and st["walk_last"] == "none" and st["deg_step"] == "30.00", f"idle {st}")
++
++        r = c.cmd("WALK 3")
++        check(r == "OK 600", f"WALK 3 -> {r}")
++        time.sleep(0.05)
++        st = c.status()
++        check(st["walk"] == "walk" and st["walk_cmd"] == "3" and st["walk_last"] == "running", f"walking {st}")
++        check(c.cmd("WALK 1").startswith("ERR busy"), "second WALK refused")
++        check(c.cmd("TURN 30").startswith("ERR busy"), "TURN refused while walking")
++        check(c.cmd("D 0.5 0.5").startswith("ERR busy"), "D refused while walking")
++        check(c.cmd("D 0 0") == "OK", "idle D allowed while walking")
++        check(c.cmd("CAL DEG 20").startswith("ERR busy"), "CAL refused while walking")
++        check(srv.wait_log(r"\[stub\] walk 3 steps"), "walk reaches backend")
++        st = wait_walk_idle(c)
++        check(st["walk"] == "idle" and st["walk_last"] == "DONE_W_3" and st["walks"] == "1", f"done {st}")
++        check(not any("drive L=+0.5" in l for l in srv.log), "no drive during walk")
++
++        print("walk: argument checks")
++        for bad in ("TURN 45", "TURN 10", "TURN -100"):
++            check("multiple of 30" in c.cmd(bad), f"{bad} rejected (30 deg)")
++        for bad in ("TURN", "TURN 0", "TURN 1.5", "TURN 750", "TURN x", "WALK", "WALK 0",
++                    "WALK 51", "WALK -51", "WALK 2.5", "WALK x", "WALK 1 2"):
++            check(c.cmd(bad).startswith("ERR usage"), f"{bad!r} rejected")
++        for bad in ("CAL MS 3 100", "CAL MS 0 50", "CAL DEG 0", "CAL DEG 200", "CAL MODE 2",
++                    "CAL YAWSIGN 2", "CAL FOO"):
++            check(c.cmd(bad).startswith("ERR usage"), f"{bad!r} rejected")
++        check(c.status()["walk"] == "idle", "rejections start nothing")
++
++        print("walk: TURN 90 / -30 / deg-per-step")
++        check(c.cmd("TURN 90") == "OK 600", "TURN 90 est 3 steps")
++        check(srv.wait_log(r"turn 90 deg = 3 steps"), "3 turn steps")
++        st = wait_walk_idle(c)
++        check(st["walk_last"] == "DONE_R_90", f"turn done {st}")
++        check(c.cmd("TURN -30") == "OK 200", "TURN -30")
++        st = wait_walk_idle(c)
++        check(st["walk_last"] == "DONE_R_-30", f"turn -30 done {st}")
++        check(c.cmd("CAL DEG 25") == "OK", "CAL DEG 25")
++        time.sleep(0.1)
++        check(c.status()["deg_step"] == "25.00", "deg_step updated")
++        check(c.cmd("TURN 90") == "OK 800", "TURN 90 = 4 steps at 25 deg/step")
++        check(srv.wait_log(r"turn 90 deg = 4 steps"), "4 turn steps")
++        wait_walk_idle(c)
++        c.cmd("CAL DEG 30")
++        check(c.cmd("CAL MODE timed") == "OK" and srv.wait_log(r"cal 'M 0'"), "CAL MODE timed -> M 0")
++        check(c.cmd("CAL COUNTS") == "OK" and srv.wait_log(r"cal 'C'"), "CAL COUNTS -> C")
++
++        print("walk: S / tip / bump / disconnect")
++        c.cmd("WALK -10")
++        time.sleep(0.5)
++        check(c.cmd("S") == "OK", "S")
++        st = wait_walk_idle(c, 1.0)
++        check(st["walk"] == "idle" and st["walk_last"].startswith("ABORT_W_-2_stop"), f"S aborts {st}")
++        c.cmd("WALK 10")
++        time.sleep(0.3)
++        c.cmd("SIM T 70")
++        st = wait_walk_idle(c, 1.0)
++        check(st["walk_last"].startswith("ABORT_W") and "tip" in st["walk_last"], f"tip aborts {st}")
++        check(c.cmd("WALK 1").startswith("ERR tipped"), "WALK refused while tipped")
++        check(c.cmd("TURN 30").startswith("ERR tipped"), "TURN refused while tipped")
++        time.sleep(1.1)
++        check(c.cmd("RESET") == "OK", "RESET")
++        c.cmd("SIM B 1500")
++        time.sleep(0.1)
++        check(c.cmd("WALK 1").startswith("ERR bumped"), "WALK refused during bump hold")
++        time.sleep(0.6)
++        c2 = Client(srv.port)
++        check(c2.cmd("WALK 20") == "OK 4000", "WALK from 2nd client")
++        time.sleep(0.3)
++        c2.close()
++        st = wait_walk_idle(c, 1.0)
++        check(st["walk"] == "idle" and "stop" in st["walk_last"], f"disconnect stops walk {st}")
++        check(srv.wait_log(r"\[stub\] walk stop"), "walk_stop called on disconnect")
++    finally:
++        c.close()
++    check(srv.stop() == 0, "walk stub exit")
++
++
++class YawSender:
++    """Plays the iPhone bridge: sends 'YAW <deg>' at 50 Hz."""
++    def __init__(self, port: int):
++        self.port, self.yaw, self._run = port, 0.0, True
++        self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++        self._t = threading.Thread(target=self._loop, daemon=True)
++        self._t.start()
++
++    def _loop(self) -> None:
++        while self._run:
++            self.s.sendto(f"YAW {self.yaw:.2f}".encode(), ("127.0.0.1", self.port))
++            time.sleep(0.02)
++
++    def close(self) -> None:
++        self._run = False
++        self._t.join(1)
++        self.s.close()
++
++
++def test_walk_yaw() -> None:
++    print("walk: iPhone yaw correction (stub)")
++    yport = free_port()
++    srv = Server("-b", "stub", "-y", str(yport))
++    c = Client(srv.port)
++    ys = YawSender(yport)
++    try:
++        check(srv.wait_log(r"iPhone yaw on udp"), "yaw listener up")
++        c.cmd("CAL MS 2 200")
++        ys.yaw = 10.0
++        time.sleep(0.2)
++        st = c.status()
++        check(st.get("yaw") == "10.0" and int(st.get("yaw_age", 999)) < 200, f"yaw in STATUS {st}")
++        # TURN 90 but the robot only turns 60: one 30-deg correction step
++        check(c.cmd("TURN 90").startswith("OK"), "TURN 90")
++        time.sleep(0.3)
++        ys.yaw = 70.0
++        check(srv.wait_log(r"err 30\.0\) -> correct 1 step", 2.0), "correction step computed")
++        check(srv.wait_log(r"\[stub\] turn raw 1 steps"), "raw turn step sent")
++        time.sleep(0.05)
++        check(c.status()["walk"] == "turn", "still turning during correction")
++        ys.yaw = 101.0
++        st = wait_walk_idle(c, 2.0)
++        check(st["walk_last"] == "DONE_R_90" and st.get("yaw_err") == "-1.0", f"corrected {st}")
++        # over-turn the other way with yaw sign flipped: phone yaw decreases when turning left
++        check(c.cmd("CAL YAWSIGN -1") == "OK", "YAWSIGN -1")
++        ys.yaw = 0.0
++        time.sleep(0.1)
++        c.cmd("TURN -60")          # right turn: yaw*sign should go -60; phone reports +90 => -90
++        time.sleep(0.2)
++        ys.yaw = 90.0
++        check(srv.wait_log(r"yaw says -90\.0 of -60 deg \(err 30\.0\) -> correct 1 step", 2.0), "sign-flipped correction")
++        ys.yaw = 61.0
++        st = wait_walk_idle(c, 2.0)
++        check(st["walk_last"] == "DONE_R_-60", f"done {st}")
++        # wildly wrong yaw: at most 2 corrections, then report
++        c.cmd("CAL YAWSIGN 1")
++        ys.yaw = 0.0
++        time.sleep(0.1)
++        n0 = len(srv.log)
++        c.cmd("TURN 30")
++        st = wait_walk_idle(c, 3.0)
++        fixes = sum("turn raw" in l for l in srv.log[n0:])
++        check(fixes == 2 and st["walk_last"] == "DONE_R_30", f"max 2 corrections ({fixes}) {st}")
++        # stale yaw: no correction
++        ys.close()
++        time.sleep(0.7)
++        n0 = len(srv.log)
++        c.cmd("TURN 30")
++        st = wait_walk_idle(c, 2.0)
++        check(st["walk_last"] == "DONE_R_30" and not any("turn raw" in l for l in srv.log[n0:]), "stale yaw ignored")
++    finally:
++        ys.close()
++        c.close()
++    check(srv.stop() == 0, "yaw stub exit")
++
++
++def test_walk_uno() -> None:
++    print("walk: uno backend over a pseudo-terminal")
++    uno = FakeUno()
++    srv = Server("-b", "uno", "-d", uno.path, "-w", "300")
++    c = Client(srv.port)
++    try:
++        uno.pump(0.3)
++        uno.send("# adxl345 at 0x53\r\nCAL 700 650 27.50 1\r\nREADY\r\n")
++        check(srv.wait_log(r"cal: ms=700,650 deg/step=27\.50 mode=switch"), "CAL line parsed")
++        time.sleep(0.05)
++        check(c.cmd("CAL") == "OK ms=700,650 deg=27.50 mode=1 yawsign=1", "CAL reflects the Uno")
++
++        uno.lines.clear()
++        check(c.cmd("WALK 2") == "OK 1400", "WALK 2 est from Uno cal")
++        uno.pump(0.3)
++        check("W 2" in uno.lines, f"W on the wire {[l for l in uno.lines if l[0] != 'D']}")
++        ds = [l for l in uno.lines if l.startswith("D ")]
++        check(ds and all(l == "D 0.000 0.000" for l in ds), "only idle D while walking")
++        uno.send("# mv W L 1 R 1 / 2\r\nDONE W 2\r\n")
++        st = wait_walk_idle(c, 1.0)
++        check(st["walk_last"] == "DONE_W_2", f"DONE parsed {st}")
++
++        uno.lines.clear()
++        c.cmd("TURN -60")
++        uno.pump(0.1)
++        check("R -60" in uno.lines, "R on the wire")
++        uno.send("ABORT R -28 stall\n")
++        st = wait_walk_idle(c, 1.0)
++        check(st["walk_last"] == "ABORT_R_-28_stall", f"ABORT parsed {st}")
++
++        uno.send("DONE W 9\nDONE X 1\nABORT W\nCAL 1 2\n")      # stray / malformed
++        uno.pump(0.1)
++        check(c.status()["walk_last"] == "ABORT_R_-28_stall", "junk ignored")
++
++        uno.lines.clear()
++        for cmd in ("CAL MS 0 500", "CAL DEG 28.5", "CAL MODE timed", "CAL COUNTS"):
++            check(c.cmd(cmd) == "OK", cmd)
++            time.sleep(0.05)
++        uno.pump(0.1)
++        non_d = [l for l in uno.lines if not l.startswith("D ")]
++        check(non_d == ["K 0 500", "Y 28.50", "M 0", "C"], f"CAL lines {non_d}")
++
++        uno.lines.clear()
++        c.cmd("WALK 5")
++        uno.pump(0.1)
++        c.cmd("S")
++        uno.pump(0.1)
++        check("X" in uno.lines, "S -> X aborts the move on the Uno")
++        uno.send("ABORT W 1 stop\n")
++        st = wait_walk_idle(c, 1.0)
++        check(st["walk_last"] == "ABORT_W_1_stop", f"stop {st}")
++
++        print("walk: uno timeout (no DONE)")
++        uno.lines.clear()
++        c.cmd("WALK 1")
++        st = wait_walk_idle(c, 4.5)              # 2 x 700 + 2000 ms
++        check(st["walk_last"] == "ABORT_W_?_timeout", f"timeout {st}")
++        check("S" in uno.lines, "timeout sends S")
++    finally:
++        c.close()
++    srv.stop()
++    uno.close()
++
++
+ def test_pico_still_builds() -> None:
+     print("pico backend still selectable")
+     srv = Server("-b", "pico", "-d", "/nonexistent")
+@@ -428,6 +666,9 @@ if __name__ == "__main__":
+     t0 = time.monotonic()
+     test_stub()
+     test_uno()
++    test_walk_stub()
++    test_walk_yaw()
++    test_walk_uno()
+     test_pico_still_builds()
+     print(f"{checks - failures}/{checks} checks passed ({time.monotonic() - t0:.1f} s)")
+     sys.exit(1 if failures else 0)
+-- 
+2.50.1 (Apple Git-155)
+

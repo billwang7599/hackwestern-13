@@ -1,0 +1,947 @@
+From 6b52624964bfe1d304b73fe5259f9c4d204b8ffb Mon Sep 17 00:00:00 2001
+From: Bill <billwang7599@gmail.com>
+Date: Sat, 21 Nov 2026 01:24:11 -0500
+Subject: [PATCH 1/2] TARS walk: Uno crank gait (W/R/Q walk+turn, D2/D8 foil
+ crank switches, sync, stall stop, timed fallback, EEPROM cal, rock count)
+
+---
+ uno/tars/tars.ino       | 396 +++++++++++++++++++++++++++++++++++++++-
+ uno/test/Makefile       |   4 +-
+ uno/test/mock/Arduino.h |   3 +
+ uno/test/mock/EEPROM.h  |  13 ++
+ uno/test/test_tars.cpp  | 277 +++++++++++++++++++++++++++-
+ 5 files changed, 677 insertions(+), 16 deletions(-)
+ create mode 100644 uno/test/mock/EEPROM.h
+
+diff --git a/uno/tars/tars.ino b/uno/tars/tars.ino
+index 1f9b0ac..c16bbbc 100644
+--- a/uno/tars/tars.ino
++++ b/uno/tars/tars.ino
+@@ -2,8 +2,9 @@
+  * TARS: Arduino Uno motor/arm/sensor co-processor (replaces the Pico).
+  *
+  *   Pi 5 (QNX tars_motor -b uno) --USB serial 115200 8N1--> this Uno
+- *     -> H-bridge ch A -> left drive motor   (DC gearmotor under middle slab 1)
+- *     -> H-bridge ch B -> right drive motor  (DC gearmotor under middle slab 2)
++ *     -> H-bridge ch A -> left gearmotor   (left crank: rocks the left slab pair)
++ *     -> H-bridge ch B -> right gearmotor  (right crank: rocks the right slab pair)
++ *     <- D2 / D8 crank switches (foil contact, closes once per crank revolution)
+  *     -> ULN2003 #0    -> 28BYJ-48 arm 0 (left outer slab)
+  *     -> ULN2003 #1    -> 28BYJ-48 arm 1 (right outer slab)
+  *     <- accelerometer (I2C: ADXL345 / GY-291, or MPU6050 / GY-521) -> tip + bump
+@@ -26,6 +27,19 @@
+  *     X                    halt both arms (drive unaffected)
+  *     U                    "this is upright": recapture the tilt reference
+  *     ?                    print a "# ..." status line (bench debugging)
++ *   Walking (one "step" = one crank revolution per side = both slabs of that
++ *   side swing once). Moves are self-timed: no D needed while they run.
++ *     W <steps>            walk, + forward / - back, |steps| <= MAX_MOVE_STEPS
++ *     R <deg>              turn in place, multiple of 30, + = left (CCW).
++ *                          Steps = round(|deg| / DEG_PER_TURN_STEP), min 1.
++ *     Q <steps>            raw turn steps (+ = left), for yaw correction
++ *     S / X                also abort a move (ABORT ... stop)
++ *     D with |l|,|r| below the deadband is ignored during a move (the Pi's
++ *                          idle tick); a real D aborts it (ABORT ... drive)
++ *     K <side> <ms>        calibrate ms per step, side 0=L 1=R 2=both (EEPROM)
++ *     Y <deg>              DEG_PER_TURN_STEP (EEPROM)
++ *     M <0|1>              count mode: 1 = crank switches, 0 = timed (EEPROM)
++ *     C                    print "# counts ..." + the CAL line
+  *   Uno -> Pi
+  *     READY                once after boot (mid-run = the Uno rebooted; arm
+  *                          zero is lost, the Pi resets its arm model to 0)
+@@ -35,6 +49,10 @@
+  *                          D until upright again.
+  *     B <mg>               bump: |accel| spike above BUMP_THRESHOLD_MG (peak
+  *                          deviation in milli-g), at most one per 250 ms
++ *     DONE W <n> | DONE R <deg> | DONE Q <n>   a move finished
++ *     ABORT W|R|Q <done> <why>   stopped early; done = whole steps (W, Q) or
++ *                          degrees (R) completed; why = stop|stall|tip|drive|new
++ *     CAL <msL> <msR> <degPerTurnStep> <mode>   at boot and after K/Y/M/C
+  *     # ...                diagnostics. The Pi ignores lines starting with '#'.
+  *
+  * Bench test: Serial Monitor at 115200, line ending "Newline". Try "A 0 90",
+@@ -43,6 +61,7 @@
+ 
+ #include <Arduino.h>
+ #include <Wire.h>
++#include <EEPROM.h>
+ #include <stdlib.h>
+ #include <math.h>
+ 
+@@ -73,19 +92,26 @@ const uint8_t PIN_L_IN1 = 9;    // L9110S A-IA / DRV8833 AIN1 / MX1508 IN1
+ const uint8_t PIN_L_IN2 = 10;   // L9110S A-IB / DRV8833 AIN2 / MX1508 IN2
+ const uint8_t PIN_R_IN1 = 3;    // L9110S B-IA / DRV8833 BIN1 / MX1508 IN3
+ const uint8_t PIN_R_IN2 = 11;   // L9110S B-IB / DRV8833 BIN2 / MX1508 IN4
+-// free: D2, D8, D12, D13
++// free: D12, D13   (D2, D8 = crank switches)
+ #elif DRIVER_TYPE == DRIVER_EN_IN
++// (walking build moved IN1 8->10 and IN3 2->13 so D2/D8 are free for the
++// crank switches in both driver modes)
+ const uint8_t PIN_L_EN  = 9;    // L298N ENA / TB6612 PWMA
+-const uint8_t PIN_L_IN1 = 8;    // L298N IN1 / TB6612 AIN1
++const uint8_t PIN_L_IN1 = 10;   // L298N IN1 / TB6612 AIN1
+ const uint8_t PIN_L_IN2 = 12;   // L298N IN2 / TB6612 AIN2
+ const uint8_t PIN_R_EN  = 3;    // L298N ENB / TB6612 PWMB
+-const uint8_t PIN_R_IN1 = 2;    // L298N IN3 / TB6612 BIN1
++const uint8_t PIN_R_IN1 = 13;   // L298N IN3 / TB6612 BIN1 (the LED blinks with it)
+ const uint8_t PIN_R_IN2 = 11;   // L298N IN4 / TB6612 BIN2
+-// free: D10, D13
++// free: none   (D2, D8 = crank switches)
+ #else
+ #error "DRIVER_TYPE must be DRIVER_2PWM or DRIVER_EN_IN"
+ #endif
+ 
++// Crank revolution switches (same in both driver modes). Two strips of foil:
++// one to GND, one to the pin; a foil tab on the crank shorts them once per rev.
++// INPUT_PULLUP, so closed = LOW. D2 = left crank, D8 = right crank.
++const uint8_t PIN_CRANK_SW[2] = {2, 8};
++
+ const uint8_t PIN_ARM[2][4] = {
+   {A0, A1, A2, A3},             // arm 0: ULN2003 #0 IN1..IN4
+   {4, 5, 6, 7},                 // arm 1: ULN2003 #1 IN1..IN4
+@@ -103,6 +129,27 @@ const float DRIVE_MIN_DUTY = 0.0f;
+ const bool  BRAKE_ON_STOP  = true;   // short-brake on stop/watchdog vs coast
+ const uint16_t DRIVE_WATCHDOG_MS = 200;
+ 
++// ---- Walking ----------------------------------------------------------------------
++const float    WALK_DUTY          = 0.80f;  // crank duty while walking
++const float    TURN_DUTY          = 0.80f;  // crank duty while turning in place
++const float    SYNC_SLOW          = 0.50f;  // duty factor for the side that's a pulse ahead
++const uint8_t  PULSES_PER_STEP    = 1;      // switch closures per step (1 tab per crank rev)
++const uint16_t SW_RELEASE_MS      = 5;      // switch must read open this long before a new pulse
++const uint16_t SW_LOCKOUT_MIN_MS  = 60;     // and at least this long since the last pulse ...
++const float    SW_LOCKOUT_FRAC    = 0.3f;   // ... or this fraction of ms-per-pulse, whichever is longer
++const float    STALL_FACTOR       = 2.0f;   // no pulse for this x ms-per-pulse = stalled
++const uint16_t STALL_MIN_MS       = 400;
++const int16_t  MAX_MOVE_STEPS     = 100;
++const int16_t  MAX_TURN_DEG       = 720;
++const uint16_t MOVE_TELEMETRY_MS  = 250;    // "# mv ..." progress lines
++// Calibration defaults (overwritten from EEPROM once K / Y / M have been sent):
++const uint16_t DEFAULT_MS_PER_STEP     = 600;    // one crank rev at ~100 RPM
++const float    DEFAULT_DEG_PER_TURN_STEP = 30.0f;  // measure: R 360, see calibrate_walk.py
++const uint8_t  DEFAULT_COUNT_MODE      = 1;      // 1 = switches, 0 = timed
++// Rock counting (accelerometer sanity check, reported, never acted on):
++const float    ROCK_HI_DEG        = 4.0f;   // tilt above this ...
++const float    ROCK_LO_DEG        = 2.0f;   // ... then back below this = one rock
++
+ // ---- Arms (28BYJ-48 + ULN2003) --------------------------------------------------
+ // Half-step mode: 4096 half-steps per output revolution (4076 on some units).
+ const float    ARM_STEPS_PER_REV = 4096.0f;
+@@ -162,6 +209,9 @@ bool accelInit();
+ bool accelRead(int16_t *ax, int16_t *ay, int16_t *az);
+ void accelPoll();
+ void captureUpright();
++void movePoll();
++void moveAbort(const char *why);
++void crankPoll();
+ 
+ // ---- State ----------------------------------------------------------------------
+ static char     lineBuf[40];
+@@ -207,6 +257,45 @@ static uint16_t bumpPeakMg = 0;
+ static uint32_t lastBumpMs = 0;
+ static bool     bumpEverSent = false;
+ 
++// ---- Walking state ---------------------------------------------------------------
++#define MV_IDLE 0
++#define MV_WALK 1
++#define MV_TURN 2
++#define MV_RAW  3          // Q: raw turn steps
++#define CAL_MAGIC 0x7A52
++struct Cal {
++  uint16_t magic;
++  uint16_t msPerStep[2];
++  float    degPerTurnStep;
++  uint8_t  countMode;
++};
++static Cal cal;
++
++struct Crank {
++  bool     closed;          // debounced: true = contact made
++  uint32_t openSinceMs;     // when the raw pin last went open (0 = closed now)
++  uint32_t lastPulseMs;
++  long     pulses;          // all-time closures (for C and hand-turn tests)
++};
++static Crank cranks[2];
++
++struct Move {
++  uint8_t  kind;            // MV_*
++  int16_t  cmd;             // what was asked: steps (W/Q) or degrees (R)
++  int8_t   dir[2];          // +1 / -1 per side
++  uint16_t target;          // steps per side
++  long     startPulses[2];
++  long     seenPulses[2];
++  uint16_t done[2];
++  bool     sideDone[2];
++  uint32_t startMs;
++  uint32_t lastProgressMs[2];
++  uint32_t lastTelemetryMs;
++};
++static Move mv;
++static uint16_t rocks = 0;
++static bool     rockHigh = false;
++
+ // ---- Drive motors ---------------------------------------------------------------
+ static uint8_t dutyToPwm(float d) {
+   if (d < 0) d = -d;
+@@ -329,6 +418,209 @@ void armPoll(uint8_t i) {
+   if (a.pos == a.target) a.arrivedMs = millis();
+ }
+ 
++// ---- Calibration (EEPROM) ---------------------------------------------------------
++static void printCal() {
++  Serial.print(F("CAL "));
++  Serial.print((long)cal.msPerStep[0]);
++  Serial.print(F(" "));
++  Serial.print((long)cal.msPerStep[1]);
++  Serial.print(F(" "));
++  Serial.print((long)lround(cal.degPerTurnStep * 100.0f) / 100);
++  Serial.print(F("."));
++  long frac = lround(cal.degPerTurnStep * 100.0f) % 100;
++  if (frac < 10) Serial.print(F("0"));
++  Serial.print(frac);
++  Serial.print(F(" "));
++  Serial.println((int)cal.countMode);
++}
++
++static void calDefaults() {
++  cal.magic = CAL_MAGIC;
++  cal.msPerStep[0] = cal.msPerStep[1] = DEFAULT_MS_PER_STEP;
++  cal.degPerTurnStep = DEFAULT_DEG_PER_TURN_STEP;
++  cal.countMode = DEFAULT_COUNT_MODE;
++}
++
++static void calLoad() {
++  EEPROM.get(0, cal);
++  bool ok = cal.magic == CAL_MAGIC && cal.countMode <= 1 &&
++            cal.msPerStep[0] >= 100 && cal.msPerStep[0] <= 5000 &&
++            cal.msPerStep[1] >= 100 && cal.msPerStep[1] <= 5000 &&
++            cal.degPerTurnStep >= 1.0f && cal.degPerTurnStep <= 180.0f;
++  if (!ok) calDefaults();
++}
++
++static void calSave() { EEPROM.put(0, cal); }
++
++// ---- Crank switches -----------------------------------------------------------------
++static uint32_t msPerPulse(uint8_t side) {
++  return cal.msPerStep[side] / PULSES_PER_STEP;
++}
++
++// Count a pulse on open -> closed, if the contact had been open for
++// SW_RELEASE_MS (contact bounce) and the lockout since the last pulse is over
++// (a wobbly crank tab brushing the foil twice).
++void crankPoll() {
++  uint32_t now = millis();
++  for (uint8_t i = 0; i < 2; i++) {
++    Crank &c = cranks[i];
++    bool rawClosed = digitalRead(PIN_CRANK_SW[i]) == LOW;
++    if (!rawClosed) {
++      if (!c.openSinceMs) c.openSinceMs = now ? now : 1;
++      if (c.closed && (uint32_t)(now - c.openSinceMs) >= SW_RELEASE_MS) c.closed = false;
++      continue;
++    }
++    bool wasOpenLongEnough = c.openSinceMs && (uint32_t)(now - c.openSinceMs) >= SW_RELEASE_MS;
++    c.openSinceMs = 0;
++    if (c.closed || !wasOpenLongEnough) continue;
++    c.closed = true;
++    uint32_t lockout = (uint32_t)(msPerPulse(i) * SW_LOCKOUT_FRAC);
++    if (lockout < SW_LOCKOUT_MIN_MS) lockout = SW_LOCKOUT_MIN_MS;
++    if (c.pulses && (uint32_t)(now - c.lastPulseMs) < lockout) continue;
++    c.pulses++;
++    c.lastPulseMs = now;
++  }
++}
++
++// ---- Moves (walk / turn) --------------------------------------------------------------
++static const char *moveLetter(uint8_t kind) {
++  return kind == MV_WALK ? "W" : kind == MV_TURN ? "R" : "Q";
++}
++
++static long moveDoneSteps() {
++  return mv.done[0] < mv.done[1] ? mv.done[0] : mv.done[1];
++}
++
++// What to report as "done" for this move: signed steps, or degrees for R.
++static long moveDoneValue() {
++  long s = moveDoneSteps();
++  if (mv.kind == MV_TURN) {
++    long deg = lround(s * cal.degPerTurnStep);
++    return mv.cmd < 0 ? -deg : deg;
++  }
++  return mv.cmd < 0 ? -s : s;
++}
++
++static void moveEnd() {
++  mv.kind = MV_IDLE;
++  driveStop();
++  Serial.print(F("# rocks "));
++  Serial.println((long)rocks);
++}
++
++void moveAbort(const char *why) {
++  if (mv.kind == MV_IDLE) return;
++  Serial.print(F("ABORT "));
++  Serial.print(moveLetter(mv.kind));
++  Serial.print(F(" "));
++  Serial.print(moveDoneValue());
++  Serial.print(F(" "));
++  Serial.println(why);
++  moveEnd();
++}
++
++static void moveStart(uint8_t kind, int16_t cmd, int8_t dirL, int8_t dirR, uint16_t steps) {
++  if (mv.kind != MV_IDLE) moveAbort("new");
++  driveActive = false;           // a move owns the motors; the D watchdog is out of it
++  mv = Move();
++  mv.kind = kind;
++  mv.cmd = cmd;
++  mv.dir[0] = dirL;
++  mv.dir[1] = dirR;
++  mv.target = steps;
++  uint32_t now = millis();
++  mv.startMs = now;
++  mv.lastTelemetryMs = now;
++  for (uint8_t i = 0; i < 2; i++) {
++    mv.startPulses[i] = mv.seenPulses[i] = cranks[i].pulses;
++    mv.lastProgressMs[i] = now;
++  }
++  rocks = 0;
++  rockHigh = tiltDeg > ROCK_HI_DEG;
++  if (tipped) { moveAbort("tip"); return; }
++  movePoll();
++}
++
++static void rockPoll() {
++  if (mv.kind == MV_IDLE || !accelAddr) return;
++  if (!rockHigh && tiltDeg > ROCK_HI_DEG) rockHigh = true;
++  else if (rockHigh && tiltDeg < ROCK_LO_DEG) { rockHigh = false; rocks++; }
++}
++
++void movePoll() {
++  if (mv.kind == MV_IDLE) return;
++  uint32_t now = millis();
++  float base = mv.kind == MV_WALK ? WALK_DUTY : TURN_DUTY;
++
++  for (uint8_t i = 0; i < 2; i++) {
++    if (cal.countMode == 1) {
++      if (cranks[i].pulses != mv.seenPulses[i]) {
++        mv.seenPulses[i] = cranks[i].pulses;
++        mv.lastProgressMs[i] = now;
++      }
++      long p = (cranks[i].pulses - mv.startPulses[i]) / PULSES_PER_STEP;
++      mv.done[i] = p > mv.target ? mv.target : (uint16_t)p;
++    } else {
++      uint32_t el = now - mv.startMs;
++      uint32_t s = el / cal.msPerStep[i];
++      mv.done[i] = s > mv.target ? mv.target : (uint16_t)s;
++    }
++    mv.sideDone[i] = mv.done[i] >= mv.target;
++  }
++
++  // Stall: a side that should be turning hasn't closed its switch in time.
++  if (cal.countMode == 1) {
++    for (uint8_t i = 0; i < 2; i++) {
++      if (mv.sideDone[i]) continue;
++      uint32_t limit = (uint32_t)(STALL_FACTOR * msPerPulse(i));
++      if (limit < STALL_MIN_MS) limit = STALL_MIN_MS;
++      if ((uint32_t)(now - mv.lastProgressMs[i]) > limit) {
++        Serial.print(F("# stall "));
++        Serial.println(i == 0 ? F("left") : F("right"));
++        moveAbort("stall");
++        return;
++      }
++    }
++  }
++
++  if (mv.sideDone[0] && mv.sideDone[1]) {
++    Serial.print(F("DONE "));
++    Serial.print(moveLetter(mv.kind));
++    Serial.print(F(" "));
++    Serial.println((long)mv.cmd);
++    moveEnd();
++    return;
++  }
++
++  // Keep the sides together: the one that's ahead (in pulses) slows down.
++  long pl = cranks[0].pulses - mv.startPulses[0];
++  long pr = cranks[1].pulses - mv.startPulses[1];
++  for (uint8_t i = 0; i < 2; i++) {
++    float duty = 0.0f;
++    if (!mv.sideDone[i]) {
++      duty = base;
++      if (cal.countMode == 1 && ((i == 0 && pl > pr) || (i == 1 && pr > pl))) duty *= SYNC_SLOW;
++    }
++    bool inv = i == 0 ? LEFT_INVERT : RIGHT_INVERT;
++    float out = duty * mv.dir[i];
++    motorWrite(i, inv ? -out : out, BRAKE_ON_STOP);
++  }
++
++  if ((uint32_t)(now - mv.lastTelemetryMs) >= MOVE_TELEMETRY_MS) {
++    mv.lastTelemetryMs = now;
++    Serial.print(F("# mv "));
++    Serial.print(moveLetter(mv.kind));
++    Serial.print(F(" L "));
++    Serial.print((long)mv.done[0]);
++    Serial.print(F(" R "));
++    Serial.print((long)mv.done[1]);
++    Serial.print(F(" / "));
++    Serial.println((long)mv.target);
++  }
++}
++
++static bool isWhole(float v) { return v == (float)(long)v; }
++
+ // ---- Parsing ----------------------------------------------------------------------
+ static const char *skipSpace(const char *s) {
+   while (*s == ' ' || *s == '\t') s++;
+@@ -362,7 +654,24 @@ static void printStatus() {
+   Serial.print(F(" tipped "));
+   Serial.print((int)tipped);
+   Serial.print(F(" accel "));
+-  Serial.println(accelType == ACCEL_MPU6050 ? F("mpu6050") : accelType == ACCEL_ADXL345 ? F("adxl345") : F("none"));
++  Serial.print(accelType == ACCEL_MPU6050 ? F("mpu6050") : accelType == ACCEL_ADXL345 ? F("adxl345") : F("none"));
++  Serial.print(F(" move "));
++  if (mv.kind == MV_IDLE) Serial.println(F("idle"));
++  else Serial.println(moveLetter(mv.kind));
++}
++
++static void printCounts() {
++  Serial.print(F("# counts L "));
++  Serial.print(cranks[0].pulses);
++  Serial.print(F(" R "));
++  Serial.print(cranks[1].pulses);
++  Serial.print(F(" sw "));
++  Serial.print((int)cranks[0].closed);
++  Serial.print(F(" "));
++  Serial.print((int)cranks[1].closed);
++  Serial.print(F(" rocks "));
++  Serial.println((long)rocks);
++  printCal();
+ }
+ 
+ // One complete line (no terminator). Malformed lines are ignored.
+@@ -381,11 +690,67 @@ void handleLine(char *line) {
+     case 'D':
+       if (n != 2) return;
+       lastDMs = millis();
++      if (mv.kind != MV_IDLE) {
++        // The Pi's idle "D 0 0" tick must not cancel a walk; a real drive does.
++        if (fabsf(v[0]) < DRIVE_DEADBAND && fabsf(v[1]) < DRIVE_DEADBAND) return;
++        moveAbort("drive");
++      }
+       if (tipped) { driveStop(); return; }  // refuse to drive while tipped over
+       driveSet(v[0], v[1]);
+       break;
+     case 'S':
+-      if (n == 0) stopAll();
++      if (n == 0) { moveAbort("stop"); stopAll(); }
++      break;
++    case 'W':
++      if (n != 1 || !isWhole(v[0]) || v[0] == 0 || fabsf(v[0]) > MAX_MOVE_STEPS) {
++        Serial.println(F("# ERR usage: W <steps 1..100, - = back>"));
++        return;
++      }
++      moveStart(MV_WALK, (int16_t)v[0], v[0] > 0 ? 1 : -1, v[0] > 0 ? 1 : -1, (uint16_t)fabsf(v[0]));
++      break;
++    case 'R': {
++      if (n != 1 || !isWhole(v[0]) || v[0] == 0 || fabsf(v[0]) > MAX_TURN_DEG || ((long)v[0]) % 30 != 0) {
++        Serial.println(F("# ERR usage: R <deg, multiple of 30, + = left>"));
++        return;
++      }
++      long steps = lround(fabsf(v[0]) / cal.degPerTurnStep);
++      if (steps < 1) steps = 1;
++      if (steps > MAX_MOVE_STEPS) steps = MAX_MOVE_STEPS;
++      int8_t s = v[0] > 0 ? 1 : -1;      // left turn: left side back, right side forward
++      moveStart(MV_TURN, (int16_t)v[0], -s, s, (uint16_t)steps);
++      break;
++    }
++    case 'Q':
++      if (n != 1 || !isWhole(v[0]) || v[0] == 0 || fabsf(v[0]) > MAX_MOVE_STEPS) return;
++      moveStart(MV_RAW, (int16_t)v[0], v[0] > 0 ? -1 : 1, v[0] > 0 ? 1 : -1, (uint16_t)fabsf(v[0]));
++      break;
++    case 'K':
++      if (n != 2 || (v[0] != 0 && v[0] != 1 && v[0] != 2) || !(v[1] >= 100 && v[1] <= 5000)) {
++        Serial.println(F("# ERR usage: K <0|1|2> <ms 100..5000>"));
++        return;
++      }
++      if (v[0] != 1) cal.msPerStep[0] = (uint16_t)v[1];
++      if (v[0] != 0) cal.msPerStep[1] = (uint16_t)v[1];
++      calSave();
++      printCal();
++      break;
++    case 'Y':
++      if (n != 1 || !(v[0] >= 1.0f && v[0] <= 180.0f)) {
++        Serial.println(F("# ERR usage: Y <deg per turn step 1..180>"));
++        return;
++      }
++      cal.degPerTurnStep = v[0];
++      calSave();
++      printCal();
++      break;
++    case 'M':
++      if (n != 1 || (v[0] != 0 && v[0] != 1)) return;
++      cal.countMode = (uint8_t)v[0];
++      calSave();
++      printCal();
++      break;
++    case 'C':
++      if (n == 0) printCounts();
+       break;
+     case 'A': {
+       if (n < 2) return;
+@@ -401,7 +766,7 @@ void handleLine(char *line) {
+       if (n == 0) for (uint8_t i = 0; i < 2; i++) { arms[i].pos = 0; arms[i].target = 0; }
+       break;
+     case 'X':
+-      if (n == 0) armsHalt();
++      if (n == 0) { moveAbort("stop"); armsHalt(); }
+       break;
+     case 'U':
+       if (n == 0) captureUpright();
+@@ -438,7 +803,7 @@ void serialPoll() {
+ }
+ 
+ void watchdogPoll() {
+-  if (driveActive && (uint32_t)(millis() - lastDMs) > DRIVE_WATCHDOG_MS) driveStop();
++  if (mv.kind == MV_IDLE && driveActive && (uint32_t)(millis() - lastDMs) > DRIVE_WATCHDOG_MS) driveStop();
+ }
+ 
+ // ---- Accelerometer ---------------------------------------------------------------
+@@ -591,6 +956,7 @@ void accelPoll() {
+       if ((uint32_t)(nowMs - tipSinceMs) >= TIP_HOLD_MS) {
+         tipped = true;
+         uprightSinceMs = 0;
++        moveAbort("tip");
+         stopAll();
+         sendTip();
+       }
+@@ -630,6 +996,12 @@ void setup() {
+     armRelease(i);
+   }
+   driveStop();
++  for (uint8_t i = 0; i < 2; i++) {
++    pinMode(PIN_CRANK_SW[i], INPUT_PULLUP);
++    cranks[i] = Crank();
++  }
++  mv = Move();
++  calLoad();
+ 
+   Serial.begin(SERIAL_BAUD);
+ 
+@@ -645,6 +1017,7 @@ void setup() {
+   } else {
+     Serial.println(F("# no accelerometer found, tip/bump disabled"));
+   }
++  printCal();
+   Serial.println(F("READY"));
+ }
+ 
+@@ -654,4 +1027,7 @@ void loop() {
+   armPoll(0);
+   armPoll(1);
+   accelPoll();
++  crankPoll();
++  movePoll();
++  rockPoll();
+ }
+diff --git a/uno/test/Makefile b/uno/test/Makefile
+index 3d7b0c8..d693cc3 100644
+--- a/uno/test/Makefile
++++ b/uno/test/Makefile
+@@ -9,11 +9,11 @@ test: $(BUILD)/test_tars $(BUILD)/test_tars_enin
+ 	./$(BUILD)/test_tars
+ 	./$(BUILD)/test_tars_enin
+ 
+-$(BUILD)/test_tars: test_tars.cpp mock/Arduino.h mock/Wire.h ../tars/tars.ino
++$(BUILD)/test_tars: test_tars.cpp mock/Arduino.h mock/Wire.h mock/EEPROM.h ../tars/tars.ino
+ 	@mkdir -p $(BUILD)
+ 	$(CXX) $(CXXFLAGS) -Imock -o $@ test_tars.cpp
+ 
+-$(BUILD)/test_tars_enin: test_tars.cpp mock/Arduino.h mock/Wire.h ../tars/tars.ino
++$(BUILD)/test_tars_enin: test_tars.cpp mock/Arduino.h mock/Wire.h mock/EEPROM.h ../tars/tars.ino
+ 	@mkdir -p $(BUILD)
+ 	$(CXX) $(CXXFLAGS) -DDRIVER_TYPE=2 -Imock -o $@ test_tars.cpp
+ 
+diff --git a/uno/test/mock/Arduino.h b/uno/test/mock/Arduino.h
+index 9eac30b..3ec22e9 100644
+--- a/uno/test/mock/Arduino.h
++++ b/uno/test/mock/Arduino.h
+@@ -13,6 +13,7 @@
+ #define LOW 0
+ #define OUTPUT 1
+ #define INPUT 0
++#define INPUT_PULLUP 2
+ #define HEX 16
+ #define DEC 10
+ #define A0 14
+@@ -27,11 +28,13 @@ extern uint64_t mock_now_us;
+ extern int mock_pin_mode[32];
+ extern int mock_pin_digital[32];   // last digitalWrite level, -1 = never
+ extern int mock_pin_pwm[32];       // last analogWrite value, -1 = digital mode
++extern int mock_pin_input[32];     // what digitalRead returns (tests set it)
+ 
+ inline unsigned long millis() { return (unsigned long)(uint32_t)(mock_now_us / 1000); }
+ inline unsigned long micros() { return (unsigned long)(uint32_t)mock_now_us; }
+ inline void delay(unsigned long ms) { mock_now_us += (uint64_t)ms * 1000; }
+ inline void pinMode(uint8_t p, uint8_t m) { mock_pin_mode[p] = m; }
++inline int digitalRead(uint8_t p) { return mock_pin_input[p]; }
+ inline void digitalWrite(uint8_t p, uint8_t v) { mock_pin_digital[p] = v; mock_pin_pwm[p] = -1; }
+ // Like the real core: 0 and 255 become plain digital writes.
+ inline void analogWrite(uint8_t p, int v) {
+diff --git a/uno/test/mock/EEPROM.h b/uno/test/mock/EEPROM.h
+new file mode 100644
+index 0000000..c3086db
+--- /dev/null
++++ b/uno/test/mock/EEPROM.h
+@@ -0,0 +1,13 @@
++// Host mock of the AVR EEPROM library: 1 KB, starts erased (0xFF) like a new Uno.
++#pragma once
++#include <cstdint>
++#include <cstring>
++
++struct MockEEPROM {
++  uint8_t mem[1024];
++  MockEEPROM() { erase(); }
++  void erase() { memset(mem, 0xFF, sizeof mem); }
++  template <typename T> T &get(int addr, T &t) { memcpy(&t, mem + addr, sizeof(T)); return t; }
++  template <typename T> const T &put(int addr, const T &t) { memcpy(mem + addr, &t, sizeof(T)); return t; }
++};
++extern MockEEPROM EEPROM;
+diff --git a/uno/test/test_tars.cpp b/uno/test/test_tars.cpp
+index 4f1f5ff..f3137e2 100644
+--- a/uno/test/test_tars.cpp
++++ b/uno/test/test_tars.cpp
+@@ -3,11 +3,14 @@
+ // The sketch is compiled as-is against mock/Arduino.h + mock/Wire.h.
+ #include "Arduino.h"
+ #include "Wire.h"
++#include "EEPROM.h"
+ 
+ uint64_t mock_now_us = 0;
+ int mock_pin_mode[32];
+ int mock_pin_digital[32];
+ int mock_pin_pwm[32];
++int mock_pin_input[32];
++MockEEPROM EEPROM;
+ MockSerial Serial;
+ MockWire Wire;
+ MockMpu mock_mpu;
+@@ -30,9 +33,29 @@ static int g_sensor = 0;
+ static const char *sensorName() { return g_sensor ? "adxl345" : "mpu6050"; }
+ static uint8_t sensorAddr() { return g_sensor ? 0x53 : 0x68; }
+ 
+-static void boot(bool withMpu, int addrOverride = -1) {
++// ---- simulated cranks: angle in revolutions, contact closed for the first
++// CONTACT_REV of every revolution. Speed = |duty| * revPerSec * speedMul.
++struct SimCrank { bool on = false; double angle = 0.1, revPerSec = 1.0 / 0.6, speedMul = 1.0; bool stalled = false; int bounce = 0; };
++static SimCrank simc[2];
++static const double CONTACT_REV = 0.06;
++static int motorL(); static int motorR();
++static void plantStep(double dt) {
++  for (int i = 0; i < 2; i++) {
++    SimCrank &c = simc[i];
++    if (!c.on) continue;
++    int m = i == 0 ? motorL() : motorR();
++    if (!c.stalled) c.angle += (m / 255.0) * c.revPerSec * c.speedMul * dt;
++    double f = c.angle - floor(c.angle);
++    bool closed = f < CONTACT_REV;
++    mock_pin_input[PIN_CRANK_SW[i]] = closed ? LOW : HIGH;
++  }
++}
++
++static void boot(bool withMpu, int addrOverride = -1, bool keepEeprom = false) {
+   mock_now_us = 1000000;
+-  for (int i = 0; i < 32; i++) { mock_pin_mode[i] = -1; mock_pin_digital[i] = -1; mock_pin_pwm[i] = -1; }
++  if (!keepEeprom) EEPROM.erase();
++  for (auto &c : simc) c = SimCrank();
++  for (int i = 0; i < 32; i++) { mock_pin_mode[i] = -1; mock_pin_digital[i] = -1; mock_pin_pwm[i] = -1; mock_pin_input[i] = HIGH; }
+   Serial.in.clear(); Serial.out.clear();
+   mock_mpu = MockMpu();
+   mock_mpu.present = withMpu;
+@@ -51,7 +74,7 @@ static void boot(bool withMpu, int addrOverride = -1) {
+ 
+ static void run(uint32_t ms) {
+   uint64_t end = mock_now_us + (uint64_t)ms * 1000;
+-  while (mock_now_us < end) { loop(); mock_now_us += 100; }
++  while (mock_now_us < end) { loop(); mock_now_us += 100; plantStep(100e-6); }
+ }
+ static void send(const char *s) { Serial.feed(s); loop(); }
+ 
+@@ -114,6 +137,15 @@ static void test_boot() {
+   for (int a = 0; a < 2; a++)
+     for (int k = 0; k < 4; k++)
+       for (int u : used) CHECK(PIN_ARM[a][k] != u);
++  // Crank switches: D2 / D8 in both driver modes, clash with nothing, pulled up.
++  CHECK(PIN_CRANK_SW[0] == 2 && PIN_CRANK_SW[1] == 8);
++  for (int sw = 0; sw < 2; sw++) {
++    CHECK(mock_pin_mode[PIN_CRANK_SW[sw]] == INPUT_PULLUP);
++    for (int u : used) CHECK(PIN_CRANK_SW[sw] != u);
++    for (int a = 0; a < 2; a++)
++      for (int k = 0; k < 4; k++) CHECK(PIN_CRANK_SW[sw] != PIN_ARM[a][k]);
++  }
++  CHECK(Serial.out.find("CAL 600 600 30.00 1\r\nREADY") != std::string::npos);
+ }
+ 
+ static void test_drive() {
+@@ -139,7 +171,7 @@ static void test_malformed() {
+   int l = motorL();
+   const char *bad[] = {"D 0.9\n", "D 0.9 0.9 0.9 0.9\n", "DX 1 1\n", "D a b\n", "D 0.9 0.9x\n",
+                        "D nan 0.9\n", "D 0.900000000000000000000000000000000000000000 1\n",
+-                       "\x01D 0.9 0.9\n", "Q 1\n", "S 1\n", "A 2 10\n", "A 0\n", "A -1 30\n"};
++                       "\x01D 0.9 0.9\n", "J 1\n", "Q 1.5\n", "S 1\n", "A 2 10\n", "A 0\n", "A -1 30\n"};
+   for (const char *b : bad) { send(b); CHECK(motorL() == l); }
+   CHECK(arms[0].target == 0 && arms[1].target == 0);
+   // a split line still works
+@@ -392,6 +424,237 @@ static void test_overflow() {
+   CHECK(motorL() == 128);
+ }
+ 
++// ---------------------------------------------------------------- walking
++static bool has(const char *needle) { return Serial.out.find(needle) != std::string::npos; }
++// Run until the needle shows up (or timeout). Returns ms taken, -1 on timeout.
++static int runUntil(const char *needle, uint32_t timeoutMs) {
++  for (uint32_t t = 0; t < timeoutMs; t += 5) { if (has(needle)) return (int)t; run(5); }
++  return has(needle) ? (int)timeoutMs : -1;
++}
++static void bootWalk(bool withMpu = false) {
++  boot(withMpu);
++  simc[0].on = simc[1].on = true;
++  run(20);
++  Serial.out.clear();
++}
++
++static void test_walk() {
++  puts("walk: W counts crank pulses");
++  bootWalk();
++  send("W 3\n");
++  run(50);
++  CHECK(motorL() == 204 && motorR() == 204);   // WALK_DUTY 0.8
++  CHECK(!driveActive);
++  run(1000);
++  CHECK(motorL() != 0);                        // way past the 200 ms D watchdog: still walking
++  CHECK(!has("DONE"));
++  int ms = runUntil("DONE W 3\r\n", 4000);
++  CHECK(ms >= 0);
++  CHECK(cranks[0].pulses == 3 && cranks[1].pulses == 3);
++  CHECK(motorL() == 0 && motorR() == 0 && mv.kind == MV_IDLE);
++  CHECK(has("# mv W L "));                     // progress telemetry
++  CHECK(has("# rocks 0"));
++  // the motors stay off afterwards
++  run(500);
++  CHECK(motorL() == 0 && cranks[0].pulses == 3);
++
++  puts("walk: W -2 backwards");
++  Serial.out.clear();
++  send("W -2\n");
++  run(20);
++  CHECK(motorL() == -204 && motorR() == -204);
++  CHECK(runUntil("DONE W -2", 4000) >= 0);
++  CHECK(cranks[0].pulses == 5 && cranks[1].pulses == 5);   // pulses count closures either way
++
++  puts("walk: bad W");
++  Serial.out.clear();
++  const char *bad[] = {"W\n", "W 0\n", "W 1.5\n", "W 101\n", "W -101\n", "W 1 2\n", "W x\n"};
++  for (const char *b : bad) { send(b); CHECK(mv.kind == MV_IDLE); }
++  CHECK(countOf(Serial.out, "# ERR usage: W") == 6);       // "W x" is garbage, silently dropped
++  CHECK(motorL() == 0);
++}
++
++static void test_turn() {
++  puts("turn: R in 30 deg increments");
++  bootWalk();
++  send("R 90\n");
++  run(20);
++  CHECK(mv.kind == MV_TURN && mv.target == 3);
++  CHECK(motorL() == -204 && motorR() == 204);  // + = left: left side back, right forward
++  CHECK(runUntil("DONE R 90\r\n", 4000) >= 0);
++  CHECK(cranks[0].pulses == 3 && cranks[1].pulses == 3);
++  Serial.out.clear();
++  send("R -30\n");
++  run(20);
++  CHECK(mv.target == 1 && motorL() == 204 && motorR() == -204);
++  CHECK(runUntil("DONE R -30", 3000) >= 0);
++
++  puts("turn: rejects non-multiples of 30");
++  Serial.out.clear();
++  const char *bad[] = {"R 45\n", "R 0\n", "R 10\n", "R 30.5\n", "R 750\n", "R\n"};
++  for (const char *b : bad) { send(b); CHECK(mv.kind == MV_IDLE); }
++  CHECK(countOf(Serial.out, "# ERR usage: R") == 6);
++  send("R 720\n");
++  CHECK(mv.kind == MV_TURN && mv.target == 24);
++  send("S\n");
++  CHECK(mv.kind == MV_IDLE);
++
++  puts("turn: deg-per-step rounding (Y) + EEPROM");
++  Serial.out.clear();
++  send("Y 25\n");
++  CHECK(has("CAL 600 600 25.00 1"));
++  send("R 90\n");                              // 3.6 -> 4 steps
++  CHECK(mv.target == 4);
++  send("S\n");
++  send("Y 70\n");
++  send("R 30\n");                              // 0.43 -> min 1 step
++  CHECK(mv.target == 1);
++  send("S\n");
++  send("Y 27.35\n");
++  Serial.out.clear();
++  boot(false, -1, true);                       // reboot, keep EEPROM
++  CHECK(has("CAL 600 600 27.35 1"));
++  CHECK(fabsf(cal.degPerTurnStep - 27.35f) < 1e-3f);
++  send("Y 0.5\n");
++  CHECK(fabsf(cal.degPerTurnStep - 27.35f) < 1e-3f);  // out of range: ignored
++  boot(false);                                 // erased EEPROM -> defaults
++  CHECK(cal.degPerTurnStep == 30.0f && cal.msPerStep[0] == 600 && cal.countMode == 1);
++
++  puts("turn: Q raw steps");
++  bootWalk();
++  send("Q -2\n");
++  run(20);
++  CHECK(mv.kind == MV_RAW && mv.target == 2 && motorL() == 204 && motorR() == -204);
++  CHECK(runUntil("DONE Q -2", 4000) >= 0);
++}
++
++static void test_sync() {
++  puts("walk: sync keeps sides together");
++  bootWalk();
++  simc[1].speedMul = 1.5;                      // right crank 50% faster
++  send("W 6\n");
++  int maxDiff = 0, slowSeen = 0;
++  for (int t = 0; t < 8000 && mv.kind != MV_IDLE; t += 5) {
++    run(5);
++    int d = (int)labs(cranks[0].pulses - cranks[1].pulses);
++    if (d > maxDiff) maxDiff = d;
++    if (motorR() == 102 && motorL() == 204) slowSeen++;   // 0.8 * SYNC_SLOW
++  }
++  CHECK(has("DONE W 6"));
++  CHECK(maxDiff <= 1);
++  CHECK(slowSeen > 0);
++  CHECK(cranks[0].pulses == 6 && cranks[1].pulses == 6);
++  // without sync the right side would have finished way earlier; it didn't
++  // get more than one pulse ahead at any time (checked above).
++}
++
++static void test_stall_and_abort() {
++  puts("walk: stall stop");
++  bootWalk();
++  simc[1].stalled = true;                      // right crank jammed
++  send("W 4\n");
++  int ms = runUntil("ABORT W 0 stall", 3000);
++  CHECK(ms > 1000 && ms < 1400);               // 2 x 600 ms
++  CHECK(has("# stall right"));
++  CHECK(motorL() == 0 && motorR() == 0 && mv.kind == MV_IDLE);
++
++  puts("walk: S / X / D abort, idle D ignored");
++  bootWalk();
++  send("W 5\n");
++  run(1400);
++  for (int i = 0; i < 5; i++) { send("D 0 0\n"); run(20); }
++  CHECK(mv.kind == MV_WALK && motorL() != 0);  // the Pi's idle tick doesn't cancel
++  send("S\n");
++  CHECK(mv.kind == MV_IDLE && motorL() == 0);
++  CHECK(has("ABORT W 2 stop") || has("ABORT W 1 stop"));
++  Serial.out.clear();
++  send("W -5\n");
++  run(100);
++  send("X\n");
++  CHECK(has("ABORT W 0 stop") && motorL() == 0);
++  Serial.out.clear();
++  send("R 60\n");
++  run(100);
++  send("D 0.5 0.5\n");
++  CHECK(has("ABORT R 0 drive") && motorL() == 128 && driveActive);
++  run(300);
++  CHECK(motorL() == 0);                        // the normal D watchdog is back
++  Serial.out.clear();
++  send("W 3\n");
++  run(100);
++  send("W 2\n");                              // a new move replaces the old one
++  CHECK(has("ABORT W 0 new") && mv.target == 2);
++  CHECK(runUntil("DONE W 2", 4000) >= 0);
++
++  puts("walk: tip-over");
++  bootWalk(true);
++  run(50);
++  send("W 10\n");
++  run(700);
++  tilt(60);
++  CHECK(runUntil("ABORT W 1 tip", 600) >= 0);
++  CHECK(motorL() == 0 && tipped);
++  Serial.out.clear();
++  send("W 1\n");
++  CHECK(has("ABORT W 0 tip") && motorL() == 0);
++  send("R 30\n");
++  CHECK(has("ABORT R 0 tip"));
++}
++
++static void test_timed_and_switch() {
++  puts("walk: timed fallback (M 0, K)");
++  bootWalk();
++  simc[0].on = simc[1].on = false;             // no switches wired
++  send("M 0\n");
++  send("K 2 300\n");
++  CHECK(has("CAL 300 300 30.00 0"));
++  send("K 1 400\n");
++  CHECK(has("CAL 300 400 30.00 0"));
++  Serial.out.clear();
++  send("W 2\n");
++  run(590);
++  CHECK(motorL() == 204 && motorR() == 204);
++  run(20);
++  CHECK(motorL() == 0 && motorR() == 204);     // left done at 600, right at 800
++  int ms = runUntil("DONE W 2", 500);
++  CHECK(ms >= 150 && ms <= 230);
++  const char *bad[] = {"K 3 300\n", "K 0 50\n", "K 0 9000\n", "K 0\n", "M 2\n"};
++  for (const char *b : bad) send(b);
++  CHECK(cal.msPerStep[0] == 300 && cal.msPerStep[1] == 400 && cal.countMode == 0);
++
++  puts("switch: debounce + C");
++  boot(false);
++  run(20);
++  Serial.out.clear();
++  // hand-turn: a bouncy closure (3 chatters within 2 ms) counts once
++  for (int k = 0; k < 3; k++) {
++    mock_pin_input[2] = LOW; run(1); mock_pin_input[2] = HIGH; run(1);
++  }
++  mock_pin_input[2] = LOW; run(40); mock_pin_input[2] = HIGH; run(300);
++  CHECK(cranks[0].pulses == 1 && cranks[1].pulses == 0);
++  // a second brush 30 ms after the first (wobbly tab) is locked out
++  mock_pin_input[8] = LOW; run(20); mock_pin_input[8] = HIGH; run(30);
++  mock_pin_input[8] = LOW; run(20); mock_pin_input[8] = HIGH; run(300);
++  CHECK(cranks[1].pulses == 1);
++  mock_pin_input[8] = LOW; run(20); mock_pin_input[8] = HIGH; run(300);
++  CHECK(cranks[1].pulses == 2);
++  send("C\n");
++  CHECK(has("# counts L 1 R 2 sw 0 0 rocks 0\r\nCAL 600 600 30.00 1"));
++  mock_pin_input[2] = LOW; run(20);
++  send("C\n");
++  CHECK(has("sw 1 0"));
++}
++
++static void test_rocks() {
++  puts("walk: accelerometer rock count");
++  bootWalk(true);
++  run(50);
++  send("W 3\n");
++  for (int k = 0; k < 4; k++) { tilt(8); run(150); tilt(0); run(150); }
++  runUntil("DONE W 3", 4000);
++  CHECK(has("# rocks 4"));
++}
++
+ int main() {
+   test_drive();
+   test_malformed();
+@@ -399,6 +662,12 @@ int main() {
+   test_arms();
+   test_overflow();
+   test_sensor_detect();
++  test_walk();
++  test_turn();
++  test_sync();
++  test_stall_and_abort();
++  test_timed_and_switch();
++  test_rocks();
+   for (g_sensor = 0; g_sensor < 2; g_sensor++) {
+     printf("== accelerometer: %s ==\n", sensorName());
+     test_boot();
+-- 
+2.50.1 (Apple Git-155)
+

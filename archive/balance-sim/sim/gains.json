@@ -1,0 +1,44 @@
+{
+  "nema17": {
+    "gains": {
+      "kp": 84.0,
+      "kd": 22.0,
+      "speed_kp": 0.26,
+      "speed_ki": 0.02
+    },
+    "note": "= C defaults; beats higher-gain sim optima once latency/noise are worse"
+  },
+  "tt": {
+    "gains": {
+      "kp": 13.1163,
+      "kd": 27.6354,
+      "speed_kp": 0.6,
+      "speed_ki": 0.0584
+    },
+    "cost": 44.874,
+    "max_push": 0.082,
+    "passed_default_scenario": false
+  },
+  "dc25": {
+    "gains": {
+      "kp": 46.6051,
+      "kd": 16.2458,
+      "speed_kp": 0.3174,
+      "speed_ki": 0.0755
+    },
+    "cost": 3.427,
+    "max_push": 0.469,
+    "passed_default_scenario": true
+  },
+  "pololu37d": {
+    "gains": {
+      "kp": 57.7457,
+      "kd": 13.6791,
+      "speed_kp": 0.2642,
+      "speed_ki": 0.0293
+    },
+    "cost": 4.202,
+    "max_push": 0.832,
+    "passed_default_scenario": true
+  }
+}

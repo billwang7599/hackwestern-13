@@ -1,0 +1,302 @@
+diff --git a/laptop/switch_teleop.py b/laptop/switch_teleop.py
+index 6350fb5..4dfe942 100644
+--- a/laptop/switch_teleop.py
++++ b/laptop/switch_teleop.py
+@@ -10,7 +10,9 @@ small sync button on top until the lights run).
+   left stick      drive (up = forward, sideways = turn)
+   ZR held         turbo (full speed), ZL held = slow
+   A wave   B nod   X point   Y shrug   L stance   R fold
+-  d-pad left/right  left arm  -/+ 15 deg     d-pad up/down  right arm +/- 15 deg
++  d-pad up/down     walk 1 step forward / back
++  d-pad left/right  turn 30 deg left / right
++  right stick       arms: flick left/right = left arm -/+ 15 deg, up/down = right arm +/- 15
+   minus  RESET (after a tip-over)     plus  HOME arms     home  quit
+ 
+ Button numbers depend on the SDL version and the controller; if a button does
+@@ -43,8 +45,8 @@ ACTIONS = {          # button -> (kind, arg)
+     "A": ("gesture", "wave"), "B": ("gesture", "nod"),
+     "X": ("gesture", "point"), "Y": ("gesture", "shrug"),
+     "L": ("gesture", "stance"), "R": ("gesture", "fold"),
+-    "LEFT": ("arm", (LEFT, -1)), "RIGHT": ("arm", (LEFT, +1)),
+-    "UP": ("arm", (RIGHT, +1)), "DOWN": ("arm", (RIGHT, -1)),
++    "UP": ("walk", 1), "DOWN": ("walk", -1),
++    "LEFT": ("turn", 30), "RIGHT": ("turn", -30),
+     "MINUS": ("reset", None), "PLUS": ("home", None), "HOME": ("quit", None),
+ }
+ 
+@@ -114,6 +116,7 @@ def main() -> None:
+     host = args[0] if args else DEFAULT_HOST
+     by_number = {n: name for name, n in BUTTONS.items()}
+     arm_deg = [0.0, 0.0]
++    flick = {"RX": 0, "RY": 0}      # right-stick flick latch: one arm step per flick
+     last_err = ""
+     with Tars(host) as t:
+         print(f"connected to {host} ({t.ping():.0f} ms)")
+@@ -139,12 +142,25 @@ def main() -> None:
+                         a, sign = arg
+                         arm_deg[a] = t.arm(a, arm_deg[a] + sign * ARM_STEP)
+                         print(f"arms L={arm_deg[0]:+.0f} R={arm_deg[1]:+.0f}")
++                    elif kind == "walk":
++                        print(f"walk {arg:+d}: {t.walk(arg)}")
++                        pygame.event.clear()          # no queued presses -> no surprise steps
++                    elif kind == "turn":
++                        print(f"turn {arg:+d}: {t.turn(arg)}")
++                        pygame.event.clear()
+                     elif kind == "home":
+                         t.home()
+                         arm_deg = [0.0, 0.0]
+                     elif kind == "reset":
+                         t.reset()
+                         print("reset OK")
++                for ax_name, (a, sign) in (("RX", (LEFT, 1)), ("RY", (RIGHT, -1))):
++                    v = axis(js, ax_name)
++                    d = 1 if v > 0.7 else -1 if v < -0.7 else 0
++                    if d and not flick[ax_name]:
++                        arm_deg[a] = t.arm(a, arm_deg[a] + sign * d * ARM_STEP)
++                        print(f"arms L={arm_deg[0]:+.0f} R={arm_deg[1]:+.0f}")
++                    flick[ax_name] = d
+                 speed = BASE_SPEED
+                 if axis(js, "ZR") > 0.5:
+                     speed = 1.0
+diff --git a/laptop/tars_client.py b/laptop/tars_client.py
+index cd60d50..3ad15a8 100644
+--- a/laptop/tars_client.py
++++ b/laptop/tars_client.py
+@@ -6,6 +6,8 @@
+         t.gesture("wave")     # wave point shrug nod stance fold
+         t.arm(0, 45)          # left arm swings 45 deg forward
+         t.home()
++        t.walk(3)             # 3 crank steps forward, returns when done
++        t.turn(90)            # turn left 90 deg (multiples of 30), returns when done
+         t.stop()
+ 
+ Set TARS_HOST / TARS_PORT env vars to change the default address.
+@@ -154,10 +156,57 @@ class Tars:
+     def forward(self, seconds: float = 1.0, speed: float = 0.5) -> None:
+         self.move_for(speed, speed, seconds)
+ 
+-    def turn(self, seconds: float = 0.6, speed: float = 0.5) -> None:
+-        """Positive speed = turn right (spin in place)."""
++    def spin(self, seconds: float = 0.6, speed: float = 0.5) -> None:
++        """Timed spin on the drive motors (wheeled fallback). Positive = right."""
+         self.move_for(speed, -speed, seconds)
+ 
++    # -- walking (crank legs) -------------------------------------------------
++    def walk_start(self, steps: int) -> float:
++        """Start walking (non-blocking). + forward, - back. Returns estimated seconds."""
++        return int(self.send(f"WALK {int(steps)}")) / 1000.0
++
++    def turn_start(self, degrees: int) -> float:
++        """Start a turn in place (non-blocking). Multiple of 30, + = left. Returns est. seconds."""
++        if int(degrees) % 30:
++            raise TarsError(f"TURN must be a multiple of 30 degrees (got {degrees})")
++        return int(self.send(f"TURN {int(degrees)}")) / 1000.0
++
++    def walk_wait(self, est_s: float = 0.0, timeout: float | None = None) -> str:
++        """Block until the current walk/turn ends. Returns walk_last, e.g. 'DONE_W_3'
++        or 'ABORT_W_1_stall'. Raises TarsError on an ABORT."""
++        end = time.monotonic() + (timeout if timeout is not None else est_s * 2 + 3.0)
++        st = self.status()
++        while st.get("walk") != "idle" and time.monotonic() < end:
++            time.sleep(0.05)
++            st = self.status()
++        if st.get("walk") != "idle":
++            self.stop()
++            raise TarsError("walk timed out (stopped)")
++        last = str(st.get("walk_last", ""))
++        if last.startswith("ABORT"):
++            raise TarsError(f"walk aborted: {last}")
++        return last
++
++    def walk(self, steps: int) -> str:
++        """Walk n crank steps and wait for it to finish. Returns e.g. 'DONE_W_3'."""
++        return self.walk_wait(self.walk_start(steps))
++
++    def turn(self, degrees: int) -> str:
++        """Turn in place by a multiple of 30 deg (+ = left) and wait. Returns 'DONE_R_<deg>'."""
++        return self.walk_wait(self.turn_start(degrees))
++
++    def cal(self, *args) -> str:
++        """CAL passthrough: cal() -> current values; cal('DEG', 28.5); cal('MS', 2, 600)."""
++        return self.send(" ".join(["CAL", *map(str, args)]))
++
++    def calibration(self) -> dict:
++        """{'ms': [l, r], 'deg': float, 'mode': int, 'yawsign': int}"""
++        out: dict = {}
++        for kv in self.cal().split():
++            k, _, v = kv.partition("=")
++            out[k] = [int(x) for x in v.split(",")] if k == "ms" else (float(v) if k == "deg" else int(v))
++        return out
++
+ 
+ if __name__ == "__main__":
+     import sys
+diff --git a/laptop/teleop.py b/laptop/teleop.py
+index 2a8b71d..02c1c85 100644
+--- a/laptop/teleop.py
++++ b/laptop/teleop.py
+@@ -2,7 +2,9 @@
+ 
+     python teleop.py [host]
+ 
+-  drive    w a s d   (hold), space = stop, +/- = speed
++  walk     up / down arrow   1 step forward / back (waits for it)
++           left / right arrow  turn 30 deg left / right
++  drive    w a s d   (hold; wheeled fallback), space = stop, +/- = speed
+   arms     q / e     left arm back / forward 15 deg
+            z / c     right arm back / forward 15 deg
+            0         both arms home
+@@ -30,6 +32,9 @@ TURN = 0.5
+ ARM_STEP = 15.0
+ KEY_HOLD_S = 0.6      # > macOS initial key-repeat delay, or the first press stutters
+ 
++WALK_KEYS = {"UP": ("walk", 1), "DOWN": ("walk", -1), "LEFT": ("turn", 30), "RIGHT": ("turn", -30)}
++ARROWS = {"A": "UP", "B": "DOWN", "D": "LEFT", "C": "RIGHT"}
++
+ GESTURE_KEYS = {"g": "wave", "p": "point", "u": "shrug", "n": "nod", "t": "stance", "f": "fold"}
+ ARM_KEYS = {"q": (LEFT, -1), "e": (LEFT, +1), "z": (RIGHT, -1), "c": (RIGHT, +1)}
+ 
+@@ -43,6 +48,23 @@ def key_to_cmd(k: str) -> tuple[float, float]:
+     }[k]
+ 
+ 
++def read_key() -> str:
++    """One key; arrow keys come back as 'UP' / 'DOWN' / 'LEFT' / 'RIGHT'."""
++    k = sys.stdin.read(1)
++    if k != "\x1b":
++        return k.lower()
++    if select.select([sys.stdin], [], [], 0.02)[0] and sys.stdin.read(1) == "[":
++        if select.select([sys.stdin], [], [], 0.02)[0]:
++            return ARROWS.get(sys.stdin.read(1), "")
++    return ""
++
++
++def flush_input() -> None:
++    """Drop key-repeat that piled up while a step ran (no surprise extra steps)."""
++    while select.select([sys.stdin], [], [], 0)[0]:
++        sys.stdin.read(1)
++
++
+ def say(msg: str) -> None:
+     print(f"\r{msg:<60}", end="", flush=True)
+ 
+@@ -65,10 +87,17 @@ def main() -> None:
+                 r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                 try:
+                     if r:
+-                        k = sys.stdin.read(1).lower()
++                        k = read_key()
+                         last_key = time.monotonic()
+                         if k == "x":
+                             break
++                        elif k in WALK_KEYS:
++                            kind, n = WALK_KEYS[k]
++                            cmd = (0.0, 0.0)
++                            say(f"{kind} {n:+d}...")
++                            res = t.walk(n) if kind == "walk" else t.turn(n)
++                            say(res)
++                            flush_input()
+                         elif k == " ":
+                             cmd = (0.0, 0.0)
+                             t.stop()
+diff --git a/laptop/voice.py b/laptop/voice.py
+index edc8d12..52bd656 100644
+--- a/laptop/voice.py
++++ b/laptop/voice.py
+@@ -61,9 +61,36 @@ def speak(text: str) -> None:
+ 
+ # ---------------------------------------------------------------- robot tools
+ TOOLS = [
++    {
++        "name": "walk",
++        "description": (
++            "Walk on your slab legs. steps > 0 forward, < 0 backward. One step is one "
++            "full stride of both leg pairs (a few cm, about 0.6 s). Returns when done."
++        ),
++        "input_schema": {
++            "type": "object",
++            "properties": {"steps": {"type": "integer", "minimum": -10, "maximum": 10}},
++            "required": ["steps"],
++        },
++    },
++    {
++        "name": "turn",
++        "description": (
++            "Turn in place by stepping your leg pairs in opposite directions. degrees must be "
++            "a multiple of 30; positive = left (counter-clockwise), negative = right. "
++            "Returns when done."
++        ),
++        "input_schema": {
++            "type": "object",
++            "properties": {"degrees": {"type": "integer", "enum": [-180, -150, -120, -90, -60, -30,
++                                                                   30, 60, 90, 120, 150, 180]}},
++            "required": ["degrees"],
++        },
++    },
+     {
+         "name": "move",
+-        "description": "Drive the robot. Use short durations; 1 second is about 30 cm.",
++        "description": "Wheeled fallback only (if your legs are swapped for hidden wheels): "
++                       "drive for a few seconds. Prefer walk/turn.",
+         "input_schema": {
+             "type": "object",
+             "properties": {
+@@ -121,7 +148,7 @@ TOOLS = [
+ 
+ def system_prompt() -> str:
+     return (
+-        "You are TARS, a boxy four-slab robot on wheels, built in ~30 hours at a hackathon "
++        "You are TARS, a boxy four-slab robot that walks on its slabs, built in ~30 hours at a hackathon "
+         "and running real-time motor control on QNX. "
+         f"Humor setting: {settings['humor']}%. Honesty setting: {settings['honesty']}%. "
+         "Let those settings visibly shape your tone: high humor means dry, deadpan jokes; "
+@@ -152,6 +179,13 @@ class Robot:
+             print(f"[robot] (offline) {name} {args}")
+             return "done (simulated, robot offline)"
+         try:
++            if name == "walk":
++                return self.t.walk(int(args["steps"]))
++            if name == "turn":
++                deg = int(args["degrees"])
++                if deg % 30:
++                    return "failed: turns must be multiples of 30 degrees"
++                return self.t.turn(deg)
+             if name == "move":
+                 s = float(args.get("speed", 0.5))
+                 l, r = {"forward": (s, s), "backward": (-s, -s),
+diff --git a/pi/src/main.c b/pi/src/main.c
+index 41ce364..daedf22 100644
+--- a/pi/src/main.c
++++ b/pi/src/main.c
+@@ -476,7 +476,7 @@ static void *control_thread(void *arg)
+         if (walking) { tl = tr = 0.0f; out_l = out_r = 0.0f; }
+         estop = wd_tripped || blocked || tipped || bumped;
+         estop_why = tipped ? "tipped" : bumped ? "bump" : blocked ? "obstacle"
+-                  : wd_tripped ? "watchdog" : "none";
++                  : walking ? "walking" : wd_tripped ? "watchdog" : "none";
+         last_dist = dist;
+         /* Hard stop on estop (no slew); smooth otherwise. */
+         out_l = estop || walking ? tl : slew(out_l, tl);
+@@ -485,7 +485,7 @@ static void *control_thread(void *arg)
+         int is_tipped = tipped;
+         pthread_mutex_unlock(&lock);
+ 
+-        if (strcmp(estop_why, was_why) && strcmp(estop_why, "none"))
++        if (strcmp(estop_why, was_why) && strcmp(estop_why, "none") && strcmp(estop_why, "walking"))
+             fprintf(stderr, "[ctl] STOP (%s)\n", estop_why);
+         was_why = estop_why;
+ 
+diff --git a/pi/test_server.py b/pi/test_server.py
+index ecebe91..677d63d 100644
+--- a/pi/test_server.py
++++ b/pi/test_server.py
+@@ -444,7 +444,8 @@ def test_walk_stub() -> None:
+         check(r == "OK 600", f"WALK 3 -> {r}")
+         time.sleep(0.05)
+         st = c.status()
+-        check(st["walk"] == "walk" and st["walk_cmd"] == "3" and st["walk_last"] == "running", f"walking {st}")
++        check(st["walk"] == "walk" and st["walk_cmd"] == "3" and st["walk_last"] == "running"
++              and st["why"] == "walking", f"walking {st}")
+         check(c.cmd("WALK 1").startswith("ERR busy"), "second WALK refused")
+         check(c.cmd("TURN 30").startswith("ERR busy"), "TURN refused while walking")
+         check(c.cmd("D 0.5 0.5").startswith("ERR busy"), "D refused while walking")
