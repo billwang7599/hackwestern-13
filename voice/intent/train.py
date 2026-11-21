@@ -1,6 +1,12 @@
-"""Train the text -> intent classifier and export it as a C header.
+"""Retrain the text -> intent classifier from phrases.txt, in one command.
 
-    python3 voice/intent/train.py          # writes voice/intent/intent_model.h + train_report.txt
+    python3 voice/intent/train.py             # train, write intent_model.h, run the tests
+    python3 voice/intent/train.py --no-test   # train + export only
+
+Steps: read phrases.txt -> add simulated whisper mistakes (gen_data.py) ->
+train -> write intent_model.h -> rebuild build/intent_cli -> run
+tests/test_intent.py (held-out accuracy, confusion matrix, stop recall must be
+100%, Python/C parity, latency). Exit code is non-zero if any test fails.
 
 Model: multinomial logistic regression (softmax) on the hashed features from
 intent.features() (char 2-4 grams + words, 4096 bins, L2-normalised), trained
@@ -135,6 +141,10 @@ def export_header(path, W, b, thr, stop_thr, info: str):
 
 def main():
     t0 = time.time()
+    try:
+        gen_data.load_phrases()
+    except ValueError as e:
+        sys.exit(f"phrases.txt has problems, fix them and rerun:\n{e}")
     rows = gen_data.generate(30, seed=13)
     train_rows = [(t, I.INTENTS.index(c)) for t, c, s in rows if s == "train"]
     random.Random(1).shuffle(train_rows)
@@ -149,14 +159,26 @@ def main():
     thr = pick_threshold(Pva, yva)
     stop_thr = 0.30
     acc_va = float(np.mean(Pva.argmax(1) == yva))
-    info = (f"{len(tr)} train sentences (gen_data.py, seed 13), {nval} validation.\n"
+    info = (f"{len(tr)} train sentences (phrases.txt via gen_data.py, seed 13), {nval} validation.\n"
             f"Features: hashed char 2-4 grams + words, {I.N_FEAT} bins. Softmax regression, Adam, L2 1e-4.\n"
             f"Validation accuracy {acc_va:.4f}. threshold {thr:.2f} (picked on validation), stop_threshold {stop_thr:.2f}.")
     out = os.path.join(HERE, "intent_model.h")
     export_header(out, W, b, thr, stop_thr, info)
     print(info)
     print(f"wrote {out} ({os.path.getsize(out) // 1024} KB) in {time.time() - t0:.1f} s")
+    if "--no-test" in sys.argv:
+        return 0
+    import subprocess
+    voice = os.path.dirname(HERE)
+    print("\nbuilding build/intent_cli and running tests/test_intent.py ...", flush=True)
+    r = subprocess.run(["make", "-s", "-C", voice, "build/intent_cli"])
+    if r.returncode:
+        return r.returncode
+    r = subprocess.run([sys.executable, os.path.join(voice, "tests", "test_intent.py")])
+    print("\nRETRAIN OK: tests pass. Commit phrases.txt + intent_model.h." if r.returncode == 0
+          else "\nRETRAIN FINISHED BUT TESTS FAIL (see FAIL lines above). Don't deploy this model.")
+    return r.returncode
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

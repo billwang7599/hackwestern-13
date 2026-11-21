@@ -82,7 +82,7 @@ def test_units(m: I.Model) -> None:
         "tars go forward a bit": "MOVE 100", "tars back up one and a half feet": "MOVE -458",
         "tars go back to meters": "MOVE -1000", "tars move forward 100 millimeters": "MOVE 100",
         "tars go forward three hundred millimeters": "MOVE 300", "tars go back a hundred": "MOVE -1000",
-        "tars turn around": "TURN 180", "tars spin around": "TURN 360",
+        "tars turn around": "TURN 180", "tars spin around": "TURN 180", "tars do a full spin": "TURN 360",
         "tars follow me": "MODE follow", "tars gesture mode": "MODE gesture",
         "tars learn a new gesture": "MODE teach", "tars status": "STATUS",
     }

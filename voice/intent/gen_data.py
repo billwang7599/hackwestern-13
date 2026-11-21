@@ -1,6 +1,6 @@
 """Generate intent training/test sentences that look like whisper.cpp output.
 
-Each intent has a list of phrasings (templates). Templates are split 80/20 by a
+The phrasings (templates) come from phrases.txt (humans edit that file). Templates are split 80/20 by a
 stable hash: the TEST templates are never seen in training, so the held-out
 accuracy measures new phrasings, not memorised ones. On top of that every
 sentence gets whisper-style damage:
@@ -21,106 +21,49 @@ import random
 import sys
 import zlib
 
-# {n} = a turn amount, {d} = a distance; filled from the lists below.
-T: dict[str, list[str]] = {
-    "forward": [
-        "forward", "go forward", "move forward", "go", "go ahead", "drive forward", "ahead",
-        "move ahead", "forward please", "go straight", "straight ahead", "come forward",
-        "move forward {d}", "go forward {d}", "forward {d}", "drive {d} forward", "go {d}",
-        "go straight {d}", "advance", "onward", "move up", "go forwards", "forwards",
-        "roll forward", "head forward", "keep going forward", "take {d} forward",
-        "step forward", "walk forward", "go ahead {d}", "come here", "come to me",
-        "move forward a bit", "a little forward", "inch forward", "scoot forward",
-    ],
-    "back": [
-        "back", "go back", "move back", "backward", "backwards", "reverse", "back up",
-        "go backwards", "move backwards", "drive back", "back off", "retreat",
-        "go back {d}", "move back {d}", "back up {d}", "reverse {d}", "back {d}",
-        "step back", "roll back", "come back", "move away", "get back", "go in reverse",
-        "back up a bit", "a little back", "scoot back", "walk back", "take {d} back",
-        "move backward {d}", "backpedal",
-    ],
-    "left": [
-        "left", "turn left", "go left", "rotate left", "turn to the left", "left turn",
-        "turn left {n}", "rotate left {n}", "left {n}", "go left {n}", "spin left {n}",
-        "turn {n} left", "turn {n} to the left", "veer left", "bear left", "hang a left",
-        "take a left", "face left", "look left", "pivot left", "turn counterclockwise",
-        "rotate anticlockwise", "turn left a bit", "a little left", "slightly left",
-        "left a little", "swing left", "steer left", "head left", "to the left",
-    ],
-    "right": [
-        "right", "turn right", "go right", "rotate right", "turn to the right", "right turn",
-        "turn right {n}", "rotate right {n}", "right {n}", "go right {n}", "spin right {n}",
-        "turn {n} right", "turn {n} to the right", "veer right", "bear right", "hang a right",
-        "take a right", "face right", "look right", "pivot right", "turn clockwise",
-        "rotate clockwise", "turn right a bit", "a little right", "slightly right",
-        "right a little", "swing right", "steer right", "head right", "to the right",
-    ],
-    "turn_around": [
-        "turn around", "turn round", "about face", "about turn", "u turn", "do a u turn",
-        "face the other way", "turn back around", "go the other way", "flip around",
-        "reverse direction", "turn yourself around", "one eighty", "do a one eighty",
-        "turn one eighty", "spin around once", "look behind you", "face behind you",
-        "turn the other way", "make a u turn", "half turn",
-    ],
-    "stop": [
-        "stop", "stop now", "stop stop", "halt", "freeze", "stop moving", "stop it",
-        "please stop", "stop right there", "stop the robot", "whoa", "whoa stop",
-        "hold on", "wait", "wait stop", "no", "no no", "no stop", "enough", "cancel",
-        "brake", "stay", "stay there", "hold it", "don't move", "halt now", "freeze right there",
-        "stop please", "emergency stop", "stop driving", "okay stop", "that's enough stop",
-        "no wait", "hold up stop",
-    ],
-    "follow": [
-        "follow me", "follow", "follow mode", "come with me", "follow my hand",
-        "start following", "follow me please", "track me", "chase me", "keep up with me",
-        "follow along", "switch to follow mode", "follow my hand please", "tail me",
-        "come follow me", "go into follow mode", "follow the hand", "you follow me",
-    ],
-    "gestures": [
-        "gestures", "gesture mode", "gesture control", "back to gestures", "use gestures",
-        "watch my hands", "hand signals", "switch to gestures", "gesture", "no more following",
-        "hand control", "go to gesture mode", "listen to my hands", "use hand signals",
-        "gestures please", "normal mode", "switch to gesture mode", "back to gesture mode",
-    ],
-    "teach": [
-        "teach", "learn", "learn a new gesture", "teach mode", "learn this", "watch this",
-        "let me teach you", "learn a gesture", "new gesture", "teach you a gesture",
-        "remember this", "learn this sign", "i will teach you", "teaching mode",
-        "record a gesture", "learn this pose", "learn something new", "start learning",
-    ],
-    "spin": [
-        "spin", "spin around", "do a spin", "do a full spin", "spin in a circle",
-        "full circle", "do a three sixty", "three sixty", "twirl", "pirouette",
-        "do a little spin", "spin all the way around", "go in a circle", "turn in a circle",
-        "rotate all the way", "do a full turn", "spin yourself", "make a circle",
-    ],
-    "status": [
-        "status", "status report", "how are you", "are you okay", "report", "battery",
-        "what's your status", "are you there", "check status", "system check",
-        "are you working", "how are you doing", "diagnostics", "health check",
-        "you alive", "status check", "report status", "are you ready",
-    ],
-    "unknown": [
-        "thank you", "thanks for watching", "you", "that's so cool", "what is that",
-        "where's the bathroom", "i'm hungry", "what time is it", "this is a robot",
-        "hello everyone", "the judges are here", "can you hear me", "i don't know",
-        "let's get pizza", "nice demo", "is it working", "what does it do",
-        "how does it work", "look at that", "it's moving", "amazing", "oh my god",
-        "who made this", "what's your name", "tell me a joke", "play some music",
-        "open the door", "call mom", "the weather is nice", "turn on the lights",
-        "go to sleep", "what", "um", "okay", "yes", "hello", "music", "applause",
-        "blank audio", "silence", "the end", "see you later", "good morning",
-        "i like your robot", "is that a raspberry pi", "what language is this",
-        "turn", "move", "can you dance", "sing a song", "make me a sandwich",
-        "how much did it cost", "it's a rover", "write it down", "left the room",
-        "a bit much", "i'll be right back",
-        "the left one", "on the right side", "turn it off", "turn up the volume",
-        "forward this email", "go figure", "go team", "following the instructions",
-        "i follow you on twitter", "spin class", "status quo", "teach me", "learn to code",
-        "nice gesture", "left over", "so what", "uh huh",
-    ],
-}
+import os
+
+PHRASES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phrases.txt")
+INTENT_NAMES = ["forward", "back", "left", "right", "turn_around", "stop",
+                "follow", "gestures", "teach", "spin", "status", "unknown"]
+
+
+def load_phrases(path: str = PHRASES) -> dict[str, list[str]]:
+    """phrases.txt -> {intent: [phrase, ...]}. Raises ValueError with the line
+    number on a bad line, an unknown intent, or a phrase listed twice."""
+    out: dict[str, list[str]] = {k: [] for k in INTENT_NAMES}
+    seen: dict[str, tuple[str, int]] = {}
+    errors = []
+    with open(path, encoding="utf-8") as f:
+        for ln, line in enumerate(f, 1):
+            line = line.split("#", 1)[0].rstrip()
+            if not line.strip():
+                continue
+            if "\t" not in line:
+                errors.append(f"{path}:{ln}: expected intent<TAB>phrase, got {line!r}")
+                continue
+            intent, phrase = (x.strip() for x in line.split("\t", 1))
+            phrase = " ".join(phrase.lower().split())
+            if intent not in out:
+                errors.append(f"{path}:{ln}: unknown intent {intent!r} (use one of {', '.join(INTENT_NAMES)})")
+                continue
+            if not phrase:
+                errors.append(f"{path}:{ln}: empty phrase")
+                continue
+            if phrase in seen:
+                other, oln = seen[phrase]
+                if other != intent:
+                    errors.append(f"{path}:{ln}: {phrase!r} is listed as {intent} here and as {other} on line {oln}")
+                continue
+            seen[phrase] = (intent, ln)
+            out[intent].append(phrase)
+    for k, v in out.items():
+        if not v:
+            errors.append(f"{path}: no phrases for intent {k!r}")
+    if errors:
+        raise ValueError("\n".join(errors))
+    return out
+
 
 TURN_AMOUNTS = ["90", "ninety", "45", "forty five", "45 degrees", "90 degrees", "ninety degrees",
                 "30 degrees", "thirty degrees", "a bit", "a little", "one eighty", "180",
@@ -245,7 +188,7 @@ def with_wake(s: str, intent: str, rng: random.Random) -> str:
 def generate(per_template: int = 30, seed: int = 13) -> list[tuple[str, str, str]]:
     rng = random.Random(seed)
     rows = []
-    for intent, temps in T.items():
+    for intent, temps in load_phrases().items():
         for t in temps:
             sp = split_of(intent, t)
             n = per_template if intent not in ("unknown",) else per_template // 2

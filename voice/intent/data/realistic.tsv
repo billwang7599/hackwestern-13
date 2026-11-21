@@ -43,7 +43,8 @@ TARS, do a U-turn.	turn_around	TURN 180
 TARS, about face.	turn_around	TURN 180
 Tars, turn a round.	turn_around	TURN 180
 TARS, spin.	spin	TURN 360
-Tars, spin around.	spin	TURN 360
+Tars, spin around.	turn_around	TURN 180
+Tars, do a full spin.	spin	TURN 360
 TARS, do a spin.	spin	TURN 360
 TARS, do a 360.	spin	TURN 360
 TARS, follow me.	follow	MODE follow
