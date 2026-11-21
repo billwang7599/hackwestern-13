@@ -147,8 +147,50 @@ unsaved observations. Estimated geometry is not saved as reliable structure.
 
 Run `python3 pi/dashboard/service.py start` on the Pi. It detaches from SSH and
 needs no monitor or laptop afterward, but must be restarted after a Pi reboot.
-The phone remains USB-connected to the Pi. The six phone TCP listeners have no
-application authentication; the intended transport is local USB forwarding.
+The phone remains USB-connected to the Pi. The seven phone TCP listeners (including the
+speech link on 5573) have no application authentication; the intended transport is local USB forwarding.
+
+## Speech link (5573)
+
+The robot has no speaker, so the phone speaks for it. `SpeechLink.swift` listens
+on TCP 5573. `service.py` forwards Pi `127.0.0.1:5573` to the phone over USB, so
+goto/voice on the Pi just connect to localhost. It accepts up to 8 clients at
+once; each sends newline-delimited UTF-8 lines:
+
+| Line | Effect |
+|---|---|
+| `SAY <text>` | queue `<text>` (normal priority); `SAY` is case-insensitive |
+| `{"type":"say","text":"...","priority":"normal\|urgent"}` | same; `priority` is optional (default normal) |
+| `HUSH` or `{"type":"hush"}` | stop speaking now and clear the queue |
+
+Each line gets a one-line reply: `OK say`, `OK hush` or `ERR <reason>`. Senders
+may ignore it. Blank lines get no reply.
+
+- **Queue:** normal requests wait their turn; past 5 pending, the oldest is
+  dropped. **Urgent** cuts off the current sentence and replaces everything
+  pending (a stale sentence never follows "Stopping.").
+- **Limits:** lines over 1024 bytes are dropped whole (`ERR line too long`);
+  text is cut to 300 characters on a word boundary; control characters become
+  spaces. Invalid UTF-8, unknown JSON types and other garbage get `ERR`.
+- **Audio:** `AVSpeechSynthesizer`, `en-US` on-device voice, no network. The
+  audio session is `.playback`/`.spokenAudio` with `.duckOthers`, so it should
+  speak with the silent switch on; it is deactivated when the queue empties.
+- **UI:** the last spoken line shows as a `TARS: …` caption under the guard
+  banner on every tab. Like the other listeners it stops when the app
+  backgrounds and restarts when it becomes active.
+
+Try it from the Pi (or the Mac with the app in the Simulator):
+
+```sh
+python3 iphone/tools/say.py "I remember 2 things: a trash can to my left, and a chair behind me."
+python3 iphone/tools/say.py --urgent "Stopping."
+python3 iphone/tools/say.py --hush
+```
+
+`python3 iphone/test_speech_link.py` compiles the parser, line framer and queue
+policy straight out of `SpeechLink.swift` and runs 47 checks on the Mac.
+Not yet verified: speech on a real iPhone, the silent-switch behaviour, and the
+USB forward from the Pi.
 
 ## Visual checks
 
