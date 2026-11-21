@@ -15,3 +15,9 @@ venv/
 # macOS / editors
 .DS_Store
 *.swp
+
+# goalie
+goalie/pi/build/
+goalie/**/.venv/
+goalie/sim/out/
+goalie/arduino/goalie/build/
