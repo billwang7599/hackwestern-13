@@ -38,11 +38,11 @@ import wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GOTO_DIR = os.path.dirname(HERE)
-REPO = os.path.dirname(GOTO_DIR)
-MOTOR = os.path.join(REPO, "pi", "build", "tars_motor_host")
+REPO = os.path.dirname(os.path.dirname(GOTO_DIR))
+MOTOR = os.path.join(REPO, "iter1-wasd", "pi", "build", "tars_motor_host")
 GOTO = os.path.join(GOTO_DIR, "build", "goto_host")
-VOICE = os.path.join(REPO, "voice", "build", "tars_voice_host")
-VMODEL = os.path.join(REPO, "voice", "models", "ggml-tiny.en-q5_1.bin")
+VOICE = os.path.join(REPO, "iter2-autonomy", "voice", "build", "tars_voice_host")
+VMODEL = os.path.join(REPO, "iter2-autonomy", "voice", "models", "ggml-tiny.en-q5_1.bin")
 BUILD = os.path.join(GOTO_DIR, "build")
 
 GUARD_M = 0.55            # fake lidar_guard: stop zone from the robot centre, forward corridor

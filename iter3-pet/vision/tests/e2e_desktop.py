@@ -21,10 +21,10 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VISION = os.path.dirname(HERE)
-REPO = os.path.dirname(VISION)
+REPO = os.path.dirname(os.path.dirname(VISION))
 ASSETS = os.path.join(HERE, "assets")
 BUILD = os.path.join(HERE, "build")
-SERVER = os.path.join(REPO, "pi", "build", "tars_motor_host")
+SERVER = os.path.join(REPO, "iter1-wasd", "pi", "build", "tars_motor_host")
 URL = "https://storage.googleapis.com/mediapipe-assets/"
 IMAGES = ["thumb_up.jpg", "victory.jpg", "fist.jpg", "left_hands.jpg"]
 
@@ -93,7 +93,7 @@ def status(port: int) -> dict:
 
 def main() -> int:
     if not os.path.exists(SERVER):
-        subprocess.run(["make", "-C", os.path.join(REPO, "pi"), "host"], check=True)
+        subprocess.run(["make", "-C", os.path.join(REPO, "iter1-wasd", "pi"), "host"], check=True)
     fetch()
     os.makedirs(BUILD, exist_ok=True)
     video = os.path.join(BUILD, "e2e.avi")

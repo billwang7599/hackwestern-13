@@ -1,5 +1,5 @@
 # build output
-pi/build/
+iter1-wasd/pi/build/
 compile_commands.json
 .cache/
 
@@ -17,49 +17,49 @@ venv/
 *.swp
 
 # goalie
-goalie/pi/build/
-goalie/**/.venv/
-goalie/sim/out/
-goalie/arduino/goalie/build/
+archive/goalie/pi/build/
+archive/goalie/**/.venv/
+archive/goalie/sim/out/
+archive/goalie/arduino/goalie/build/
 
 # tars uno
-uno/test/build/
-uno/tars/build/
+iter1-wasd/uno/test/build/
+iter1-wasd/uno/tars/build/
 
 # vision
-vision/models/*.task
-vision/tests/build/
-vision/tests/assets/
-vision/qnx/python/vendor/
-vision/qnx/cpp/tars_gesture_cpu
+iter3-pet/vision/models/*.task
+iter3-pet/vision/tests/build/
+iter3-pet/vision/tests/assets/
+iter3-pet/vision/qnx/python/vendor/
+iter3-pet/vision/qnx/cpp/tars_gesture_cpu
 gesture_view.jpg
 
 # Locally retained upstream USB sources and target build products
 vendor/iphone-usb/
-pi/iphone-usb/install/
-pi/iphone-usb/logs/
-pi/iphone-usb/probe
-pi/iphone-usb/state/
-iphone/**/xcuserdata/
-pi/dashboard/state/
+iter2-autonomy/iphone-usb/install/
+iter2-autonomy/iphone-usb/logs/
+iter2-autonomy/iphone-usb/probe
+iter2-autonomy/iphone-usb/state/
+iter2-autonomy/iphone/**/xcuserdata/
+iter2-autonomy/dashboard/state/
 
 # Native edge-AI build products and runtime data
-pi/edge-ai/build/
-pi/edge-ai/state/
+iter2-autonomy/edge-ai/build/
+iter2-autonomy/edge-ai/state/
 
 # Locally compiled Arduino firmware
-uno/build/
+iter1-wasd/uno/build/
 
 # voice
-voice/build/
-voice/models/*.bin
-voice/models/*.part
-voice/third_party/whisper.cpp/
-voice/tests/clips/
+iter2-autonomy/voice/build/
+iter2-autonomy/voice/models/*.bin
+iter2-autonomy/voice/models/*.part
+iter2-autonomy/voice/third_party/whisper.cpp/
+iter2-autonomy/voice/tests/clips/
 # goto
-goto/build/
-goto/models/
+iter2-autonomy/goto/build/
+iter2-autonomy/goto/models/
 
 # goto object memory (written on the robot / by tests)
-goto/memory.txt
-goto/memory.txt.tmp
+iter2-autonomy/goto/memory.txt
+iter2-autonomy/goto/memory.txt.tmp

@@ -29,7 +29,7 @@ DET_HDR  := src/yolo_post.hpp src/camera.hpp
 
 QCC      := qcc -V gcc_ntoaarch64le
 QXX      := q++ -V gcc_ntoaarch64le_cxx
-REPO     := $(abspath ..)
+REPO     := $(abspath ../..)
 
 .PHONY: all detect host host-detect test test-nav-asan test-nav-parity test-fullstack deploy clean
 
@@ -88,7 +88,7 @@ test-nav-asan: | build
 
 # real tars_motor_host + goto + tars_voice, fake phone (LDR1) / YOLO / lidar_guard / phone speech
 test-fullstack: host
-	$(MAKE) -C ../pi host
+	$(MAKE) -C ../../iter1-wasd/pi host
 	python3 tests/test_fullstack.py
 
 test-nav-parity: host

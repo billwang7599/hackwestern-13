@@ -2,12 +2,12 @@
 # Run on QNX after transferring this repo's vendor/iphone-usb sources.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-PREFIX="$ROOT/pi/iphone-usb/install"
+PREFIX="$ROOT/iter2-autonomy/iphone-usb/install"
 export CC=clang CXX=clang++
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LIBS=-lsocket
-mkdir -p "$PREFIX" "$ROOT/pi/iphone-usb/logs"
+mkdir -p "$PREFIX" "$ROOT/iter2-autonomy/iphone-usb/logs"
 if [ "$#" -eq 0 ]; then
     set -- libplist libimobiledevice-glue libusbmuxd libtatsu libimobiledevice usbmuxd
 fi
@@ -30,8 +30,8 @@ for project in "$@"; do
         ./configure --prefix="$PREFIX" $options &&
         make -j4 &&
         make install
-    ) > "$ROOT/pi/iphone-usb/logs/$project.log" 2>&1 || {
-        tail -60 "$ROOT/pi/iphone-usb/logs/$project.log"
+    ) > "$ROOT/iter2-autonomy/iphone-usb/logs/$project.log" 2>&1 || {
+        tail -60 "$ROOT/iter2-autonomy/iphone-usb/logs/$project.log"
         exit 1
     }
 done

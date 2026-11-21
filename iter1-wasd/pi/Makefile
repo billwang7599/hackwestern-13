@@ -24,7 +24,7 @@ CFLAGS   := -Wall -Wextra -O2 -std=gnu11
 QCC      := qcc -V gcc_ntoaarch64le
 QNX_LIBS := -lsocket -lm
 
-REPO     := $(abspath ..)
+REPO     := $(abspath ../..)
 
 .PHONY: all host native test deploy run compdb clean
 

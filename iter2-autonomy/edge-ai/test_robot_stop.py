@@ -18,7 +18,7 @@ from test_guard import packet, floor_points
 
 HERE = Path(__file__).resolve().parent
 GUARD = os.environ.get('GUARD_BINARY', str(HERE / 'build/lidar_guard'))
-MOTOR = os.environ.get('MOTOR_BINARY', str(HERE.parent / 'build/tars_motor_host'))
+MOTOR = os.environ.get('MOTOR_BINARY', str(HERE.parents[1] / 'iter1-wasd/pi/build/tars_motor_host'))
 OBSERVATIONS = []
 
 

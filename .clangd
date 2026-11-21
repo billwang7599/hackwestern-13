@@ -1,6 +1,6 @@
 # clangd config for nvim on macOS.
 #
-# compile_commands.json comes from `make -C pi compdb` (bear runs inside the
+# compile_commands.json comes from `make -C iter1-wasd/pi compdb` (bear runs inside the
 # Docker container). Because docker/run.sh mounts the repo and the SDP at the
 # SAME absolute paths as on the Mac, the paths in it are valid here.
 #

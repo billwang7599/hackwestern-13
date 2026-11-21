@@ -11,7 +11,7 @@
 
 PI_HOST ?= qnxuser@tars.local
 PI_DIR  ?= /data/home/qnxuser/voice
-REPO    := $(abspath ..)
+REPO    := $(abspath ../..)
 WSRC    := third_party/whisper.cpp
 CFLAGS  := -O2 -Wall -Wextra -std=gnu11
 INC     := -Isrc -Iintent -I$(WSRC)/include -I$(WSRC)/ggml/include

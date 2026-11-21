@@ -120,7 +120,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.status()['move_why'], 'stop')
 
     def test_phone_bridge_requires_new_press_after_denial(self):
-        sys.path.insert(0, str(Path(__file__).parent / 'dashboard'))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'iter2-autonomy' / 'dashboard'))
         from control import MotorLink
         link = MotorLink(self.tcp)
         done = threading.Event()

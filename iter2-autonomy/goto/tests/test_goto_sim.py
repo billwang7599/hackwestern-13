@@ -33,7 +33,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GOTO_DIR = os.path.dirname(HERE)
-REPO = os.path.dirname(GOTO_DIR)
+REPO = os.path.dirname(os.path.dirname(GOTO_DIR))
 
 WHEEL_D = 65.0
 TRACK = 100.0
@@ -616,7 +616,7 @@ def test_inputs(exe: str) -> None:
 
 
 def test_real_tars_motor(exe: str) -> None:
-    tm = os.path.join(REPO, "pi", "build", "tars_motor_host")
+    tm = os.path.join(REPO, "iter1-wasd", "pi", "build", "tars_motor_host")
     if not os.path.exists(tm):
         print("real tars_motor: skipped (run make -C pi host)")
         return

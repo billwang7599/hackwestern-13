@@ -35,7 +35,7 @@ def serve():
     backend = os.environ.get('TARS_MOTOR_BACKEND', 'stub')
     if backend not in ('stub', 'uno', 'pico'):
         raise ValueError('TARS_MOTOR_BACKEND must be stub, uno, or pico')
-    motor_command = [str(HERE.parent / 'build/tars_motor'), '-b', backend, '-l', '-g', '5568']
+    motor_command = [str(HERE.parents[1] / 'iter1-wasd/pi/build/tars_motor'), '-b', backend, '-l', '-g', '5568']
     if backend != 'stub':
         device = os.environ.get('TARS_MOTOR_DEVICE')
         if not device or not (device.startswith('/dev/') or device == str(STATE / 'uno-serial')):

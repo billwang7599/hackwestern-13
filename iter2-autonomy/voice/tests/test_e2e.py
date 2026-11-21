@@ -32,10 +32,10 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VOICE = os.path.dirname(HERE)
-REPO = os.path.dirname(VOICE)
+REPO = os.path.dirname(os.path.dirname(VOICE))
 CLIPS = os.path.join(HERE, "clips")
 VOICE_BIN = os.path.join(VOICE, "build", "tars_voice_host")
-MOTOR_BIN = os.path.join(REPO, "pi", "build", "tars_motor_host")
+MOTOR_BIN = os.path.join(REPO, "iter1-wasd", "pi", "build", "tars_motor_host")
 MODEL = os.path.join(VOICE, "models", "ggml-tiny.en-q5_1.bin")
 SR = 16000
 

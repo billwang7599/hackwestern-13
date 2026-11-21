@@ -21,7 +21,7 @@ class HeadlessKeyboard:
         self.error = 'Waiting for keyboard'
 
     def run(self):
-        binary = Path(__file__).resolve().parents[1] / 'build/keyboard_hid'
+        binary = Path(__file__).resolve().parents[2] / 'iter1-wasd/pi/build/keyboard_hid'
         try:
             self.proc = subprocess.Popen(['sudo', '-n', str(binary)], stdout=subprocess.PIPE)
             for line in self.proc.stdout:
