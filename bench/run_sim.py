@@ -364,7 +364,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="TARS sim stack + bench (laptop only)")
     ap.add_argument("--room", default="default", help=f"rooms: {', '.join(C.list_rooms())}")
     ap.add_argument("--car", choices=["auto", "virtual", "stub"], default="auto")
-    ap.add_argument("--profile", default="sm11", help="virtual car profile (bench/car/profiles/<name>.json)")
+    ap.add_argument("--profile", default="sm11_2wd",
+                    help="virtual car profile (bench/car/profiles/<name>.json): sm11_2wd = the demo default (2 motors), sm11 = the 4WD kit")
     ap.add_argument("--free-ports", action="store_true", help="ephemeral ports (tests; several stacks at once)")
     ap.add_argument("--bench-port", type=int, default=0)
     ap.add_argument("--no-bench", action="store_true")

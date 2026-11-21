@@ -190,8 +190,8 @@ top of `v_keep`/`v_start` (1.27 V here), scaled by how much of a spin the comman
   (`uno_resets_below_v` 0).
 - **Corners:** a spin 3 cm from a wall clips it with a corner (shoved ~8 mm, a ~2.4 g spike:
   over the firmware's 1.2 g bump threshold). The old circle body never touched it.
-- `sim GOTO` on `sm11` inherits the spin stall: use `run_sim.py --profile sm11_2wd` for
-  software demos until the real car says otherwise.
+- `sim GOTO` on `sm11` inherits the spin stall, so `run_sim.py` defaults to `--profile sm11_2wd`
+  for the software demo (user decision); `--profile sm11` runs the 4WD model.
 
 **Determinism:** noise comes from `--seed`, but the firmware runs on the real clock, so two
 runs agree statistically, not bit for bit. A busy laptop shows up in `stalls`.
@@ -241,7 +241,7 @@ Text or laptop-mic speech goes through the robot's **real** voice code on the la
 
 ## Sim world + `run_sim.py` (`bench/world/`)
 
-`python3 bench/run_sim.py [--room NAME] [--free-ports] [--car auto|virtual|stub] [--relay]` starts
+`python3 bench/run_sim.py [--room NAME] [--free-ports] [--car auto|virtual|stub] [--profile sm11_2wd|sm11] [--relay]` starts
 the virtual car (`bench/car/launch.py`, if present) or the **stub car**, the real `tars_motor`
 (`-b uno -d <car link>` or `-b stub`, guard on `-g`), `goto` (memory seeded from the room),
 `tars_voice` (if built and its model exists), `mission_relay` (`--relay`), the world sim and
