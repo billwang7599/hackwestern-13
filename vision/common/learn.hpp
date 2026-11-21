@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "gesture.hpp"
+#include "pet.hpp"
 
 namespace tars {
 namespace learn {
@@ -366,10 +367,13 @@ inline const std::vector<std::string> &all_labels() {
 
 class Brain {
 public:
-    explicit Brain(Config cfg) : ctl(std::move(cfg)), learner(ctl.cfg()) {}
+    explicit Brain(Config cfg) : ctl(std::move(cfg)), learner(ctl.cfg()), pet(ctl.cfg(), ctl) {
+        if (ctl.cfg()["pet_start"] >= 0.5) ctl.mode = PET_MODE;
+    }
 
     Controller ctl;
     Learner learner;
+    pet::Pet pet;  // pet mode (GESTURES.md section 8)
     std::string state = IDLE;
     double state_t = 0;
     std::vector<std::string> events;
@@ -433,6 +437,12 @@ public:
         return {rule, match.name.empty() ? std::string(UNKNOWN) : match.name};
     }
 
+    // tars_motor refused a D (S from another client, watchdog, tip, bump, guard):
+    // drop the move/stream so it never restarts by itself. Sends nothing.
+    void server_stop(double t) {
+        if (ctl.need_stop || ctl.has_move || ctl.f_active) ctl.stop_now(t, "server_stop");
+    }
+
     std::vector<Cmd> button(double t, const std::string &kind) {
         if (kind == "forget") {
             std::vector<Cmd> out;
@@ -474,7 +484,11 @@ public:
                 if (rule == hold_off) lab = UNKNOWN;
                 else hold_off.clear();
             }
-            return ctl.on_frame(t, lab, feat);
+            auto out = pet.sync(t);
+            if (pet.active) append(out, pet.on_frame(t, lab, feat));
+            else append(out, ctl.on_frame(t, lab, feat));
+            append(out, pet.sync(t));
+            return out;
         }
         label = rule;
         palm_count = rule == PALM ? palm_count + 1 : 0;
@@ -516,7 +530,12 @@ public:
 
     std::vector<Cmd> tick(double t) {
         auto out = ctl.tick(t);
-        if (state != IDLE) append(out, teach_tick(t));
+        if (state != IDLE) {
+            append(out, teach_tick(t));
+        } else {
+            append(out, pet.sync(t));
+            append(out, pet.tick(t));
+        }
         return out;
     }
 
@@ -553,6 +572,7 @@ private:
     std::vector<Cmd> start_teach(double t, const std::string &via) {
         auto out = ctl.stop_now(t, "teach");
         ctl.mode = GESTURE_MODE;
+        pet.sync(t);  // teaching leaves pet mode
         state = COUNTDOWN;
         state_t = t;
         released = via == "button";

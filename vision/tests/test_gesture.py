@@ -349,7 +349,7 @@ class TestModeToggle(unittest.TestCase):
         self.assertEqual(c.mode, g.FOLLOW_MODE)
 
     def test_cooldown_blocks_quick_second_toggle(self):
-        c = ctl()
+        c = ctl(pet_in_cycle=0)                           # two-mode toggle
         n = int(CFG["mode_frames"])
         _, t = feed(c, 0, ["peace"] * n)                  # -> follow at ~165 ms
         _, t = feed(c, t, ["no_hand"] * 2)                # release
@@ -367,7 +367,7 @@ class TestModeToggle(unittest.TestCase):
         self.assertEqual(c.mode, g.GESTURE_MODE)
 
     def test_toggle_cancels_move_and_stops(self):
-        c = ctl()
+        c = ctl(pet_in_cycle=0)
         _, t = feed(c, 0, ["thumbs_up"] * 4)
         self.assertEqual(c.moving, g.FORWARD)
         out, t = feed(c, t, ["peace"] * int(CFG["mode_frames"]))
@@ -381,6 +381,27 @@ class TestModeToggle(unittest.TestCase):
         self.assertEqual(c.mode, g.GESTURE_MODE)
         self.assertFalse(c.f_active)
         self.assertEqual(out[-1].text, "S")
+
+    def test_peace_cycles_gesture_follow_pet(self):
+        c = ctl()                                         # pet_in_cycle = 1 (default)
+        n = int(CFG["mode_frames"])
+        _, t = feed(c, 0, ["peace"] * n)
+        self.assertEqual(c.mode, g.FOLLOW_MODE)
+        _, t = feed(c, t, ["no_hand"] * 2)
+        t = max(t, CFG["mode_cooldown_ms"] + 200)
+        out, t = feed(c, t, ["peace"] * n)
+        self.assertEqual(c.mode, g.PET_MODE)
+        self.assertIn("mode_pet", reasons(out))
+        # in PET mode the Controller never toggles on peace (pet.py owns it)
+        _, t = feed(c, t + CFG["mode_cooldown_ms"], ["no_hand"] * 2 + ["peace"] * 100)
+        self.assertEqual(c.mode, g.PET_MODE)
+
+    def test_next_mode(self):
+        self.assertEqual(g.next_mode(g.GESTURE_MODE, CFG), g.FOLLOW_MODE)
+        self.assertEqual(g.next_mode(g.FOLLOW_MODE, CFG), g.PET_MODE)
+        self.assertEqual(g.next_mode(g.PET_MODE, CFG), g.GESTURE_MODE)
+        two = g.load_config(overrides={"pet_in_cycle": 0})
+        self.assertEqual(g.next_mode(g.FOLLOW_MODE, two), g.GESTURE_MODE)
 
     def test_peace_in_follow_holds_still(self):
         c = follow_ctl(mode_frames=100)                   # don't toggle during this test

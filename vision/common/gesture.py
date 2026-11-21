@@ -39,7 +39,7 @@ TEACH = "teach"          # shaka: index/middle/ring folded, pinky out (thumb ign
 LABELS = [NO_HAND, UNKNOWN, PALM, FIST, THUMBS_UP, THUMBS_DOWN,
           POINT_UP, POINT_DOWN, POINT_LEFT, POINT_RIGHT, PEACE, TEACH]
 
-GESTURE_MODE, FOLLOW_MODE = "gesture", "follow"
+GESTURE_MODE, FOLLOW_MODE, PET_MODE = "gesture", "follow", "pet"
 
 # ---- intents -----------------------------------------------------------------
 STOP, FORWARD, BACK, TURN_LEFT, TURN_RIGHT = "stop", "forward", "back", "turn_left", "turn_right"
@@ -71,6 +71,15 @@ CONF_KEYS = [
     "learn_k", "learn_augment", "learn_jitter", "learn_angle_weight",
     "learn_thr_mult", "learn_thr_min", "learn_thr_max",
     "feedback_speed", "feedback_ms", "nudge_ms", "feedback_led_beep",
+    # pet mode (vision/common/pet.py, GESTURES.md section 8)
+    "pet_in_cycle", "pet_start", "pet_exit_ms", "pet_trick_frames", "pet_gap_frames",
+    "pet_sleep_frames", "pet_wave_window_ms", "pet_wave_amp", "pet_wave_swings",
+    "pet_send_ms", "pet_settle_ms", "pet_come_size", "pet_come_max_fwd", "pet_come_max_ms",
+    "pet_body_ms", "pet_happy_ms", "pet_sad_ms", "pet_look_ms", "pet_max_seg_ms", "pet_max_speed",
+    "pet_bored_ms", "pet_look_every_ms", "pet_sleep_after_ms",
+    "pet_energy_start", "pet_energy_rest", "pet_energy_decay_per_s", "pet_happy_boost",
+    "pet_greet_boost", "pet_come_boost", "pet_sad_drop", "pet_excited",
+    "pet_speed_min", "pet_speed_max", "pet_seed",
 ]
 
 
@@ -166,6 +175,15 @@ def hand_features(lm, aspect: float) -> tuple[float, float] | None:
         return None
     cx = sum(lm[i][0] for i in PALM_POINTS) / len(PALM_POINTS)
     return cx, _dist(lm, WRIST, MIDDLE_MCP, aspect)
+
+
+def next_mode(mode: str, cfg: dict) -> str:
+    """Held peace sign cycles GESTURE -> FOLLOW -> PET (if pet_in_cycle) -> GESTURE."""
+    if mode == GESTURE_MODE:
+        return FOLLOW_MODE
+    if mode == FOLLOW_MODE and cfg["pet_in_cycle"] >= 0.5:
+        return PET_MODE
+    return GESTURE_MODE
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -342,11 +360,12 @@ class Controller:
             else:
                 self.cand, self.cand_count = label, 1
 
-        # mode toggle: peace held mode_frames, released since last toggle, cooled down
+        # mode toggle: peace held mode_frames, released since last toggle, cooled down.
+        # In PET mode the pet layer owns the peace sign (flash = trick, hold = leave).
         if label == PEACE:
-            if (self.cand_count >= c["mode_frames"] and self.toggle_armed
+            if (self.mode != PET_MODE and self.cand_count >= c["mode_frames"] and self.toggle_armed
                     and t >= self.mode_cooldown_until):
-                new = FOLLOW_MODE if self.mode == GESTURE_MODE else GESTURE_MODE
+                new = next_mode(self.mode, c)
                 out += self._stop(t, "mode_" + new)
                 self.mode = new
                 self.toggle_armed = False
@@ -359,6 +378,8 @@ class Controller:
 
         if self.mode == FOLLOW_MODE:
             out += self._follow_frame(t, label, feat)
+        elif self.mode == PET_MODE:
+            out += self._pet_frame(t, label)
         else:
             out += self._gesture_frame(t, label)
         return out + self.tick(t)
@@ -413,21 +434,39 @@ class Controller:
                 self.last_send = t - c["follow_send_ms"]
         return []
 
+    def _pet_frame(self, t: float, label: str) -> list[Cmd]:
+        """Safety floor under PET mode; vision/common/pet.py decides the behaviour.
+        Palm stops (same rule as GESTURE mode), a lost hand stops a D stream after
+        follow_grace_frames. Short self-ending body moves run to their end."""
+        c = self.cfg
+        if label == NO_HAND:
+            if self.miss >= c["follow_grace_frames"] and self.f_active:
+                return self._stop(t, "lost")
+            return []
+        if label == PALM:
+            n = self.cand_count
+            if n == int(c["stop_frames"]) or (n > c["stop_frames"] and (
+                    self.need_stop or self.move is not None or self.f_active)):
+                return self._stop(t, "palm")
+        return []
+
     def tick(self, t: float) -> list[Cmd]:
         c = self.cfg
         if (self.last_frame_t is not None and t - self.last_frame_t >= c["frame_timeout_ms"]
                 and (self.need_stop or self.move is not None or self.f_active)):
             return self._stop(t, "camera_timeout")
-        if self.mode == FOLLOW_MODE:
-            if not self.f_active or t - self.last_send < c["follow_send_ms"]:
+        if self.mode == FOLLOW_MODE or (self.mode == PET_MODE and self.f_active):
+            pet = self.mode == PET_MODE
+            send_ms = c["pet_send_ms"] if pet else c["follow_send_ms"]
+            if not self.f_active or t - self.last_send < send_ms:
                 return []
-            dt = min(t - self.last_send, 2 * c["follow_send_ms"]) / 1000.0
+            dt = min(t - self.last_send, 2 * send_ms) / 1000.0
             self.last_send = t
             step = c["follow_slew_per_s"] * dt
             self.f_cur = (_toward(self.f_cur[0], self.f_tgt[0], step),
                           _toward(self.f_cur[1], self.f_tgt[1], step))
             self.need_stop = True
-            return [Cmd(_d(*self.f_cur), "follow")]
+            return [Cmd(_d(*self.f_cur), "pet_stream" if pet else "follow")]
         if self.move is None:
             return []
         intent, l, r, end = self.move

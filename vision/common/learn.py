@@ -20,6 +20,7 @@ import json
 import math
 
 import gesture as g
+import pet as P
 
 # ---- features ------------------------------------------------------------------
 CHAINS = [[0, 1, 2, 3, 4], [0, 5, 6, 7, 8], [0, 9, 10, 11, 12], [0, 13, 14, 15, 16],
@@ -229,6 +230,9 @@ class Brain:
         self.cand_count = 0
         self.hold_off: str | None = None
         self.cooldown_until = -1e18
+        self.pet = P.Pet(cfg, self.ctl)                # pet mode (GESTURES.md section 8)
+        if cfg["pet_start"] >= 0.5:
+            self.ctl.mode = g.PET_MODE
 
     # -- learned poses -> controller ----------------------------------------------
     def _sync(self) -> None:
@@ -288,6 +292,7 @@ class Brain:
     def _start_teach(self, t: float, via: str) -> list:
         out = self.ctl._stop(t, "teach")
         self.ctl.mode = g.GESTURE_MODE
+        self.pet.sync(t)                               # teaching leaves pet mode
         self.state, self.state_t = COUNTDOWN, t
         self.released = via == "button"
         self.gap = self.nudges = self.palm_count = 0
@@ -362,6 +367,12 @@ class Brain:
         self.match = (best, conf, name is not None)
         return rule, (name if name is not None else g.UNKNOWN)
 
+    def server_stop(self, t: float) -> None:
+        """tars_motor refused a D (S from another client, watchdog, tip, bump, guard):
+        drop the move/stream so it never restarts by itself. Sends nothing."""
+        if self.ctl.need_stop or self.ctl.move is not None or self.ctl.f_active:
+            self.ctl._stop(t, "server_stop")
+
     def button(self, t: float, kind: str) -> list:
         if kind == "forget":
             out = self.ctl._stop(t, "teach") if self.state != IDLE else []
@@ -399,7 +410,12 @@ class Brain:
                     label = g.UNKNOWN
                 else:
                     self.hold_off = None
-            return self.ctl.on_frame(t, label, feat)
+            out = self.pet.sync(t)
+            if self.pet.active:
+                out += self.pet.on_frame(t, label, feat)
+            else:
+                out += self.ctl.on_frame(t, label, feat)
+            return out + self.pet.sync(t)
 
         # ---- teaching: the controller only ever sees palm (stop) or unknown ----
         self.label = rule
@@ -467,4 +483,7 @@ class Brain:
         out = self.ctl.tick(t)
         if self.state != IDLE:
             out += self._teach_tick(t)
+        else:
+            out += self.pet.sync(t)
+            out += self.pet.tick(t)
         return out

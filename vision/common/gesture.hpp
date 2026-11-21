@@ -22,7 +22,7 @@ inline const char *NO_HAND = "no_hand", *UNKNOWN = "unknown", *PALM = "palm", *F
                   *POINT_UP = "point_up", *POINT_DOWN = "point_down",
                   *POINT_LEFT = "point_left", *POINT_RIGHT = "point_right", *PEACE = "peace",
                   *TEACH = "teach";
-inline const char *GESTURE_MODE = "gesture", *FOLLOW_MODE = "follow";
+inline const char *GESTURE_MODE = "gesture", *FOLLOW_MODE = "follow", *PET_MODE = "pet";
 inline const char *STOP = "stop", *FORWARD = "forward", *BACK = "back",
                   *TURN_LEFT = "turn_left", *TURN_RIGHT = "turn_right";
 
@@ -55,7 +55,15 @@ inline const std::vector<std::string> &conf_keys() {
         "learn_cooldown_ms", "learn_builtin_frac", "learn_similar_frac", "learn_max_classes",
         "learn_k", "learn_augment", "learn_jitter", "learn_angle_weight",
         "learn_thr_mult", "learn_thr_min", "learn_thr_max",
-        "feedback_speed", "feedback_ms", "nudge_ms", "feedback_led_beep"};
+        "feedback_speed", "feedback_ms", "nudge_ms", "feedback_led_beep",
+        "pet_in_cycle", "pet_start", "pet_exit_ms", "pet_trick_frames", "pet_gap_frames",
+        "pet_sleep_frames", "pet_wave_window_ms", "pet_wave_amp", "pet_wave_swings",
+        "pet_send_ms", "pet_settle_ms", "pet_come_size", "pet_come_max_fwd", "pet_come_max_ms",
+        "pet_body_ms", "pet_happy_ms", "pet_sad_ms", "pet_look_ms", "pet_max_seg_ms", "pet_max_speed",
+        "pet_bored_ms", "pet_look_every_ms", "pet_sleep_after_ms",
+        "pet_energy_start", "pet_energy_rest", "pet_energy_decay_per_s", "pet_happy_boost",
+        "pet_greet_boost", "pet_come_boost", "pet_sad_drop", "pet_excited",
+        "pet_speed_min", "pet_speed_max", "pet_seed"};
     return k;
 }
 
@@ -172,6 +180,13 @@ inline std::optional<Feat> hand_features(const Landmarks *lmp, double aspect) {
     double s = 0;
     for (int i : PALM_POINTS) s += (*lmp)[i].x;
     return Feat{s / 5.0, dist(*lmp, WRIST, MIDDLE_MCP, aspect)};
+}
+
+// Held peace sign cycles GESTURE -> FOLLOW -> PET (if pet_in_cycle) -> GESTURE.
+inline std::string next_mode(const std::string &mode, const Config &c) {
+    if (mode == GESTURE_MODE) return FOLLOW_MODE;
+    if (mode == FOLLOW_MODE && c["pet_in_cycle"] >= 0.5) return PET_MODE;
+    return GESTURE_MODE;
 }
 
 inline double clampd(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -303,9 +318,10 @@ public:
             if (label == cand) cand_count++;
             else { cand = label; cand_count = 1; }
         }
+        // In PET mode the pet layer owns the peace sign (flash = trick, hold = leave).
         if (label == PEACE) {
-            if (cand_count >= c["mode_frames"] && toggle_armed && t >= mode_cooldown_until) {
-                std::string nm = mode == GESTURE_MODE ? FOLLOW_MODE : GESTURE_MODE;
+            if (mode != PET_MODE && cand_count >= c["mode_frames"] && toggle_armed && t >= mode_cooldown_until) {
+                std::string nm = next_mode(mode, c);
                 append(out, stop(t, "mode_" + nm));
                 mode = nm;
                 toggle_armed = false;
@@ -320,6 +336,7 @@ public:
             toggle_armed = true;
         }
         if (mode == FOLLOW_MODE) append(out, follow_frame(t, label, feat));
+        else if (mode == PET_MODE) append(out, pet_frame(t, label));
         else append(out, gesture_frame(t, label));
         append(out, tick(t));
         return out;
@@ -329,15 +346,17 @@ public:
         if (last_frame_t && t - *last_frame_t >= c["frame_timeout_ms"] &&
             (need_stop || has_move || f_active))
             return stop(t, "camera_timeout");
-        if (mode == FOLLOW_MODE) {
-            if (!f_active || t - last_send < c["follow_send_ms"]) return {};
-            double dt = std::fmin(t - last_send, 2 * c["follow_send_ms"]) / 1000.0;
+        if (mode == FOLLOW_MODE || (mode == PET_MODE && f_active)) {
+            bool pet = mode == PET_MODE;
+            double send_ms = pet ? c["pet_send_ms"] : c["follow_send_ms"];
+            if (!f_active || t - last_send < send_ms) return {};
+            double dt = std::fmin(t - last_send, 2 * send_ms) / 1000.0;
             last_send = t;
             double step = c["follow_slew_per_s"] * dt;
             f_cur_l = toward(f_cur_l, f_tgt_l, step);
             f_cur_r = toward(f_cur_r, f_tgt_r, step);
             need_stop = true;
-            return {Cmd{fmt_d(f_cur_l, f_cur_r), "follow"}};
+            return {Cmd{fmt_d(f_cur_l, f_cur_r), pet ? "pet_stream" : "follow"}};
         }
         if (!has_move) return {};
         if (t >= move_end) return start_seg(t, move_intent);
@@ -422,6 +441,20 @@ private:
                 segs = segments_for(intent);
                 return start_seg(t, intent);
             }
+        }
+        return {};
+    }
+
+    // Safety floor under PET mode; pet.hpp decides the behaviour (see gesture.py).
+    std::vector<Cmd> pet_frame(double t, const std::string &label) {
+        if (label == NO_HAND) {
+            if (miss >= c["follow_grace_frames"] && f_active) return stop(t, "lost");
+            return {};
+        }
+        if (label == PALM) {
+            int n = cand_count;
+            if (n == (int)c["stop_frames"] || (n > c["stop_frames"] && (need_stop || has_move || f_active)))
+                return stop(t, "palm");
         }
         return {};
     }

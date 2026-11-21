@@ -4,10 +4,12 @@
 //   F <t_ms> <aspect> <n> x0 y0 z0 ... x(n-1) y(n-1) z(n-1)     (n = 0: no hand)
 //   T <t_ms>
 //   B <t_ms> teach|forget                                      (Uno button)
+//   K <t_ms>                                                   (tars_motor refused a D: server_stop)
 //   SAVE <path>   LOAD <path>   DB
 //   BENCH <reps> <aspect> x0 y0 z0 ... (21 pts): time features + k-NN -> "BENCH <us/frame>"
-// stdout, per F: "L <label> <mode> <state>" then "> <text>|<reason>" per command,
-// then "E <event>" per teach event; T/B: commands + events; DB: one line per class.
+// stdout, per F: "L <label> <mode> <state> <pet state> <energy>" then "> <text>|<reason>"
+// per command, then "E <event>" per teach event and "P <event>" per pet event;
+// T/B: commands + events; DB: one line per class.
 #include <chrono>
 #include <cstdio>
 #include <iostream>
@@ -23,6 +25,8 @@ static void dump(Brain &b, const std::vector<tars::Cmd> &cmds) {
     for (auto &c : cmds) std::printf("> %s|%s\n", c.text.c_str(), c.reason.c_str());
     for (auto &e : b.events) std::printf("E %s\n", e.c_str());
     b.events.clear();
+    for (auto &e : b.pet.events) std::printf("P %s\n", e.c_str());
+    b.pet.events.clear();
 }
 
 int main() {
@@ -48,12 +52,18 @@ int main() {
                 lm[i] = {std::stod(x), std::stod(y), std::stod(z)};
             }
             auto cmds = b->on_frame(t, n ? &lm : nullptr, aspect);
-            std::printf("L %s %s %s\n", b->label.c_str(), b->ctl.mode.c_str(), b->state.c_str());
+            std::printf("L %s %s %s %s %.6f\n", b->label.c_str(), b->ctl.mode.c_str(), b->state.c_str(),
+                        b->pet.state.c_str(), b->pet.energy);
             dump(*b, cmds);
         } else if (op == "T") {
             std::string ts;
             in >> ts;
             dump(*b, b->tick(std::stod(ts)));
+        } else if (op == "K") {
+            std::string ts;
+            in >> ts;
+            b->server_stop(std::stod(ts));
+            dump(*b, {});
         } else if (op == "B") {
             std::string ts, kind;
             in >> ts >> kind;
