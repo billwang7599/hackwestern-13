@@ -26,7 +26,7 @@ sys.path.insert(0, HERE)
 import teleop  # noqa: E402
 from teleop import HoldDrive  # noqa: E402
 
-BIN = os.path.join(HERE, "..", "pi", "build", "tars_motor_host")
+BIN = os.environ.get("TARS_MOTOR_BIN") or os.path.join(HERE, "..", "pi", "build", "tars_motor_host")
 checks = failures = 0
 
 

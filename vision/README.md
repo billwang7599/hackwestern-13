@@ -5,14 +5,23 @@ Two modes, switched with a held peace sign ✌️:
 - **GESTURE**: ✋ stop · 👍/☝️ step forward · ✊/👇/👎 step back · 👈/👉 turn 30°
 - **FOLLOW**: the rover steers toward your hand and drives until it's at
   arm's length. ✋ stops it, and losing the hand stops it.
+- **TEACH** 🤙 (hold 2 s, or the Uno button): show it a pose it has never seen,
+  pick an action by showing an existing gesture, and from then on that pose
+  drives the robot. It learns on the Pi in seconds, with no retraining, and it
+  says "don't know" to poses it wasn't taught. [GESTURES.md §7](GESTURES.md#7-teach-a-new-pose-on-the-spot-no-screen-no-laptop)
+
+**At runtime the robot is completely local:** Pi + camera + Uno. No laptop,
+screen, keyboard or controller. `qnx/autostart/` starts everything at boot.
+The Mac app is a dev and tuning tool only.
 
 The rules and every number are in **[GESTURES.md](GESTURES.md)** and
 **[gesture.conf](gesture.conf)**, shared by all three apps:
 
 ```
-camera ─▶ MediaPipe HandLandmarker ─▶ classify ─▶ Controller ─▶ TCP :5555 ─▶ tars_motor (pi/) ─▶ Uno ─▶ wheels
-          (21 points, 1 hand)          (label)    (mode, debounce,        D l r / S / VIS
-                                                   moves, follow, fail-safes)
+camera ─▶ MediaPipe HandLandmarker ─▶ classify ─▶ learned k-NN ─▶ Controller ─▶ TCP :5555 ─▶ tars_motor (pi/) ─▶ Uno ─▶ wheels
+          (21 points, 1 hand)          (rules)    (only if rules   (mode, debounce,     D l r / S / VIS / LED / BEEP
+                                                   say unknown)     moves, follow,       ◀── STATUS btn_teach= (Uno button)
+                                        └──── teach state machine ─┘ fail-safes)
 ```
 
 | App | Runs on | Camera | Status |
@@ -48,7 +57,9 @@ The window shows the mode (GESTURE blue / FOLLOW yellow), the label it sees,
 the hand skeleton and the two wheel bars. In FOLLOW it also shows the centre
 deadband and the current vs target hand size. The bottom line shows fps,
 inference ms, camera→command ms and the last palm→STOP ms.
-Keys: `q` quit · `space` stop · `m` switch mode · `p` pause.
+Keys: `q` quit · `space` stop · `m` switch mode · `p` pause · `t` teach (= Uno button) · `f` forget all.
+While teaching, a banner shows the step. The bar under the title shows the nearest
+learned pose and its confidence. Green means accepted; red means UNKNOWN, and the white tick is the 0.5 cutoff.
 
 Tune without editing files: `--set stable_frames=3 --set follow_target_size=0.25`.
 Copy the values you like into `gesture.conf`.
@@ -63,7 +74,10 @@ printf 'STATUS\n' | nc 127.0.0.1 5555                          # shows vis=… s
 **Tests:**
 ```sh
 python3 vision/tests/test_gesture.py            # 38 unit tests: classifier, steps, follow, mode toggle
-python3 vision/tests/test_parity.py             # Python vs C++ (gesture.hpp): identical output
+python3 vision/tests/test_learn.py              # 35: invariance, few-shot, rejection, teach state machine (fake motor)
+python3 vision/tests/test_parity.py             # Python vs C++ (gesture.hpp + learn.hpp): identical output + JSON
+vision/.venv/bin/python vision/tests/test_runtime_teach.py   # real runtime: ticker, button polling, save/reload
+python3 vision/tests/bench_learn.py             # µs per frame for the learned-pose classifier
 vision/tests/check_cpp_syntax.sh                # tars_gesture.cc type-checks (stub MediaPipe headers)
 vision/.venv/bin/python vision/tests/e2e_desktop.py   # real MediaPipe on real hand photos -> stub server
 make -C pi test                                  # server incl. hard-stop S + VIS (116 checks)
@@ -107,6 +121,47 @@ and the server's `STATUS` shows `stop_ms=… vis=follow vis_fps=… vis_cam_ms=�
 landmarker runs about 10–20 fps at 320 px wide. QNX's own face-detection
 codelab reports 25 fps on the Pi 5 with a lighter model. If it's under 8 fps:
 `--set infer_width=256`, and `--set stable_frames=3` so moves still feel snappy.
+
+## 2b. Teach demo (the judges' script)
+
+1. "TARS knows a few hand signals. Let's teach it one it's never seen. You make one up."
+2. The judge holds 🤙 for 2 s. TARS wiggles: "I'm listening." It nudges once a second
+   while counting down; the judge lowers the 🤙 and gets their pose ready.
+3. Beep-beep: the judge holds their invented pose (say 🤘, or three fingers) for ~2 s.
+   TARS does a double wiggle: "got it, what does it mean?"
+4. The judge shows ✌️ (= spin). TARS spins once to confirm.
+5. The judge makes their pose again and TARS spins. It works from any distance, any tilt, either hand.
+6. "Now a random hand": a half-curled claw, or a different made-up pose. **Nothing happens.**
+   (Desktop overlay: red UNKNOWN bar.) It knows what it doesn't know.
+7. Try to teach it a fist: the "no" head-shake (`too_similar fist`). Built-ins are protected, and ✋ always stops it.
+8. Pitch line: *"Learned on the robot, in seconds, from 40 frames; classifying a frame takes
+   16 µs in C++ (640 µs in Python) for 4 learned poses on top of MediaPipe, inside QNX's
+   real-time loop with a hard ✋ stop."* (Mac numbers from `tests/bench_learn.py`; measure on the Pi for the slide.)
+
+Reset between judges: hold 🤙 for 5 s (forget all), or long-press the Uno button.
+Poses persist across reboots in `vision/learned.json` (`deploy.sh` never overwrites it).
+
+## 2c. Autostart at boot (no laptop)
+
+```sh
+# Pi, once
+cd /data/home/qnxuser/vision/qnx/autostart
+cp tars.env.example tars.env && vi tars.env   # MOTOR_ARGS (Uno serial device), GESTURE_ARGS (--unit N), CAMERA_CMD
+sh tars_autostart.sh run        # foreground test: starts camera service (if set), tars_motor, gesture app
+sh install_autostart.sh         # adds "sh .../tars_autostart.sh start &" to the image's boot script
+# reboot, then
+sh tars_autostart.sh status     # motor: running / gesture: running + last log lines
+```
+- Each process runs under a supervisor loop: if it exits it's restarted (1 s, 2 s … 10 s backoff),
+  and the restart is logged in `logs/autostart.log`.
+  While the vision app is down, tars_motor's 500 ms watchdog has already stopped the wheels.
+- Logs: `/data/home/qnxuser/logs/{motor,gesture,camera,autostart}.log`, rotated at ~2 MB.
+- `CAMERA_CMD`: paste the exact `sensor …` command that made `camera_example3_viewfinder`
+  work. Leave it empty if the image already starts the sensor service at boot.
+- **Not verified on QNX yet:** which boot script your image runs. The installer tries
+  `/etc/rc.d/rc.local` then `/system/etc/startup/post_startup.sh`. If neither exists it
+  says so; add the line to whatever your image runs at boot. The supervisor itself was tested on macOS `sh`.
+- Paths in `tars.env` must not contain spaces (the default `/data/home/qnxuser` is fine).
 
 ## 3. Pi: C++ app (`qnx/cpp`)
 
@@ -158,6 +213,11 @@ for GESTURE mode. Wi-Fi adds roughly 5–30 ms of `link_rtt`, which is shown in 
 | creeps when the hand is still | raise `follow_size_deadband` |
 | `[link] … ERR tipped over` | stand it up, send `RESET` (`python laptop/tars_client.py`) |
 | turns aren't 30° | `desktop/calibrate_turn.py --host tars.local` (12 turns = 360°) |
+| 🤙 doesn't start teaching | check `gesture_view.jpg`/log `[see] teach`. The pinky must be clearly out and the other three folded. Or use the Uno button |
+| new pose always `too_similar …` | it reads as that built-in in ≥ 30% of frames. Pick something more different, or raise `learn_builtin_frac` |
+| learned pose fires on other hands | lower `learn_thr_max` / `learn_thr_mult`; check the `match=pose1:0.xx` values in `[status]` |
+| learned pose not recognised | re-teach in the demo lighting; raise `learn_thr_min` a little (0.45 → 0.6) |
+| robot never stops after reboot | `sh qnx/autostart/tars_autostart.sh stop` (or ✋, always) |
 
 ## 6. Layout
 
@@ -167,13 +227,17 @@ GESTURES.md           the rules
 get_model.sh          hand_landmarker.task (float16, 7.8 MB, sha256-checked)
 common/gesture.py     classifier + controller (pure Python)
 common/gesture.hpp    the same in C++17 (header-only)
+common/learn.py       teach-on-the-spot: features, k-NN, teach state machine (Brain), JSON
+common/learn.hpp      the same in C++17
+learned.json          learned poses (created on the robot; not in git)
 common/app.py         MediaPipe runtime + ticker + status/VIS (Python apps)
 common/link.py        TCP client with reconnect / dry run
 desktop/              gesture_drive.py (Mac), calibrate_turn.py, requirements.txt
 qnx/python/           tars_gesture.py, qnx_cam.py (+ vendor/qnx_camera_helper.py from setup_pi.sh)
 qnx/cpp/              tars_gesture.cc, BUILD, build_on_pi.sh
 qnx/deploy.sh         Mac → Pi copy;  qnx/setup_pi.sh  one-time Pi setup
-tests/                unit, parity, C++ syntax, end-to-end (handgen.py makes synthetic hands)
+qnx/autostart/        tars_autostart.sh (boot supervisor), tars.env, install_autostart.sh
+tests/                unit, learn, parity, runtime-teach, bench, C++ syntax, end-to-end (handgen.py makes synthetic hands)
 ```
 
 ### Server hook (pi/src/main.c)

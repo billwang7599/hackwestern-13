@@ -4,8 +4,8 @@ Three implementations follow these rules exactly:
 
 | Where | Code |
 |---|---|
-| Mac prototype (`desktop/gesture_drive.py`) and QNX Python app (`qnx/python/tars_gesture.py`) | `common/gesture.py` |
-| QNX C++ app (`qnx/cpp/tars_gesture.cc`) | `common/gesture.hpp` (line-for-line port) |
+| Mac prototype (`desktop/gesture_drive.py`) and QNX Python app (`qnx/python/tars_gesture.py`) | `common/gesture.py` + `common/learn.py` |
+| QNX C++ app (`qnx/cpp/tars_gesture.cc`) | `common/gesture.hpp` + `common/learn.hpp` (line-for-line ports) |
 
 `tests/test_parity.py` runs the Python and C++ versions on the same ~50,000
 lines of random sessions and fails on the first differing label, mode or
@@ -35,9 +35,10 @@ Checked in this order:
 | `palm` | all 4 fingers extended |
 | `peace` | index + middle extended, ring + pinky folded |
 | `point_up/down/left/right` | only index extended (others folded); direction of index knuckle → tip (undecided → `unknown`) |
+| `teach` 🤙 | index + middle + ring folded, pinky extended (thumb ignored, any rotation) |
 | `thumbs_up` / `thumbs_down` | all 4 folded, thumb out, thumb knuckle → tip points up / down |
 | `fist` | all 4 folded (and not a thumbs up/down) |
-| `unknown` | anything else (half-curled fingers, in-between poses) |
+| `unknown` | anything else (half-curled fingers, in-between poses) → then the **learned poses** are tried (§7) |
 
 ## 2. Modes
 
@@ -124,3 +125,89 @@ So "**sees your palm → motors stopped**" ≈ `vis_stop_ms + stop_ms`. MediaPip
 inference time is reported separately (`infer=`). On the Mac (M-series,
 localhost) the end-to-end test measured `palm->stop` ≈ 6 ms and server
 `stop_ms` 2–16 ms. **The Pi numbers are still to be measured.**
+
+## 7. Teach a new pose on the spot (no screen, no laptop)
+
+Code: `common/learn.py` / `learn.hpp` (`Brain`, which wraps the Controller).
+Everything is done with hands and the robot's own body as the display.
+
+### Trigger: 🤙 shaka, held `teach_hold_ms` (2 s)
+
+Why shaka and not 🤘: the rule is "index, middle, ring folded + pinky out". No
+built-in uses the pinky alone, and it doesn't involve the index finger. A sloppy
+🤘 (index + pinky) degrades into ☝️ **point**, which would fire a move. A sloppy
+🤙 degrades into ✊ (a back step, and only after 4 stable frames; the hold is 2 s).
+Up to `learn_gap_frames` (3) flicker frames inside the hold are tolerated.
+The robot holds still while 🤙 is up, in both modes. Teaching always returns to GESTURE mode.
+
+Or press the **Uno button** (short press). See the interface below.
+
+### Flow
+
+| Step | You do | Robot does (feedback) |
+|---|---|---|
+| armed | hold 🤙 2 s (or press the button) | `S`, `LED teach`, `BEEP 1`, small left-right wiggle |
+| countdown (`teach_countdown_ms` = 3 s) | drop the 🤙, get your new pose ready | one small forward-back **nudge** + `BEEP 1` per second (it's still at the end, so the camera is steady) |
+| record | hold your **new** pose until it's done (`learn_frames` = 40 hand frames) | `LED rec`, `BEEP 2`, no motion |
+| check | | reject → `LED no`, `BEEP 3`, **"no" shake** (left, right, left). Reasons: `too_similar <builtin>` if ≥ `learn_builtin_frac` (30%) of frames already read as a built-in (incl. 🤙 and ✋); `too_similar poseN` if an existing learned pose accepts ≥ `learn_similar_frac` of them; `full` (`learn_max_classes`); `no_hand` (no 40 frames within `learn_record_timeout_ms`) |
+| assign | show an **existing** gesture for `learn_assign_frames` frames: 👉 turn right · 👈 turn left · 👍/☝️ forward · ✊/👎/👇 back · ✌️ spin · nothing for `learn_assign_ms` (5 s) = wiggle | on entry: `LED ok`, `BEEP 2`, **double wiggle** |
+| confirm | | performs the chosen action **once**; the pose is saved as `pose1`, `pose2`, … |
+
+- **✋ cancels** teaching in any step (`learn_cancel_frames` = 3 frames). The `S` goes out on the first palm frame, as always.
+- **Forget all:** keep holding 🤙 through the whole countdown (2 + 3 = 5 s), or long-press the
+  Uno button. Feedback: `LED forget`, `BEEP 4`, double back-forward "bow".
+- A second short button press during teaching cancels it.
+- After teaching, the gesture you used to pick the action is ignored until you change pose
+  (so ✌️ for spin doesn't then toggle FOLLOW, and 👍 doesn't step forward). Then there's a
+  `learn_cooldown_ms` pause before 🤙 can trigger again.
+- `LED`/`BEEP` are optional tars_motor commands. If the server answers `ERR`, nothing
+  breaks (the motions carry the meaning). `feedback_led_beep = 0` stops sending them.
+- During teach feedback the hand-lost rule is paused (the motions are < 1 s and self-ending).
+  ✋, the camera-stall stop and the server watchdog still apply.
+
+### Recognition (few-shot k-NN, on the Pi)
+
+1. **Features** (57 numbers): the 21 points (x aspect-corrected, z ignored) with the wrist at 0,
+   scaled so wrist→middle knuckle = 1, rotated so that vector points up, mirrored so the
+   index knuckle is left of the pinky knuckle (left hands = right hands; palm/back the same).
+   Plus the 15 finger-joint bend angles × `learn_angle_weight`. So position, size, in-plane
+   rotation and handedness don't matter.
+2. **Examples:** the 40 recorded frames + `learn_augment` (2) jittered copies each
+   (±`learn_jitter`, deterministic RNG so Python and C++ store the same thing).
+3. **Accept radius per pose** = `learn_thr_mult` × (mean + 2 sd) of its own leave-one-out
+   k-NN distances, clamped to [`learn_thr_min`, `learn_thr_max`].
+4. **Per frame:** only when the built-in rules say `unknown`. Score each pose = mean distance
+   to its `learn_k` (3) nearest examples; ratio = score / radius. Best ratio ≤ 1 → that pose,
+   otherwise `unknown` (no action). Confidence = 1 / (1 + ratio²), so 0.5 = on the radius.
+5. The pose label then goes through the **same debounce / cooldown / hold rules** as a
+   built-in (§3). Its intent is `<action>@<pose>`, e.g. `spin@pose1`.
+
+**Safety:** built-in rules run first and learned poses are only consulted on `unknown`, so a
+learned pose can never shadow ✋ (or any built-in). In every teach state the Controller still
+receives ✋ as ✋. Learned actions end with `S` and obey hand-lost, ✋ and camera-stall like any move.
+
+**Actions:** `forward`/`back`/`turn_left`/`turn_right` (same as the built-ins); `spin` =
+`turn_ms × spin_turns` (360° once the turn is calibrated); `wiggle` = 5 swings of `wiggle_ms`;
+`arms` = `G wave` then wait `arms_ms` (set in JSON); `custom` = a list of segments in the JSON:
+`["D", l, r, ms]` or `["X", "<line>", 0, ms]`.
+
+**Storage:** `vision/learned.json` (`--learned`), written atomically on every change and
+loaded at start: `{"version":1, "next_seed":N, "classes":[{"name","action","seed","thr","custom","examples":[[57 floats]...]}]}`.
+Jittered copies are rebuilt from `seed` on load.
+
+**Timing** (`tests/bench_learn.py`, this Mac, features + k-NN per frame, 120 examples/pose):
+1 pose 6 µs C++ / 160 µs Python · 4 poses 16 µs / 640 µs · 8 poses 32 µs / 1.3 ms.
+MediaPipe inference is milliseconds, so this is noise either way. The Pi 5 should be ~2–4× slower (not measured).
+
+### Uno button interface (for the owners of `uno/` and `pi/`; not implemented by vision/)
+
+- **Uno → tars_motor** (serial line): `BTN TEACH` on a short press, `BTN FORGET` on a long
+  press (≥ 2 s, the Uno decides). Debounce on the Uno.
+- **tars_motor**: count them and add two fields to `STATUS`: `btn_teach=<n> btn_forget=<n>`
+  (cumulative counters since start, space-separated `key=value` like the other fields).
+- **vision app**: polls `STATUS` every 200 ms. The first reply sets the baseline, and any
+  increase = one press. If the fields are missing, it just doesn't poll buttons
+  (`--no-buttons` turns polling off).
+- Optional **feedback commands** the vision app sends (reply `OK`, or `ERR` if unsupported):
+  `LED <teach|rec|ok|no|forget|off>` and `BEEP <n>` (n short beeps). A buzzer on a spare Uno pin is enough.
+- The vision app's `VIS` mode field shows `teach:<state>` while teaching (≤ 15 chars).

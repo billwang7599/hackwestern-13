@@ -4,6 +4,9 @@ For someone at the robot with a fresh clone who hasn't seen this repo before.
 Work top to bottom and tick things off. Each step says what you should see.
 If you don't see it, go to [Troubleshooting](#7-troubleshooting) before moving on.
 
+**Everything on the robot is QNX native:** `tars_motor` is C, built with `qcc`
+(§1a). There's no Python on the Pi. Python only runs on the laptop (teleop).
+
 **What you're testing:** a two-wheel rover. Each wheel is a **28BYJ-48 stepper
 on a ULN2003 board**, driven by an **Arduino Uno**. The Uno is plugged into a
 **Raspberry Pi 5 running QNX** over USB. On the Pi, `tars_motor` listens on TCP
@@ -24,8 +27,7 @@ down what you see.
 
 ```sh
 git clone https://github.com/billwang7599/hackwestern-13.git
-cd hackwestern-13
-git checkout kothar/stepper-wheels      # or whatever branch the lead tells you
+cd hackwestern-13                       # everything is on main; no branch switch needed
 ```
 
 You need:
@@ -65,7 +67,7 @@ make -C pi deploy PI_HOST=qnxuser@<pi-ip>
 
 **Optional first check with no hardware:** `make -C pi host && make -C pi test`
 builds a Mac/Linux version and runs the server tests (about a minute). It
-should end with `210/210 checks passed`.
+should end with `270/270 checks passed`.
 
 ### 1b. Uno firmware — on the laptop, Uno plugged into the laptop
 
@@ -93,6 +95,44 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt          # pygame-ce (+ anthropic, unused here)
 cd ..
 ```
+
+### 1d. Pi on Wi-Fi
+
+Use a **phone hotspot** (venue Wi-Fi usually has a captive
+portal or client isolation, and then the laptop can't reach the Pi). Put the
+laptop on the same hotspot. Before booting the QNX Quick Start (QSTI) image, put
+the SD card in the laptop and, on the FAT32 boot partition, edit or create
+`wpa_supplicant.conf`:
+```
+network={
+    ssid="YourHotspotName"
+    psk="hotspot-password"
+    key_mgmt=WPA-PSK
+}
+```
+Boot the Pi with no USB keyboard or mouse plugged in. Use 2.4 GHz /
+"Maximize Compatibility" on an iPhone hotspot if it doesn't join.
+Edits to this file also apply on later boots.
+
+**2. Find the Pi's IP.** Check the hotspot's connected-devices list, or with a
+screen/serial console on the Pi run `ifconfig bcm0` (bcm0 is the Wi-Fi
+interface; it should show an `inet` address). Then:
+```sh
+ssh qnxuser@<pi-ip>          # QSTI default user qnxuser (password qnxuser, see the QSTI docs)
+```
+
+**3. Run `tars_motor`.** Plug the Uno into the Pi's blue USB port, deploy (§1a), then:
+```sh
+ssh qnxuser@<pi-ip> '/data/home/qnxuser/tars_motor -b uno'     # default /dev/serusb1; use -d /dev/serusbN if it's elsewhere
+```
+If it can't open the Uno, run `ls /dev/ser*` on the Pi and see "No serial device on the Pi" in §7.
+
+**4. Drive from the laptop** (wheels in the air first):
+```sh
+python3 laptop/tars_client.py <pi-ip>     # ping + STATUS: expect 'backend': 'uno', 'ready': 1
+python3 laptop/teleop.py <pi-ip>          # click the window, hold W/A/S/D, Space = stop
+```
+`wheel_cal.py` (§3 step 5) works the same way: `TARS_HOST=<pi-ip> python3 laptop/wheel_cal.py move 100`.
 
 ---
 
@@ -262,6 +302,76 @@ you'll demo on.
 Expected speed: about **4 cm/s** at 12 RPM with 65 mm wheels, so crossing
 1 m takes about 25 s. Bigger wheels go faster but push less.
 
+### Step 7 — voice (speech commands, all on the Pi)
+
+Details and the full command list are in [`voice/README.md`](../voice/README.md).
+Everything here runs on QNX in C; no laptop is needed once it's deployed.
+
+**7a. Mic check first (10 min). If this fails, voice is off; tell the lead.**
+```sh
+make -C voice mic_test                          # laptop: QNX build (Docker + ~/qnx800), no whisper needed
+ssh qnxuser@<pi-ip> 'mkdir -p voice'
+scp voice/build/qnx/mic_test qnxuser@<pi-ip>:voice/
+ssh qnxuser@<pi-ip>
+cd voice
+./mic_test -l                                   # lists cards/devices; the C270 should show up with [capture]
+./mic_test                                      # records 3 s from the default capture device -> mic.wav
+./mic_test -d 1,0                               # ...or pick card 1 device 0 from the list
+```
+You should see a level meter jump while you talk and `VERDICT: OK`. Then listen to it on the laptop:
+`scp qnxuser@<pi-ip>:voice/mic.wav . && afplay mic.wav` (Linux: `aplay mic.wav`).
+- `can't open the mic`: is io-audio running (`pidin | grep io-audio`)? Is the webcam on a **blue USB 3 port**? Try every card from `-l`.
+- `pure silence`: wrong device, or the mic is muted. `WEAK`: speak closer; a headset/lapel USB mic is much better on a loud floor.
+- Write the working `-d card,dev` down. It goes into `voice.conf` as `input = qnx:card,dev`.
+
+**7b. Build and deploy voice**
+```sh
+voice/fetch_whisper.sh && voice/get_model.sh    # laptop, once: whisper.cpp v1.9.5 source + 31 MB model
+make -C voice                                   # QNX build of whisper.cpp + tars_voice (a few minutes the first time)
+make -C voice deploy PI_HOST=qnxuser@<pi-ip>    # -> /data/home/qnxuser/voice/ (binary, model, voice.conf, start script)
+```
+This QNX build has never been run. If it fails, see "Not tested yet" in `voice/README.md` for likely fixes.
+
+**7c. Try it** (`tars_motor` running from Step 2, robot on blocks first)
+```sh
+cd ~/voice
+./tars_voice -c voice.conf --dry                # prints what it heard + what it WOULD send; nothing moves
+./tars_voice -c voice.conf                      # for real
+```
+Say, about 30 cm from the mic: **"TARS, turn left"** → `[heard] "TARS, turn left." ... TURN -30`, the
+robot beeps and turns. Then try "TARS, go forward", "TARS, turn right ninety", **"Stop!"** (no "TARS" needed),
+and "TARS, go to the trash can" (→ `[goto] GOTO trash can`; it just logs `unreachable` until the go-to
+controller on port 5557 is running, and that's fine). Speech without "TARS" is ignored. **Press the Uno
+button** and you have 4 s to give a command without saying "TARS" (use this on a noisy floor).
+
+Write down the `stt=…ms` numbers from the `[heard]` lines (whisper time per command) with and without
+YOLO running. They go in the CPU table in PLAN.md.
+
+**7d. Keep it running / at boot:** `./start_voice.sh &` restarts it if it crashes and logs to
+`~/voice/logs/voice.log`. For boot, add this to the startup script after the `tars_motor` line (§5):
+`(cd /data/home/qnxuser/voice && ./start_voice.sh >/dev/null 2>&1 &)`
+
+### Step 8: go-to ("TARS, go to the trash can")
+
+Needs Steps 2–5 working. Details are in `goto/README.md`.
+
+1. **On the laptop, build:**
+   - `goto/get_model.sh` writes `goto/models/yolo_world.onnx` and `labels.txt`.
+   - `make -C goto` builds `goto` with qcc.
+   - `make -C goto detect ORT_ROOT=...` needs ONNX Runtime built for QNX first (see `goto/README.md`).
+   - `make -C goto deploy PI_HOST=qnxuser@<pi-ip>` copies everything to the Pi.
+2. **Camera alone:** run `./detect --camera camapi:1 --nomodel --stdout --no-udp --frames 20`. You should get 20 lines with the right `w`/`h`.
+   - If `camera_open failed`: check that the QNX `sensor` service is running and that its config lists the USB webcam.
+3. **Model alone:** run `./detect --camera camapi:1 --stdout --no-udp` and hold a cup or bottle in view. You should see a `"label":"cup"` box, and stderr prints fps every 5 s. Expect about 5–10 fps.
+4. **Wheels in the air:** start `tars_motor`, `./goto -c goto.conf -o objects.txt &` and `./detect &`, then from the laptop:
+   `printf 'GOTO cup\n' | nc <pi-ip> 5557`. It beeps once.
+   - With the cup out of view: the wheels do 30° turns. After 12 of them (a full circle) it beeps three times.
+   - With the cup in view: the wheels spin forward, and the faster side is the side the cup is on.
+5. **On the floor:** put a trash can 1–2 m away and `GOTO trash can`. It should turn toward it, crawl up (about 4 cm/s) and stop about 0.5 m away with one beep.
+   - **Watch:** `printf 'STATUS\n' | nc <pi-ip> 5557` shows `state= h= bearing=`.
+   - **If it stops too early or too late:** change `arrive_h_frac` in `goto.conf`. It's the box height ÷ frame height at the spot where you want it to stop.
+6. **Stop test:** during an approach, `printf 'S\n' | nc <pi-ip> 5555`. The wheels stop at once, and goto STATUS shows `result=cancelled:stop`.
+
 ---
 
 ## 4. Useful commands (TCP, port 5555)
@@ -276,6 +386,13 @@ Expected speed: about **4 cm/s** at 12 RPM with 65 mm wheels, so crossing
 | `LED off\|teach\|rec\|ok\|no\|forget` or `LED 0..3`, `BEEP n` | status LED (teach = slow blink, rec/ok = solid, no/forget = fast blink) / n beeps |
 | `STATUS` | everything: `why=`, `tipped=`, `move=`, `move_done=`, `btn_teach=`, `btn_forget=` … |
 | `RESET` | clear tip-over latch |
+| `WHO <name>` | label this client in the log (voice sends `WHO voice`) |
+| `MODE gesture\|follow\|toggle\|teach` | request for the vision app (shown in `STATUS mode_req= mode_seq=` and in the reply to `VIS`) |
+
+Several clients can be connected at once (voice, vision, YOLO go-to, teleop). **`S` from any client
+stops everything**, and for 1.5 s (`-H` ms) other clients' non-zero `D` is refused (`ERR held`), so a
+steering stream can't undo someone else's stop. A client disconnecting only stops a drive or move
+**it** started. `STATUS` shows `clients=` and `hold_ms=`.
 
 ## 5. Start at boot (optional)
 
@@ -286,6 +403,8 @@ To start it at boot, add this to the image's startup script:
 ```sh
 /data/home/qnxuser/tars_motor -b uno -d /dev/serusb1 > /tmp/tars_motor.log 2>&1 &
 ```
+
+Voice (Step 7d) starts after it: `(cd /data/home/qnxuser/voice && ./start_voice.sh >/dev/null 2>&1 &)`.
 
 The right startup file depends on the QSTI image. Look for `/etc/rc.d/rc.local`
 or ask the lead. Not tested yet.

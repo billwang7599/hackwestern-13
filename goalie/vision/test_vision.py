@@ -2,11 +2,20 @@
 
     .venv/bin/python -m pytest -q test_vision.py
 
-Runs against mock_pi.py on a free localhost port.
+Runs against mock_pi.py on a free localhost port. To run the server tests
+against the REAL C server instead (goalie/pi, `make -C ../pi host` first):
+
+    GOALIE_SERVER_BIN=../pi/build/goalie_motor_host .venv/bin/python -m pytest -q test_vision.py
+
+(test_link_reconnects_after_server_restart always uses mock_pi: it restarts
+the server in-process.)
 """
 from __future__ import annotations
 
+import os
+import signal
 import socket
+import subprocess
 import time
 
 import cv2
@@ -21,11 +30,35 @@ from goalie_link import GoalieError, GoalieLink, LinkDown, parse_status
 from taunt import CANNED, Taunter
 
 
+REAL_BIN = os.environ.get("GOALIE_SERVER_BIN")
+
+
 @pytest.fixture
 def server():
-    srv, port = mock_pi.start(0)
-    yield srv, port
-    mock_pi.stop(srv)
+    if not REAL_BIN:
+        srv, port = mock_pi.start(0)
+        yield srv, port
+        mock_pi.stop(srv)
+        return
+    port = free_port()
+    proc = subprocess.Popen([REAL_BIN, "-b", "stub", "-p", str(port)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t_end = time.monotonic() + 5
+    while True:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+            break
+        except OSError:
+            if time.monotonic() > t_end or proc.poll() is not None:
+                proc.kill()
+                raise
+            time.sleep(0.05)
+    yield proc, port
+    proc.send_signal(signal.SIGINT)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 
 def free_port():

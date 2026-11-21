@@ -1,0 +1,491 @@
+# TARS voice: training phrases for the intent classifier.
+#
+# Format: one phrase per line,   intent<TAB>phrase
+#   - intents: forward back left right turn_around stop goto spin status unknown
+#   - write it the way a person says it, WITHOUT the wake word ("TARS, ..." is added automatically)
+#   - lowercase, no punctuation needed; train.py adds capitals, punctuation and whisper mistakes
+#   - {n} = a turn amount ("90", "forty five degrees", "a bit" ...)
+#   - {d} = a distance   ("half a metre", "two steps", "50 centimeters" ...)
+#   - {o} = an object from objects.txt ("trash can", "bin", "chair" ...)
+#   - '#' starts a comment. A phrase may only be listed under ONE intent (train.py checks).
+#
+# After editing:   python3 voice/intent/train.py      (retrains, rewrites intent_model.h, runs the tests)
+# Try it:          python3 voice/intent/try.py
+#
+# About 1 in 5 phrases of 2+ words (picked by a fixed hash) is held out of
+# training and used to measure accuracy on phrasings the model has never seen.
+# One-word phrases are always trained on.
+
+# ---------------------------------------------------------------- forward -> MOVE +mm (default 300)
+forward	forward
+forward	go forward
+forward	move forward
+forward	go
+forward	go ahead
+forward	move ahead
+forward	drive forward
+forward	drive
+forward	ahead
+forward	forward please
+forward	go straight
+forward	straight ahead
+forward	come forward
+forward	come here
+forward	come to me
+forward	come over here
+forward	onward
+forward	onwards
+forward	keep going
+forward	keep moving
+forward	advance
+forward	move up
+forward	go forwards
+forward	forwards
+forward	roll forward
+forward	head forward
+forward	keep going forward
+forward	step forward
+forward	walk forward
+forward	go on
+forward	proceed
+forward	move it
+forward	let's go
+forward	get going
+forward	move forward {d}
+forward	go forward {d}
+forward	forward {d}
+forward	drive {d} forward
+forward	go {d}
+forward	go straight {d}
+forward	take {d} forward
+forward	go ahead {d}
+forward	move ahead {d}
+forward	move forward a bit
+forward	a little forward
+forward	inch forward
+forward	scoot forward
+forward	nudge forward
+
+# ---------------------------------------------------------------- back -> MOVE -mm
+back	back
+back	go back
+back	move back
+back	backward
+back	backwards
+back	reverse
+back	back up
+back	go backwards
+back	move backwards
+back	drive back
+back	back off
+back	retreat
+back	step back
+back	roll back
+back	move away
+back	get back
+back	go in reverse
+back	back away
+back	reverse please
+back	backpedal
+back	get away from me
+back	give me some space
+back	go back {d}
+back	move back {d}
+back	back up {d}
+back	reverse {d}
+back	back {d}
+back	take {d} back
+back	move backward {d}
+back	back up a bit
+back	a little back
+back	scoot back
+back	walk back
+
+# ---------------------------------------------------------------- left -> TURN -deg (default 30)
+left	left
+left	turn left
+left	go left
+left	rotate left
+left	turn to the left
+left	left turn
+left	to your left
+left	to the left
+left	go to the left
+left	go to your left
+left	veer left
+left	bear left
+left	hang a left
+left	take a left
+left	make a left
+left	face left
+left	look left
+left	pivot left
+left	swing left
+left	steer left
+left	head left
+left	turn counterclockwise
+left	rotate anticlockwise
+left	turn left a bit
+left	a little left
+left	slightly left
+left	left a little
+left	turn left {n}
+left	rotate left {n}
+left	left {n}
+left	go left {n}
+left	spin left {n}
+left	turn {n} left
+left	turn {n} to the left
+
+# ---------------------------------------------------------------- right -> TURN +deg
+right	right
+right	turn right
+right	go right
+right	rotate right
+right	turn to the right
+right	right turn
+right	to your right
+right	to the right
+right	go to the right
+right	go to your right
+right	veer right
+right	bear right
+right	hang a right
+right	take a right
+right	make a right
+right	face right
+right	look right
+right	pivot right
+right	swing right
+right	steer right
+right	head right
+right	turn clockwise
+right	rotate clockwise
+right	turn right a bit
+right	a little right
+right	slightly right
+right	right a little
+right	turn right {n}
+right	rotate right {n}
+right	right {n}
+right	go right {n}
+right	spin right {n}
+right	turn {n} right
+right	turn {n} to the right
+
+# ---------------------------------------------------------------- turn_around -> TURN 180
+turn_around	turn around
+turn_around	turn round
+turn_around	spin around
+turn_around	about face
+turn_around	about turn
+turn_around	u turn
+turn_around	do a u turn
+turn_around	make a u turn
+turn_around	one eighty
+turn_around	do a one eighty
+turn_around	turn one eighty
+turn_around	face the other way
+turn_around	turn the other way
+turn_around	go the other way
+turn_around	turn back around
+turn_around	flip around
+turn_around	reverse direction
+turn_around	turn yourself around
+turn_around	look behind you
+turn_around	face behind you
+turn_around	half turn
+turn_around	face me
+
+# ---------------------------------------------------------------- stop -> S
+# The safety pass (intent.py STRONG_ROOTS / WEAK_STOP) already stops on
+# stop/halt/freeze/whoa (and no/wait/hold/enough/... after the wake word) before
+# the classifier runs; these phrases teach the classifier the rest.
+stop	stop
+stop	stop now
+stop	stop stop
+stop	halt
+stop	freeze
+stop	whoa
+stop	whoa stop
+stop	wait
+stop	wait stop
+stop	hold on
+stop	hold it
+stop	hold up stop
+stop	enough
+stop	that's enough
+stop	that's enough stop
+stop	no
+stop	no no
+stop	no no no
+stop	no stop
+stop	no wait
+stop	cancel
+stop	brake
+stop	stay
+stop	stay there
+stop	stay put
+stop	don't move
+stop	stop moving
+stop	stop it
+stop	please stop
+stop	stop please
+stop	stop right there
+stop	stop the robot
+stop	halt now
+stop	freeze right there
+stop	emergency stop
+stop	stop driving
+stop	okay stop
+
+# ---------------------------------------------------------------- goto -> "GOTO <object>" to the go-to controller (TCP 5557)
+# {o} = an object; train.py fills it from objects.txt (and with things NOT in
+# objects.txt, so "go to the kitchen" is still goto -> "don't know that object").
+goto	go to the {o}
+goto	go to {o}
+goto	drive to the {o}
+goto	drive over to the {o}
+goto	head to the {o}
+goto	head over to the {o}
+goto	head over to that {o}
+goto	go over to the {o}
+goto	go over to that {o}
+goto	move to the {o}
+goto	roll to the {o}
+goto	find the {o}
+goto	find a {o}
+goto	find me the {o}
+goto	find my {o}
+goto	find my backpack
+goto	go to the back pack
+goto	find my bag
+goto	go to my {o}
+goto	go get my {o}
+goto	where's my {o}
+goto	go find the {o}
+goto	go find a {o}
+goto	look for the {o}
+goto	search for the {o}
+goto	where is the {o}
+goto	take me to the {o}
+goto	bring me to the {o}
+goto	navigate to the {o}
+goto	approach the {o}
+goto	go up to the {o}
+goto	get to the {o}
+goto	go toward the {o}
+goto	go towards the {o}
+goto	drive up to that {o}
+goto	can you go to the {o}
+goto	please go to the {o}
+goto	visit the {o}
+goto	seek the {o}
+goto	hunt down the {o}
+goto	locate the {o}
+goto	go to that {o} over there
+goto	the {o} go there
+
+# ---------------------------------------------------------------- retired intents -> unknown
+# follow / gestures / teach were dropped as voice intents (MediaPipe is on the
+# back burner). Their phrases stay here as "unknown" so they're rejected safely
+# (LED no + BEEP 3) instead of being mistaken for a move.
+unknown	follow me
+unknown	follow
+unknown	follow mode
+unknown	come with me
+unknown	track me
+unknown	follow my hand
+unknown	start following
+unknown	follow me please
+unknown	chase me
+unknown	keep up with me
+unknown	follow along
+unknown	switch to follow mode
+unknown	follow my hand please
+unknown	tail me
+unknown	come follow me
+unknown	go into follow mode
+unknown	follow the hand
+unknown	you follow me
+unknown	stick with me
+unknown	gestures
+unknown	gesture mode
+unknown	gesture control
+unknown	watch my hand
+unknown	watch my hands
+unknown	back to gestures
+unknown	use gestures
+unknown	hand signals
+unknown	switch to gestures
+unknown	gesture
+unknown	no more following
+unknown	hand control
+unknown	go to gesture mode
+unknown	listen to my hands
+unknown	use hand signals
+unknown	gestures please
+unknown	normal mode
+unknown	switch to gesture mode
+unknown	back to gesture mode
+unknown	look at my hand
+unknown	teach
+unknown	learn
+unknown	learn this
+unknown	teach mode
+unknown	remember this
+unknown	learn a new gesture
+unknown	watch this
+unknown	let me teach you
+unknown	learn a gesture
+unknown	new gesture
+unknown	teach you a gesture
+unknown	learn this sign
+unknown	i will teach you
+unknown	teaching mode
+unknown	record a gesture
+unknown	learn this pose
+unknown	learn something new
+unknown	start learning
+unknown	memorize this
+
+# ---------------------------------------------------------------- spin -> TURN 360
+spin	spin
+spin	do a spin
+spin	do a full spin
+spin	spin in a circle
+spin	full circle
+spin	do a three sixty
+spin	three sixty
+spin	twirl
+spin	pirouette
+spin	do a little spin
+spin	spin all the way around
+spin	go in a circle
+spin	turn in a circle
+spin	rotate all the way
+spin	do a full turn
+spin	spin yourself
+spin	make a circle
+spin	do a twirl
+
+# ---------------------------------------------------------------- status -> STATUS + BEEP 2
+status	status
+status	status report
+status	how are you
+status	how are you doing
+status	are you okay
+status	report
+status	battery
+status	what's your status
+status	are you there
+status	check status
+status	system check
+status	are you working
+status	diagnostics
+status	health check
+status	you alive
+status	status check
+status	report status
+status	are you ready
+status	you good
+
+# ---------------------------------------------------------------- unknown -> nothing (LED no + BEEP 3 if the wake word was heard)
+# Chit-chat, crowd noise and whisper's favourite hallucinations on silence.
+unknown	hello
+unknown	hi there
+unknown	what time is it
+unknown	nice robot
+unknown	lol
+unknown	thank you
+unknown	thanks for watching
+unknown	you
+unknown	that's so cool
+unknown	what is that
+unknown	where's the bathroom
+unknown	i'm hungry
+unknown	this is a robot
+unknown	hello everyone
+unknown	the judges are here
+unknown	can you hear me
+unknown	i don't know
+unknown	let's get pizza
+unknown	nice demo
+unknown	is it working
+unknown	what does it do
+unknown	how does it work
+unknown	look at that
+unknown	it's moving
+unknown	amazing
+unknown	oh my god
+unknown	who made this
+unknown	what's your name
+unknown	tell me a joke
+unknown	play some music
+unknown	open the door
+unknown	call mom
+unknown	the weather is nice
+unknown	turn on the lights
+unknown	go to sleep
+unknown	what
+unknown	um
+unknown	okay
+unknown	yes
+unknown	music
+unknown	applause
+unknown	blank audio
+unknown	silence
+unknown	the end
+unknown	see you later
+unknown	good morning
+unknown	i like your robot
+unknown	is that a raspberry pi
+unknown	what language is this
+unknown	turn
+unknown	turn turn
+unknown	turn the
+unknown	go to
+unknown	go to the
+unknown	find
+unknown	the
+unknown	and
+unknown	move it move it
+unknown	move
+unknown	can you dance
+unknown	sing a song
+unknown	make me a sandwich
+unknown	how much did it cost
+unknown	it's a rover
+unknown	write it down
+unknown	left the room
+unknown	a bit much
+unknown	i'll be right back
+unknown	the left one
+unknown	on the right side
+unknown	turn it off
+unknown	turn up the volume
+unknown	forward this email
+unknown	go figure
+unknown	go team
+unknown	following the instructions
+unknown	i follow you on twitter
+unknown	spin class
+unknown	status quo
+unknown	teach me
+unknown	learn to code
+unknown	nice gesture
+unknown	left over
+unknown	so what
+unknown	uh huh
+unknown	that's cute
+unknown	wow
+unknown	cool
+unknown	haha
+unknown	what's up
+unknown	where are the snacks
+unknown	is this the hardware track
+unknown	do you have a charger
+unknown	how long did this take
+unknown	can i take a picture
+unknown	good job guys
+unknown	what model is that

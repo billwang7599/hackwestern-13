@@ -107,7 +107,7 @@ def main() -> int:
     try:
         app = subprocess.run(
             [sys.executable, os.path.join(VISION, "desktop", "gesture_drive.py"),
-             "--video", video, "--headless", "--realtime", "--host", "127.0.0.1", "--port", str(port)],
+             "--video", video, "--headless", "--realtime", "--learned", "", "--host", "127.0.0.1", "--port", str(port)],
             capture_output=True, text=True, timeout=120)
         out = app.stdout
         st = status(port)

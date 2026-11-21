@@ -56,6 +56,7 @@ native: | build
 test: host
 	python3 test_server.py build/$(BIN)_host
 
+
 deploy: build/$(BIN)
 	scp build/$(BIN) $(PI_HOST):$(PI_DIR)/$(BIN)
 
