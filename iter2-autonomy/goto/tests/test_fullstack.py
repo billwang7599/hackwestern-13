@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -67,12 +68,22 @@ def check(ok: bool, what: str) -> None:
             print(f"  FAIL {what}")
 
 
+_handed_out: set[int] = set()
+
+
 def free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
+    # The scenarios run in parallel, so never hand the same number to two stacks.
+    # (A child binds it a moment later; that gap is still a race with other sockets,
+    # which is why a scenario that dies in setup must count as a FAIL, see main().)
+    with LOCK:
+        while True:
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            p = s.getsockname()[1]
+            s.close()
+            if p not in _handed_out:
+                _handed_out.add(p)
+                return p
 
 
 # ------------------------------------------------------------------ world
@@ -149,6 +160,8 @@ class Motor:
                 break
             except OSError:
                 time.sleep(0.02)
+        else:
+            raise RuntimeError(f"tars_motor never accepted on {self.port} (exit={self.p.poll()}, stderr={self.log[-3:]})")
         self.f = self.s.makefile("rw", encoding="ascii", newline="\n")
         self.lock = threading.Lock()
         self.cmd("WHO sim")
@@ -333,6 +346,8 @@ class Goto:
                 break
             except OSError:
                 time.sleep(0.02)
+        else:
+            raise RuntimeError(f"goto never accepted on {self.ctl} (exit={self.p.poll()}, log {self.logp})")
         self.f = self.s.makefile("rw", encoding="ascii", newline="\n")
         self.events: list[str] = []
         # a WATCH connection collects EVENT lines
@@ -645,6 +660,16 @@ SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion, "moved": sc_mov
              "visual": sc_visual_only, "voice": sc_voice}
 
 
+def run_scenario(name: str) -> None:
+    # An exception in a scenario thread used to vanish into stderr: its checks never
+    # ran, so the total shrank (24/24) and the suite still exited 0. Count it as a FAIL.
+    try:
+        SCENARIOS[name]()
+    except Exception as e:
+        traceback.print_exc()
+        check(False, f"{name}: scenario crashed before finishing its checks ({e!r})")
+
+
 def main() -> int:
     for b in (MOTOR, GOTO):
         if not os.path.exists(b):
@@ -655,7 +680,7 @@ def main() -> int:
     names = [only] if only else list(SCENARIOS)
     threads = []
     for n in names:                       # independent stacks on their own ports: run them together
-        t = threading.Thread(target=SCENARIOS[n])
+        t = threading.Thread(target=run_scenario, args=(n,))
         t.start()
         threads.append(t)
         time.sleep(0.5)
