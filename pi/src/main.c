@@ -2,7 +2,7 @@
  *
  * TCP line protocol (one command per line, reply "OK ..." or "ERR <why>"):
  *   D <left> <right>     drive, each in [-1, 1] (must be resent < watchdog ms)
- *   S                    stop driving, cancel any gesture, halt both arms
+ *   S                    stop driving NOW (no slew), cancel any gesture, halt both arms
  *   G <name>             gesture: wave point shrug nod stance fold
  *   A <arm> <deg> [dps]  arm 0=left 1=right to an absolute angle -> "OK <deg>"
  *   HOME                 both arms to 0
@@ -12,6 +12,9 @@
  *   GESTURES             -> "OK wave point ..."
  *   PING                 -> "OK PONG" (also feeds the watchdog)
  *   STATUS               -> "OK <l> <r> <ms_since_cmd> <dist_m> <estop> key=val..."
+ *   VIS <mode> <fps> <cam_ms> <stop_ms> <label>
+ *                        report from the vision app (vision/), shown in STATUS as
+ *                        vis_*; does NOT feed the watchdog
  *   SIM T|B|READY [n]    stub backend only: inject a co-processor event (tests)
  *
  * Threads:
@@ -71,6 +74,14 @@ static struct timespec last_cmd;
 typedef struct { int set; float deg, dps; } arm_req_t;
 static arm_req_t arm_req[2];
 static int   req_halt, req_zero, req_level, req_stop_gesture, req_reset;
+static int   req_hard_stop;                /* S: zero the wheels this tick, no slew */
+static long long stop_rx_ms;              /* when that S arrived */
+static long  stop_ms = -1;                /* last S: received -> wheels commanded 0 */
+/* last VIS report from the vision app */
+static char  vis_mode[16] = "-", vis_see[24] = "-";
+static float vis_fps;
+static int   vis_cam_ms = -1, vis_stop_ms = -1;
+static long long vis_at_ms;
 static const gesture_t *req_gesture;
 static char  req_dev_gesture[48];         /* pico: device-side gesture */
 #define SIMQ 8
@@ -264,6 +275,9 @@ static void *control_thread(void *arg)
         memset(&arm_req, 0, sizeof arm_req);
         int halt = req_halt, zero = req_zero, level = req_level;
         int stop_g = req_stop_gesture, reset = req_reset;
+        int hard = req_hard_stop;
+        long long hard_rx = stop_rx_ms;
+        req_hard_stop = 0;
         const gesture_t *start_g = req_gesture;
         char dev_g[48];
         memcpy(dev_g, req_dev_gesture, sizeof dev_g);
@@ -284,8 +298,8 @@ static void *control_thread(void *arg)
                   : wd_tripped ? "watchdog" : "none";
         last_dist = dist;
         /* Hard stop on estop (no slew); smooth otherwise. */
-        out_l = estop ? tl : slew(out_l, tl);
-        out_r = estop ? tr : slew(out_r, tr);
+        out_l = (estop || hard) ? tl : slew(out_l, tl);
+        out_r = (estop || hard) ? tr : slew(out_r, tr);
         float l = out_l, r = out_r;
         int is_tipped = tipped;
         pthread_mutex_unlock(&lock);
@@ -313,6 +327,12 @@ static void *control_thread(void *arg)
         ctl_arm_model(dt);
 
         motor->drive(l, r);
+        if (hard) {
+            long ms = (long)(now_ms() - hard_rx);
+            pthread_mutex_lock(&lock);
+            stop_ms = ms;
+            pthread_mutex_unlock(&lock);
+        }
         if (dev_g[0] && motor->gesture) motor->gesture(dev_g);
 
         pthread_mutex_lock(&lock);
@@ -370,6 +390,8 @@ static void handle_line(char *line, char *reply, size_t rlen)
         pthread_mutex_lock(&lock);
         target_l = target_r = 0.0f;
         req_stop_gesture = req_halt = 1;
+        req_hard_stop = 1;
+        stop_rx_ms = now_ms();
         req_gesture = NULL;
         memset(&arm_req, 0, sizeof arm_req);
         feed_watchdog();
@@ -470,11 +492,32 @@ static void handle_line(char *line, char *reply, size_t rlen)
         long long bl = bump_until_ms - now_ms();
         snprintf(reply, rlen,
                  "OK %.2f %.2f %ld %.2f %d why=%s arm0=%.1f arm1=%.1f arm0_tgt=%.1f arm1_tgt=%.1f "
-                 "gesture=%s tipped=%d tilt=%d bump_ms=%lld bumps=%d ready=%d backend=%s\n",
+                 "gesture=%s tipped=%d tilt=%d bump_ms=%lld bumps=%d ready=%d backend=%s "
+                 "stop_ms=%ld vis=%s vis_fps=%.1f vis_cam_ms=%d vis_stop_ms=%d vis_see=%s "
+                 "vis_age_ms=%lld\n",
                  out_l, out_r, ms_since(&last_cmd), last_dist, estop, estop_why,
                  arm_pos[0], arm_pos[1], arm_tgt[0], arm_tgt[1], gesture_name,
-                 tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name);
+                 tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name,
+                 stop_ms, vis_mode, vis_fps, vis_cam_ms, vis_stop_ms, vis_see,
+                 vis_at_ms ? now_ms() - vis_at_ms : -1LL);
         pthread_mutex_unlock(&lock);
+    } else if (!strcasecmp(cmd, "VIS")) {
+        char m[16], see[24];
+        float fps;
+        int cam, stp;
+        if (sscanf(line, "%*s %15s %f %d %d %23s", m, &fps, &cam, &stp, see) != 5) {
+            snprintf(reply, rlen, "ERR usage: VIS <mode> <fps> <cam_ms> <stop_ms> <label>\n");
+            return;
+        }
+        pthread_mutex_lock(&lock);
+        memcpy(vis_mode, m, sizeof vis_mode);
+        memcpy(vis_see, see, sizeof vis_see);
+        vis_fps = fps;
+        vis_cam_ms = cam;
+        vis_stop_ms = stp;
+        vis_at_ms = now_ms();
+        pthread_mutex_unlock(&lock);
+        snprintf(reply, rlen, "OK\n");
     } else if (!strcasecmp(cmd, "SIM")) {
         char kind[16] = "";
         int v = 0;
@@ -499,7 +542,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
 static void *client_thread(void *arg)
 {
     int fd = (int)(long)arg;
-    char buf[512], reply[320];
+    char buf[512], reply[640];
     size_t used = 0;
 
     fprintf(stderr, "[net] client connected\n");

@@ -214,6 +214,26 @@ def test_stub() -> None:
         st = c.status()
         check(st["arm0"] == "0.0" and st["arm1"] == "0.0", f"folded {st}")
 
+        print("vision hook: S is a hard stop (no slew), VIS shows in STATUS")
+        drive_for(c, 1, 1, 0.4)               # slewed up to full (resending D)
+        st = c.status()
+        check(st["l"] > 0.9, f"drove up to full speed: {st}")
+        check(c.cmd("S") == "OK", "S")
+        time.sleep(0.05)                      # <= 2 ticks at 50 Hz
+        st = c.status()
+        check(st["l"] == 0.0 and st["r"] == 0.0, f"S zeroes wheels within one tick: {st['l']} {st['r']}")
+        check(0 <= int(st["stop_ms"]) <= 25, f"stop_ms = S received -> wheels 0 ({st['stop_ms']})")
+        check(st["vis"] == "-" and st["vis_age_ms"] == "-1", "no VIS yet")
+        check(c.cmd("VIS follow 14.5 52 61 fist") == "OK", "VIS accepted")
+        st = c.status()
+        check(st["vis"] == "follow" and st["vis_fps"] == "14.5" and st["vis_cam_ms"] == "52"
+              and st["vis_stop_ms"] == "61" and st["vis_see"] == "fist", f"VIS fields {st}")
+        check(c.cmd("VIS bad").startswith("ERR usage"), "VIS usage error")
+        age0 = int(c.status()["age"])
+        time.sleep(0.2)
+        c.cmd("VIS gesture 10 1 -1 no_hand")
+        check(int(c.status()["age"]) >= age0 + 150, "VIS does not feed the watchdog")
+
         print("cancel: S, A, and a new gesture")
         c.cmd("G point")
         time.sleep(0.4)

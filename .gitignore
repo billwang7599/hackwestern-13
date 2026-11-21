@@ -25,3 +25,11 @@ goalie/arduino/goalie/build/
 # tars uno
 uno/test/build/
 uno/tars/build/
+
+# vision
+vision/models/*.task
+vision/tests/build/
+vision/tests/assets/
+vision/qnx/python/vendor/
+vision/qnx/cpp/tars_gesture_cpu
+gesture_view.jpg

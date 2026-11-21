@@ -32,6 +32,7 @@ docker/   Ubuntu amd64 container with QNX Linux host tools (SDP mounted from Mac
 pi/       C motor server for QNX (Makefile: make / deploy / run / host / test)
 uno/      Arduino Uno firmware (uno/tars/tars.ino) + host unit tests (uno/test)
 laptop/   tars_client.py (lib), teleop.py, switch_teleop.py, voice.py (LLM brain)
+vision/   MediaPipe hand gestures + hand-follow, on the Pi under QNX (see vision/README.md)
 docs/     tars_build.md (slabs, power, wiring), tars_stub_run.txt (sample run)
 pico/     legacy MicroPython motor firmware (backend `-b pico`, if a Pico turns up)
 goalie/   separate project ("Beat the Goalie"), see goalie/README.md
@@ -163,7 +164,7 @@ get it, the server warns and continues at default priority.
 | Command | Meaning | Reply |
 |---|---|---|
 | `D <l> <r>` | wheel speeds in [-1, 1] (clamped). **Resend at least every 500 ms** | `OK`, or `ERR tipped…` / `ERR bumped…` |
-| `S` | stop wheels, cancel gesture, halt arms | `OK` |
+| `S` | stop wheels **now** (no slew), cancel gesture, halt arms | `OK` |
 | `G <name>` | gesture: `wave` `point` `shrug` `nod` `stance` `fold` (non-blocking) | `OK <expected_ms>` |
 | `A <arm> <deg> [dps]` | arm 0=left 1=right to an absolute angle (+ = forward, ±135, ≤60 °/s) | `OK <clamped_deg>` |
 | `HOME` | both arms to 0 | `OK` |
@@ -172,7 +173,8 @@ get it, the server warns and continues at default priority.
 | `RESET` | clear the tip-over latch (refused while the Uno still reports tipped) | `OK` / `ERR still tipped` |
 | `GESTURES` | | `OK wave point …` |
 | `PING` | keepalive | `OK PONG` |
-| `STATUS` | | `OK <l> <r> <ms_since_cmd> <dist_m> <estop> why=… arm0=… arm1=… gesture=… tipped=… tilt=… bump_ms=… bumps=… ready=… backend=…` |
+| `STATUS` | | `OK <l> <r> <ms_since_cmd> <dist_m> <estop> why=… arm0=… arm1=… gesture=… tipped=… tilt=… bump_ms=… bumps=… ready=… backend=… stop_ms=… vis=… vis_fps=… vis_cam_ms=… vis_stop_ms=… vis_see=… vis_age_ms=…` |
+| `VIS <mode> <fps> <cam_ms> <stop_ms> <label>` | report from the hand-gesture app (`vision/`); shown in STATUS, doesn't feed the watchdog | `OK` |
 | `SIM T\|B\|READY [n]` | **stub backend only**: inject an Uno event (tests) | `OK` |
 | anything else | | `ERR <reason>` |
 
