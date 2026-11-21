@@ -89,3 +89,21 @@ from +x. Converting to ARKit (y up) or goto's frames is the world sim's job.
 
 Say exactly what ran: the sim, a recording, the real Uno on USB, the iPhone. The bench
 proving something in sim does not mean the car does it.
+
+## Sim world + `run_sim.py` (`bench/world/`)
+
+`python3 bench/run_sim.py [--room NAME] [--free-ports] [--car auto|virtual|stub] [--relay]` starts
+the virtual car (`bench/car/launch.py`, if present) or the **stub car**, the real `tars_motor`
+(`-b uno -d <car link>` or `-b stub`, guard on `-g`), `goto` (memory seeded from the room),
+`tars_voice` (if built and its model exists), `mission_relay` (`--relay`), the world sim and
+`bench.py --target sim`, and prints what runs on which port. Ctrl-C: `S` + `CANCEL`, then
+every child stops. Logs go to a temp run directory (printed).
+
+run_sim hands the bench these environment variables: `BENCH_WORLD_CTL` (5592), `BENCH_WORLD_STATE`
+(5593), `BENCH_SUPERVISOR` (an ephemeral run_sim port: `{"op": "restart_goto", "memory"}` gives a fresh
+goto + `POSE RESET` when a room loads), `BENCH_CAR_CTL` (5591), `BENCH_CAR_TRUTH` (a copy of the truth
+stream, for the car plugin with the stub car), `BENCH_CAR_KIND` (`virtual` | `stub`).
+
+The 2D panel (`world2d`) is a course editor: place boxes, walls, people and goto objects, drag,
+rotate (`[` `]`), delete, save/load layouts. A fixed **SIM** badge is always on the page. Room
+format, world control (5592) and world state (5593): `bench/world/README.md`.
