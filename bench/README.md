@@ -98,7 +98,12 @@ EN+IN driver, kit pins), compiled **unchanged** for the Mac with the firmware te
 - **Time:** `millis()`/`micros()` from the real clock.
 - **Pins → physics** (`physics.h`, 1 ms steps): L298N coast/brake/drive, a sagging battery,
   deadband (start vs keep-rolling), first-order lag, side gains, slip, drift, skid-steer
-  track, walls (stall plus a bump spike).
+  track, walls (stall plus a bump spike). **4WD** (`profiles/sm11.json`, the real car): two TT
+  motors in parallel per channel (twice the current and torque), the L298N drop growing with
+  current, a per-channel current limit, tyre scrub in a spin (a 4-wheel skid-steer must drag
+  its tyres sideways), a rectangular body whose corners sweep the half-diagonal in a spin,
+  and a **motor-caused brownout** (battery on-phase sag under `uno_resets_below_v` for
+  `brown_hold_ms` resets the Uno). `profiles/sm11_2wd.json` is the old 2WD car.
 - **Accelerometer:** physics → MPU6050 registers, so tip/bump run the firmware's own code.
 - **Button / LED / buzzer** on the kit pins (D13 / D3 / D12).
 
@@ -106,7 +111,9 @@ EN+IN driver, kit pins), compiled **unchanged** for the Mac with the firmware te
 make -C bench/car                                 # build/vuno (host clang)
 python3 bench/car/launch.py --motor 5555          # car + host tars_motor -b uno, ports 5590/5591
 python3 bench/car/launch.py ctl '{"fault":"tip"}' # one control datagram
-python3 bench/tests/test_car.py                   # through the real tars_motor + wheel_cal.py
+make -C bench/car test                            # physics.h unit tests + brownout grid (no firmware)
+python3 bench/tests/test_car.py                   # through the real tars_motor + wheel_cal.py (2WD; --profile sm11 for 4WD)
+python3 bench/tests/test_car_4wd.py               # 2WD vs 4WD: MOVE/TURN/slow TURN, uncalibrated and after wheel_cal.py
 python3 bench/tests/test_car_plugin.py            # plugins/car.py routes + topic
 bench/car/hil.sh                                  # the REAL Uno on this Mac's USB (untested)
 ```
@@ -126,6 +133,10 @@ optionally `car.start_motor(dev, port, guard_port=…)`, and finally `car.stop()
 `fw` ("run"/"reset"), `boots`, `plugged`, `host_open`, `pty`, `faults` {tip, lift_left,
 lift_right, brownout, unplug}, `stalls`/`stall_max_ms` (main-loop gaps over 50 ms, meaning a busy laptop).
 `wl`/`wr` are wheel **surface** speeds: a lifted wheel spins, a stalled one reads ~0.
+4WD extras: `batt_v_min` (now, PWM on-phase: both channels conducting), `batt_v_low` (lowest
+since the last `{"stats_reset": true}` on 5591), `ch_a` [l, r] channel amps, `ilim` [l, r]
+(at `ch_limit_a`), `stall` [l, r] (driven but under the start/keep voltage: buzzing in place),
+`sag_resets` (brownouts the motors caused), `motors_per_side`.
 
 **Faults:**
 - `push` (`vx`,`vy` body m/s, default 0.3 sideways)
@@ -142,10 +153,39 @@ the file's `measure_when_the_car_arrives` lists how to replace each one (wheel_c
 dc-move/dc-spin, docs/PI_TEST.md §2b and Step 5). They are tuned so the firmware's own
 defaults make sense: duty 0.45 (`DC_MAX_DUTY`) gives 150 mm/s, duty 0.30 (`DC_MIN_DUTY`)
 keeps a rolling wheel going but can't start one, so the 0.8 × 40 ms kick does that. The
-skid-steer track (0.20 m, from `test_dc_car.py`) makes an **uncalibrated** `TURN` under-turn
-(D 1 spins ~68°/s here vs the firmware's default 120), as a real car would before
+skid-steer track (2WD: 0.20 m, from `test_dc_car.py`) makes an **uncalibrated** `TURN` under-turn
+(2WD: D 1 spins ~68°/s here vs the firmware's default 120), as a real car would before
 `wheel_cal.py dc-spin`. Live changes: `{"set": …}` or the panel sliders; nothing is saved.
 The firmware's EEPROM survives resets and unplugs, but not a restart of `vuno`.
+
+**4WD parameters** (all `measured: false`; defaults keep a 2WD circle car exactly as before):
+`motors_per_side` 2, `driver_drop_v` 1.3 + `driver_r_ohm` 1.2 × channel A (L298N VCEsat vs
+current), `ch_limit_a` 2.0 (L293D-style board: 0.6), `track_m` 0.155, `wheelbase_m` 0.13,
+`mass_kg` 0.85 (kit + Pi + iPhone), `scrub_mu` 0.4, `motor_n_per_v` 0.55, `length_m` 0.255,
+`width_m` 0.18, `brown_hold_ms` 5, `tau_s` 0.14 (÷ motors per side). `track_eff_m` 0 =
+derive `track_m × (1 + (wheelbase/track)²)` = 0.264 m. Spin scrub per motor =
+`scrub_mu × mass × g × wheelbase / (2 × track) / (motors_per_side × motor_n_per_v)` volts on
+top of `v_keep`/`v_start` (1.27 V here), scaled by how much of a spin the command is.
+
+**What 4WD predicts, with these guesses** (`make -C bench/car test`, `test_car_4wd.py`):
+- **The firmware can't spin the loaded 4WD car in place.** `TURN 90` at D 1 (kick 0.8 × 40 ms,
+  then `DC_MAX_DUTY` 0.45) turns ~1°, the slow turn (0.36) the same; the lowest spin duty that
+  turns from rest is ~0.88 (duty 1.0: ~94°/s). Straight driving is fine. `wheel_cal.py dc-spin`
+  can't calibrate it: at 0° it says "measured amount must be > 0" (slow: "the slow turn
+  stalled: raise DC_SLOW_TURN_DUTY"); a few degrees ends in a SPEEDCAL usage traceback (the
+  scaled deg/s is under SPEEDCAL's 20). A bare kit on a slick floor (0.45 kg,
+  mu 0.2) turns at D 1 (~22°/s) but its slow turn still stalls. Measure this first when the
+  car arrives.
+- **Brownout:** none on a 7.4 V pack with 0.30 Ω (lowest 6.64 V on a duty-1 spin start,
+  6.73 V on a firmware TURN; 4WD stall 1.2 A per channel, under the L298N's 2 A). A flat pack
+  in a weak holder (7.0 V, 0.5 Ω) resets the Uno on a duty-1 spin start (5.91 V); the
+  firmware's TURN on it sits at 6.01 V, right on the 6.0 V guess. With the Pi's USB plugged
+  in, the Uno R3 switches to USB power below ~6.6 V on VIN and should not reset at all
+  (`uno_resets_below_v` 0).
+- **Corners:** a spin 3 cm from a wall clips it with a corner (shoved ~8 mm, a ~2.4 g spike:
+  over the firmware's 1.2 g bump threshold). The old circle body never touched it.
+- `sim GOTO` on `sm11` inherits the spin stall: use `run_sim.py --profile sm11_2wd` for
+  software demos until the real car says otherwise.
 
 **Determinism:** noise comes from `--seed`, but the firmware runs on the real clock, so two
 runs agree statistically, not bit for bit. A busy laptop shows up in `stalls`.
