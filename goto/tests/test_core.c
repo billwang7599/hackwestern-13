@@ -178,8 +178,8 @@ static void test_search_and_align(void)
     frame("trash can", 0.5, 0.2, 0.6);
     advance(0.5);
     CHECK(S.st == ST_SEARCH_TURN, "frames during the turn don't count");
-    const goto_act *k = find(ACT_DRIVE);
-    CHECK(k && k->a == 0 && k->b == 0, "D 0 0 keepalive during TURN");
+    CHECK(!find(ACT_DRIVE) && goto_sm_wants_status(&S),
+          "no D during a TURN (goto.c PINGs the deadman while wants_status; a zero D is refused under guard)");
     goto_sm_move_status(&S, T, 6, "done", "-");
     CHECK(S.st == ST_SEARCH_TURN, "status of another move id is ignored");
     goto_sm_move_status(&S, T, 7, "done", "-");
@@ -786,6 +786,350 @@ static void test_memory_cfg(void)
     CHECK(!strcmp(c.memory_path, "memory.txt") && c.memory_drive_mm == 0, "defaults: memory.txt, no blind driving");
 }
 
+
+/* ===================================================== map-guided GOTO (nav) */
+static nav_t *N;
+static goto_mem MM;
+static double PX, PZ, PYAW;                   /* the fake robot, nav frame */
+static int crossed_occ, reverse_moves, legs;
+
+static void set_free_rect(double x0, double z0, double x1, double z1, int v)
+{
+    for (double x = x0 + 0.05; x < x1; x += 0.1)
+        for (double z = z0 + 0.05; z < z1; z += 0.1) {
+            int ix, iz;
+            if (nav_world_to_cell((float)x, (float)z, &ix, &iz)) nav_set_cell(N, ix, iz, v);
+        }
+}
+static void put_robot(double x, double z, double yaw) { PX = x; PZ = z; PYAW = yaw; nav_set_pose(N, (float)x, (float)z, (float)yaw, 1); }
+
+static int add_inst(double wx, double wz, int status)
+{
+    int i = goto_mem_sight(&MM, &C, "trash can", wx * 1000, wz * 1000, 0, 1000, 0.8, S.wall_base + T);
+    MM.e[i].has_w = 1; MM.e[i].wx = wx; MM.e[i].wz = wz; MM.e[i].status = status;
+    return i;
+}
+
+static void map_setup(void)
+{
+    reset_sm();
+    if (!N) N = nav_new();
+    nav_reset(N);
+    nav_set_robot_radius(N, 0.35f);
+    goto_mem_init(&MM);
+    goto_sm_set_memory(&S, &MM, 1e6);
+    goto_sm_set_nav(&S, N);
+    goto_sm_pose(&S, T, 1, 0, 0, 0, 0);       /* memory has a (motor) pose */
+    crossed_occ = reverse_moves = legs = 0;
+}
+
+/* execute queued TURN/MOVE legs on the fake robot until the SM stops issuing them */
+static int run_legs(int max)
+{
+    int id = 100;
+    for (int n = 0; n < max; n++) {
+        const goto_act *a = find(ACT_TURN);
+        const goto_act *m = find(ACT_MOVE);
+        if (!a && !m) return n;
+        if (a) PYAW -= a->a * M_PI / 180;
+        else {
+            if (m->a < 0) reverse_moves++;
+            double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            PX = nx; PZ = nz;
+        }
+        legs++;
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);                         /* the camera keeps streaming */
+        nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
+        goto_sm_move_status(&S, T, id, "done", "-");
+    }
+    return max;
+}
+static int had_event(const char *prefix, const char *log) { return strstr(log, prefix) != NULL; }
+static char EV[4000];
+static void grab_events(void)
+{
+    for (int i = 0; i < S.n_act; i++)
+        if (S.act[i].kind == ACT_EVENT && strlen(EV) + strlen(S.act[i].text) + 2 < sizeof EV) {
+            strcat(EV, S.act[i].text);
+            strcat(EV, "|");
+        }
+}
+static int run_legs_ev(int max)
+{
+    int id = 500;
+    for (int n = 0; n < max; n++) {
+        grab_events();
+        const goto_act *a = find(ACT_TURN);
+        const goto_act *m = find(ACT_MOVE);
+        if (!a && !m) return n;
+        if (a) PYAW -= a->a * M_PI / 180;
+        else {
+            if (m->a < 0) reverse_moves++;
+            double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            PX = nx; PZ = nz;
+        }
+        legs++;
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);                         /* the camera keeps streaming */
+        nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
+        goto_sm_move_status(&S, T, id, "done", "-");
+    }
+    return max;
+}
+static void look_empty(int n) { for (int i = 0; i < n; i++) { advance(0.12); frame(NULL, 0, 0, 0); } }
+
+static void test_map_route_around_wall(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(0, 1.9, 3.0, 2.1, NAV_OCC);           /* wall across the room, gap on the right */
+    put_robot(0.55, 0.55, 0);                           /* facing +z, toward the wall */
+    add_inst(0.55, 3.45, MEM_FRESH);                    /* the bin is behind the wall */
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(had_event("remembered trash can #1", EV) && had_event("route trash can #1", EV), "GOTO -> RECALL -> PLAN: %s", EV);
+    CHECK(S.st == ST_FOLLOW_PATH && S.map_mode && S.path_n >= 2, "follows an A* path (%d corners)", S.path_n);
+    run_legs_ev(60);
+    CHECK(S.st == ST_LOOK, "path done + facing the spot -> LOOK (%s)", goto_state_name(S.st));
+    double d = hypot(PX - 0.55, PZ - 3.45);
+    CHECK(d >= 0.5 && d <= 0.95, "stopped on the approach ring (%.2f m)", d);
+    CHECK(PZ > 2.1, "went around the wall (z %.2f)", PZ);
+    CHECK(crossed_occ == 0, "no leg crossed an occupied cell (%d)", crossed_occ);
+    CHECK(reverse_moves == 0, "no reverse moves (guard only watches ahead)");
+    /* YOLO confirms and docks */
+    clear();
+    advance(0.4);
+    for (int i = 0; i < 2; i++) { advance(0.12); frame("trash can", 0.5, 0.3, 0.8); }
+    CHECK(S.st == ST_APPROACH, "seen at the spot -> APPROACH (%s)", goto_state_name(S.st));
+    for (int i = 0; i < 3; i++) { advance(0.12); frame("trash can", 0.5, 0.75, 0.95); }
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "ARRIVED (%s)", S.result);
+}
+
+static void test_map_gone_then_check_others(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(1.05, 1.05, 0);
+    add_inst(1.05, 1.85, MEM_FRESH);                    /* #1 right ahead, on the ring */
+    add_inst(3.2, 3.2, MEM_FRESH);                      /* #2 further away */
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    run_legs_ev(20);
+    CHECK(S.st == ST_LOOK && S.mem_id == 1, "nearest instance #1 first, LOOK at it (%s #%d)", goto_state_name(S.st), S.mem_id);
+    advance(0.4);
+    clear();
+    look_empty(4);
+    grab_events();
+    CHECK(had_event("not_there trash can #1", EV), "clear line of sight + nothing -> not_there (%s)", EV);
+    CHECK(MM.e[goto_mem_find_id(&MM, "trash can", 1)].status == MEM_STALE, "#1 fresh -> stale");
+    CHECK(had_event("remembered trash can #2", EV) && S.mem_id == 2 && S.st == ST_FOLLOW_PATH,
+          "CHECK_OTHERS -> routes to #2 (%s)", goto_state_name(S.st));
+    run_legs_ev(60);
+    CHECK(S.st == ST_LOOK && hypot(PX - 3.2, PZ - 3.2) < 0.95, "at #2 (%.2f m)", hypot(PX - 3.2, PZ - 3.2));
+}
+
+static void test_map_occluded_detour(void)
+{
+    map_setup();
+    nav_set_robot_radius(N, 0.25f);                     /* small footprint so the occluder fits in the test room */
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(2.05, 0.85, 0);
+    add_inst(2.05, 1.65, MEM_FRESH);                    /* on the ring, straight ahead */
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    run_legs_ev(10);
+    CHECK(S.st == ST_LOOK, "at the spot, looking (%s)", goto_state_name(S.st));
+    set_free_rect(1.9, 1.2, 2.2, 1.3, NAV_OCC);         /* something now stands between us and it */
+    advance(0.4);
+    clear();
+    look_empty(4);
+    grab_events();
+    CHECK(had_event("occluded trash can #1", EV) && had_event("detour trash can #1", EV), "LOOK fails, map occupied -> OCCLUDED -> DETOUR (%s)", EV);
+    CHECK(MM.e[goto_mem_find_id(&MM, "trash can", 1)].status == MEM_FRESH, "occluded: instance NOT downgraded");
+    CHECK(S.st == ST_FOLLOW_PATH && S.vantage, "routes to a vantage cell (%s)", goto_state_name(S.st));
+    run_legs_ev(40);
+    CHECK(S.st == ST_LOOK, "vantage reached, facing it, LOOK (%s)", goto_state_name(S.st));
+    CHECK(nav_line_clear(N, (float)PX, (float)PZ, 2.05f, 1.65f) == 1, "clear line of sight from the vantage cell");
+    CHECK(crossed_occ == 0, "detour legs avoid the occluder");
+    /* still nothing: already detoured -> now it's not there */
+    advance(0.4);
+    clear();
+    look_empty(4);
+    grab_events();
+    CHECK(had_event("not_there trash can #1", EV), "nothing from the vantage either -> not_there");
+}
+
+static void test_map_no_route_fails(void)
+{
+    map_setup();
+    C.search_max_deg = 60;                              /* short blind search at the end */
+    goto_sm_init(&S, &C, &O); goto_sm_set_memory(&S, &MM, 1e6); goto_sm_set_nav(&S, N); goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(2.5, 2.5, 4.0, 4.0, NAV_OCC);         /* the bin's corner is solid: no clear ring cell */
+    set_free_rect(3.2, 3.2, 3.3, 3.3, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.25, 3.25, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(had_event("reveal trash can #1", EV) && S.st == ST_FOLLOW_PATH, "no route yet -> reveal spin first (%s)", EV);
+    int spins = 0;
+    while (S.st == ST_FOLLOW_PATH && S.leg == 3 && spins < 20) { run_legs_ev(1); spins++; }
+    grab_events();
+    CHECK(spins == 12, "a full 360 of reveal turns, re-planning after each (%d)", spins);
+    CHECK(had_event("no_route trash can #1", EV), "still none: PLAN NO_GOAL/NO_PATH -> NEXT_CANDIDATE (%s)", EV);
+    CHECK(S.st == ST_SEARCH_TURN && !S.map_mode, "no other instance -> blind search (%s)", goto_state_name(S.st));
+    for (int k = 0; k < 4 && S.st != ST_IDLE; k++) {
+        if (S.st == ST_SEARCH_TURN) ack_turn(300 + k);
+        advance(0.4);
+        look_empty(4);
+    }
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found"), "then FAILED (%s)", S.result);
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+}
+
+static void test_map_stop_mid_path(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.0, 3.0, MEM_FRESH);
+    start("trash can");
+    CHECK(S.st == ST_FOLLOW_PATH, "following");
+    clear();
+    goto_sm_move_started(&S, T, 77, 2.0);
+    goto_sm_move_status(&S, T, 77, "aborted", "stop");      /* voice "stop" -> S from another client */
+    CHECK(S.st == ST_IDLE && !strncmp(S.result, "cancelled", 9), "S mid-path wins (%s)", S.result);
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.0, 3.0, MEM_FRESH);
+    start("trash can");
+    clear();
+    goto_sm_cancel(&S, T, "cancel");
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1 && !find(ACT_TURN) && !find(ACT_MOVE), "CANCEL mid-path: S, nothing else");
+}
+
+static void test_map_guard_and_replan(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.0, 3.0, MEM_FRESH);
+    goto_sm_guard(&S, T, 1, 5);
+    start("trash can");
+    run_legs(1);                                        /* one leg done */
+    CHECK(S.st == ST_FOLLOW_PATH, "following");
+    clear();
+    goto_sm_move_started(&S, T, 900, 2.0);
+    goto_sm_guard(&S, T, 0, 6);                         /* lidar_guard denies ... */
+    goto_sm_move_status(&S, T, 900, "aborted", "lidar_guard");   /* ... and tars_motor aborts the leg */
+    CHECK(S.st == ST_PLAN && S.replans == 1, "guard-aborted leg -> PLAN, waiting (%s)", goto_state_name(S.st));
+    for (int i = 0; i < 10; i++) { advance(0.1); frame(NULL, 0, 0, 0); }
+    CHECK(S.st == ST_PLAN, "no re-plan while the guard still denies");
+    goto_sm_guard(&S, T, 1, 6);
+    for (int i = 0; i < 7; i++) { advance(0.1); frame(NULL, 0, 0, 0); }
+    CHECK(S.st == ST_FOLLOW_PATH, "guard CLEAR -> re-plan from the current pose (%s)", goto_state_name(S.st));
+    /* the map changes under the route -> S + re-plan */
+    clear();
+    goto_sm_move_started(&S, T, 901, 3.0);
+    nav_pt_t w = S.path[S.path_i];
+    double mx = (PX + w.x) / 2, mz = (PZ + w.z) / 2;
+    set_free_rect(mx - 0.15, mz - 0.15, mx + 0.15, mz + 0.15, NAV_OCC);
+    advance(0.1);
+    CHECK(count(ACT_STOP) >= 1 && (S.st == ST_PLAN || S.st == ST_FOLLOW_PATH) && S.replans == 2,
+          "new obstacle on the route -> S + re-plan (%s, replans %d)", goto_state_name(S.st), S.replans);
+    /* too many: FAILED blocked */
+    for (int k = 0; k < 10 && S.st != ST_IDLE; k++) {
+        clear();
+        goto_sm_move_started(&S, T, 950 + k, 2.0);
+        goto_sm_move_status(&S, T, 950 + k, "aborted", "lidar_guard");
+        for (int i = 0; i < 7 && S.st == ST_PLAN; i++) { advance(0.1); frame(NULL, 0, 0, 0); }
+    }
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:blocked"), "re-plan limit -> FAILED blocked (%s)", S.result);
+}
+
+static void test_leased_approach(void)
+{
+    reset_sm();
+    goto_sm_guard(&S, T, 1, 41);
+    start("trash can");
+    advance(0.1);
+    for (int i = 0; i < 2; i++) { advance(0.12); frame("trash can", 0.5, 0.2, 0.6); }
+    CHECK(S.st == ST_APPROACH, "approach");
+    clear();
+    advance(0.15);
+    const goto_act *d = find(ACT_DRIVE);
+    CHECK(d && !strcmp(d->text, "41"), "APPROACH drives with DL lease = guard epoch (%s)", d ? d->text : "-");
+    clear();
+    goto_sm_guard(&S, T, 0, 42);                        /* guard denied: epoch moved on */
+    CHECK(count(ACT_STOP) == 1 && S.st == ST_LOOK, "epoch change ends the leg: S, LOOK (%s)", goto_state_name(S.st));
+    goto_sm_guard(&S, T, 1, 42);
+    clear();
+    for (int i = 0; i < 12; i++) { advance(0.12); frame("trash can", 0.5, 0.2, 0.6); }
+    d = find(ACT_DRIVE);
+    CHECK(S.st == ST_APPROACH && d && !strcmp(d->text, "42"), "a NEW leg after a fresh look gets the new lease (%s)", d ? d->text : "-");
+    /* DL refused while the target is close + centred = the guard stopped us at the target */
+    for (int i = 0; i < 3; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+    clear();
+    goto_sm_drive_refused(&S, T, "guard epoch changed");
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "guard stop at a big centred target = docked (%s)", S.result);
+    /* no guard on the server: plain D */
+    reset_sm();
+    start("trash can");
+    advance(0.1);
+    for (int i = 0; i < 2; i++) { advance(0.12); frame("trash can", 0.5, 0.2, 0.6); }
+    clear();
+    advance(0.15);
+    d = find(ACT_DRIVE);
+    CHECK(d && !d->text[0], "no guard_epoch from tars_motor -> plain D");
+}
+
+static void test_map_fallbacks(void)
+{
+    /* nav attached but no pose yet: the visual memory turn, unchanged */
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    goto_mem_sight(&MM, &C, "trash can", 1000, 1000, 45, 1414, 0.8, S.wall_base + T);
+    start("trash can");
+    CHECK(S.st == ST_MEM_TURN && !S.map_mode, "no nav pose -> visual memory turn (%s)", goto_state_name(S.st));
+    /* pose but nothing mapped: NO_MAP -> visual */
+    map_setup();
+    put_robot(0, 0, 0);
+    add_inst(1.0, 1.0, MEM_FRESH);
+    start("trash can");
+    CHECK((S.st == ST_MEM_TURN || S.st == ST_LOOK) && !S.map_mode, "empty map -> visual fallback (%s)", goto_state_name(S.st));
+    /* RECALL: nothing remembered -> FAILED, a gone one is still used */
+    map_setup();
+    goto_sm_recall(&S, T, goto_objects_resolve(&O, "trash can"));
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_remembered"), "RECALL with no memory (%s)", S.result);
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.0, 3.0, MEM_GONE);
+    start("trash can");
+    CHECK(!S.map_mode, "GOTO skips a gone instance");
+    goto_sm_cancel(&S, T, "x");
+    goto_sm_recall(&S, T, goto_objects_resolve(&O, "trash can"));
+    CHECK(S.map_mode && S.st == ST_FOLLOW_PATH, "RECALL goes back to where it was, even gone (%s)", goto_state_name(S.st));
+    /* map position survives save/load */
+    CHECK(goto_mem_save(&MM, "build/test_mem_nav.txt", 1e6) == 0, "save");
+    goto_mem L;
+    CHECK(goto_mem_load(&L, "build/test_mem_nav.txt") == 0 && L.n == 1 && L.e[0].has_w && fabs(L.e[0].wx - 3.0) < 1e-3,
+          "navw map position round-trips");
+}
+
 static void test_describe(void)
 {
     reset_sm();
@@ -814,6 +1158,14 @@ int main(void)
     test_memory_scan();
     test_memory_file();
     test_memory_cfg();
+    test_map_route_around_wall();
+    test_map_gone_then_check_others();
+    test_map_occluded_detour();
+    test_map_no_route_fails();
+    test_map_stop_mid_path();
+    test_map_guard_and_replan();
+    test_leased_approach();
+    test_map_fallbacks();
     printf("%d/%d checks passed\n", passed, passed + failed);
     return failed ? 1 : 0;
 }

@@ -4,6 +4,7 @@
 #ifndef GOTO_CORE_H
 #define GOTO_CORE_H
 #include <stddef.h>
+#include "nav.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +55,13 @@ typedef struct {
     double memory_tries;      /* GOTO tries at most this many remembered instances, then searches */
     double cam_height_mm;     /* camera lens above the floor (floor-contact distance estimate) */
     double cam_pitch_deg;     /* camera tilted down by this much (0 = level) */
+    /* map-guided GOTO (nav.h grid from the phone, feed on UDP/TCP 5572) */
+    double nav_pose_fresh_s;  /* no LDR1 pose this long -> ARKit tracking treated as lost (DR takes over) */
+    double nav_turn_min_deg;  /* path leg: turn first only if the heading is off by more than this */
+    double nav_leg_min_mm;    /* path legs shorter than this are skipped */
+    double nav_max_replans;   /* re-plans (guard denial, map change) per GOTO, then FAILED blocked */
+    double nav_guard_wait_s;  /* after a guard-aborted leg: wait this long (and for CLEAR) before re-planning */
+    double nav_reveal_deg;    /* robot's own footprint not mapped yet: turn this much to reveal floor, re-plan */
     /* per-object arrive override, e.g. person is tall: arrive_h.person = 0.85 */
     int    n_arrive_over;
     char   arrive_over_label[16][32];
@@ -131,6 +139,8 @@ typedef struct {
     double conf;             /* confidence of the last sighting */
     int    seen;             /* frames it was seen in */
     double last_seen;        /* wall clock, s (survives restarts; may jump on a Pi with no RTC) */
+    int    has_w;            /* map position known (seen while the nav pose was good) */
+    double wx, wz;           /* ... in the nav/ARKit frame, metres */
 } goto_mem_entry;
 
 typedef struct {
@@ -144,6 +154,8 @@ typedef struct {
     double spx, spy, sph;    /* pose when last saved (dirty if it moves away from it) */
     int dirty;
     int rebased;             /* times it re-based on a new epoch (STATUS / tests) */
+    int have_nav;            /* robot pose in the nav (ARKit) frame, for has_w/wx/wz of new sightings */
+    double nx, nz, nyaw;     /* metres, rad; forward = (sin yaw, cos yaw); + yaw = left turn */
 } goto_mem;
 
 void goto_mem_init(goto_mem *m);
@@ -188,6 +200,15 @@ typedef enum {
     ST_APPROACH,      /* closed-loop D l r toward the target */
     ST_MEM_TURN,      /* exact TURN toward where memory says the target is */
     ST_MEM_MOVE,      /* exact MOVE toward the remembered spot (memory_drive_mm) */
+    /* map-guided GOTO (docs/ARCHITECTURE.md §3). RECALL/OCCLUDED/CHECK_OTHERS/DETOUR/
+     * NEXT_CANDIDATE are decision states: entered and left in the same call (EVENTs show them). */
+    ST_RECALL,        /* picked a remembered instance, its map position is the goal */
+    ST_PLAN,          /* waiting to (re-)plan: guard CLEAR + nav_guard_wait_s after a blocked leg */
+    ST_FOLLOW_PATH,   /* exact leg running: TURN to the next waypoint, MOVE to it, or the final face TURN */
+    ST_OCCLUDED,      /* not seen and the map has an obstacle between us and the spot */
+    ST_CHECK_OTHERS,  /* not there (line of sight clear): instance fresh->stale->gone, try the next one */
+    ST_DETOUR,        /* occluded: plan to a vantage cell with a clear line of sight, look again */
+    ST_NEXT_CANDIDATE,/* no route to this instance: try the next one, else the blind search */
 } goto_state;
 
 typedef enum { MODE_GOTO = 0, MODE_SCAN } goto_mode;
@@ -202,6 +223,8 @@ typedef enum {
     ACT_LED,          /* LED text */
     ACT_EVENT,        /* text for control-port watchers: "arrived trash can" */
 } goto_act_kind;
+/* ACT_DRIVE with text = guard epoch: send "DL <epoch> a b" (leased drive, refused once the
+ * guard has denied since that epoch); empty text: plain "D a b" (old server, no guard_epoch=). */
 
 typedef struct {
     goto_act_kind kind;
@@ -250,6 +273,24 @@ typedef struct {
     int mem_id;                       /* instance id being tried */
     int mem_tried[8], n_tried;        /* instance ids already tried in this GOTO */
     double mem_bearing, mem_dist;     /* relative, when the instance was picked */
+    /* map-guided GOTO */
+    nav_t *nav;                       /* NULL = no map: pure visual GOTO (unchanged fallback) */
+    int map_mode;                     /* this instance is being reached over the map */
+    int recall;                       /* RECALL <obj>: any remembered instance, no blind search */
+    double goal_x, goal_z;            /* remembered object, nav frame (m) */
+    int vantage;                      /* planning to (vx, vz) instead of the goal's approach ring */
+    double vx, vz;
+    nav_pt_t path[64];
+    int path_n, path_i, leg;          /* leg: 0 turn, 1 move, 2 face the goal, 3 reveal turn */
+    double leg_mm;
+    unsigned path_ver;
+    int replans, detoured_id;
+    double revealed_deg;
+    int plan_wait;                    /* ST_PLAN: re-plan once the guard is CLEAR */
+    int exploring, explores;          /* heading to a mapped cell nearer an unmapped goal, then re-plan */
+    /* lidar_guard via tars_motor STATUS */
+    int guard_known, guard_ok;
+    unsigned long long guard_epoch, lease_epoch;
     /* SCAN */
     int scan_n;
     char scan_seen[GOTO_MEM_MAX][32];
@@ -263,6 +304,20 @@ void goto_sm_init(goto_sm *s, const goto_cfg *cfg, const goto_objects *objs);
 /* All take the current monotonic time in seconds. After each call, the caller
  * sends s->act[0..n_act) to tars_motor in order and then clears n_act. */
 void goto_sm_goto(goto_sm *s, double now, int target);
+/* "go back to where the X was": any remembered instance (stale/gone/old too), routed over the
+ * map when there is one; then YOLO confirms. Nothing remembered -> FAILED "not remembered". */
+void goto_sm_recall(goto_sm *s, double now, int target);
+/* map: attach (may be NULL). Call nav_note_dr()/nav_set_pose() on it from the I/O side. */
+void goto_sm_set_nav(goto_sm *s, nav_t *nav);
+/* STATUS guard_permit= / guard_epoch= (tars_motor with -g). An epoch change ends a leased
+ * APPROACH leg: an old drive never resumes after the guard clears. */
+void goto_sm_guard(goto_sm *s, double now, int permit, unsigned long long epoch);
+/* tars_motor refused a D/DL (ERR guard epoch changed / guard_blocked / ...) */
+void goto_sm_drive_refused(goto_sm *s, double now, const char *why);
+/* tars_motor refused a TURN/MOVE because of the guard (ERR guard_*). Map legs wait + re-plan;
+ * the final "face the spot" turn goes straight to LOOK (what blocks is usually the target).
+ * Returns 1 if handled, 0 if the caller should fail the GOTO as before. */
+int  goto_sm_move_refused(goto_sm *s, double now, const char *why);
 /* memory: attach (may be NULL). wall clock = wall_base + now. */
 void goto_sm_set_memory(goto_sm *s, goto_mem *m, double wall_base);
 /* pose from tars_motor STATUS. moving = an exact move runs / spinning (skip remembering) */

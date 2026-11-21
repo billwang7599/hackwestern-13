@@ -60,12 +60,12 @@ build:
 
 host: | build
 	cc $(CFLAGS) -o build/goto_host $(GOTO_SRC) -lm
-	cc $(CFLAGS) -o build/test_core tests/test_core.c $(CORE) -lm
+	cc $(CFLAGS) -o build/test_core tests/test_core.c $(CORE) $(NAV) -lm
 	cc $(CFLAGS) -std=c99 -pedantic -c -o build/nav.o $(NAV)
 	cc $(CFLAGS) -o build/test_nav tests/test_nav.c $(NAV) -lm
 	cc $(CFLAGS) -o build/nav_cli tests/nav_cli.c $(NAV) -lm
 	cc $(CFLAGS) -c -o build/goto_core.o $(CORE)
-	c++ $(CXXFLAGS) -o build/test_yolo tests/test_yolo.cpp build/goto_core.o
+	c++ $(CXXFLAGS) -o build/test_yolo tests/test_yolo.cpp build/goto_core.o build/nav.o
 	c++ $(CXXFLAGS) -o build/detect_host $(DET_SRC)
 	@echo ">> goto: ./build/goto_host -v    detect (no ORT): ./build/detect_host --help"
 

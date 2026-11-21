@@ -112,6 +112,10 @@ int nav_ingest_ldr1(nav_t *n, const unsigned char *buf, size_t len);
  * the route (collinear cells removed, start excluded, last = approach point,
  * cell centres) to out. Returns the count (0 = already on the ring) or NAV_ERR_*. */
 int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, int max_out);
+/* Same, with a custom ring [ring_min, ring_max] (metres, ring_max <= NAV_RING_MAX).
+ * ring 0..0.11 = "the cell at (tx,tz) itself": goto's DETOUR uses it to reach a vantage cell. */
+int nav_plan_ring(nav_t *n, float sx, float sz, float tx, float tz, float ring_min, float ring_max,
+                  nav_pt_t *out, int max_out);
 
 /* Line of sight over the grid, ignoring the start cell and cells within
  * NAV_LOS_END_MARGIN of the end (the object itself is occupied).

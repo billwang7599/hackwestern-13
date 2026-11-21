@@ -62,6 +62,12 @@ void goto_cfg_defaults(goto_cfg *c)
     c->memory_tries = 3;
     c->cam_height_mm = 120.0;      /* README: webcam ~12 cm up, level */
     c->cam_pitch_deg = 0.0;
+    c->nav_pose_fresh_s = 0.5;
+    c->nav_turn_min_deg = 4.0;
+    c->nav_leg_min_mm = 60.0;
+    c->nav_max_replans = 6;
+    c->nav_guard_wait_s = 0.5;
+    c->nav_reveal_deg = 30.0;
     snprintf(c->memory_path, sizeof c->memory_path, "memory.txt");
     c->n_arrive_over = 1;
     snprintf(c->arrive_over_label[0], sizeof c->arrive_over_label[0], "person");
@@ -108,6 +114,9 @@ int goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen)
         {"memory_save_s", &c->memory_save_s, 0}, {"memory_merge_mm", &c->memory_merge_mm, 0},
         {"memory_tries", &c->memory_tries, 0}, {"cam_height_mm", &c->cam_height_mm, 0},
         {"cam_pitch_deg", &c->cam_pitch_deg, 0},
+        {"nav_pose_fresh_s", &c->nav_pose_fresh_s, 0}, {"nav_turn_min_deg", &c->nav_turn_min_deg, 0},
+        {"nav_leg_min_mm", &c->nav_leg_min_mm, 0}, {"nav_max_replans", &c->nav_max_replans, 0},
+        {"nav_guard_wait_s", &c->nav_guard_wait_s, 0}, {"nav_reveal_deg", &c->nav_reveal_deg, 0},
     };
     char line[256];
     while (fgets(line, sizeof line, f)) {
@@ -611,6 +620,17 @@ int goto_mem_sight(goto_mem *m, const goto_cfg *c, const char *label, double x, 
     return (int)(e - m->e);
 }
 
+/* map position of a sighting at relative bearing rel_deg (+ right), dist mm, from the nav pose */
+static void mem_set_w(goto_mem *m, goto_mem_entry *e, double rel_deg, double dist_mm, int smooth)
+{
+    if (!m->have_nav) return;
+    double yaw = m->nyaw - RAD(rel_deg);      /* + yaw = left turn, + bearing = right */
+    double wx = m->nx + dist_mm / 1000.0 * sin(yaw), wz = m->nz + dist_mm / 1000.0 * cos(yaw);
+    if (smooth && e->has_w) { e->wx = 0.6 * e->wx + 0.4 * wx; e->wz = 0.6 * e->wz + 0.4 * wz; }
+    else { e->wx = wx; e->wz = wz; }
+    e->has_w = 1;
+}
+
 int goto_mem_observe(goto_mem *m, const goto_cfg *c, const goto_objects *o, const goto_frame *f, double wall)
 {
     if (!m->have_pose || f->w <= 0 || f->h <= 0) return 0;
@@ -644,7 +664,10 @@ int goto_mem_observe(goto_mem *m, const goto_cfg *c, const goto_objects *o, cons
             e->seen = 1; e->last_seen = wall; e->status = MEM_FRESH;
             k = (int)(e - m->e);
         }
-        if (k >= 0 && k < GOTO_MEM_MAX) taken[k] = 1;
+        if (k >= 0 && k < GOTO_MEM_MAX) {
+            mem_set_w(m, &m->e[k], bearing_of(c, x), dist, !taken[k] && m->e[k].seen > 1);
+            taken[k] = 1;
+        }
         used++;
     }
     return used;
@@ -722,6 +745,7 @@ int goto_mem_save(goto_mem *m, const char *path, double wall)
     if (!f) return -1;
     fprintf(f, "# goto object memory (goto/README.md). Safe to delete. mm, deg (+ = clockwise)\n");
     fprintf(f, "# inst <id> <fresh|stale|gone> <x> <y> <bearing> <dist> <conf> <seen> <last_seen> <label>\n");
+    fprintf(f, "# navw <id> <x> <z> <label>   map (ARKit) position, metres, if it was seen with a good nav pose\n");
     fprintf(f, "v 2\n");
     if (m->have_offset)
         fprintf(f, "pose %u %.1f %.1f %.2f %.1f %.1f %.3f %.1f\n", m->epoch, m->px, m->py, m->ph,
@@ -730,6 +754,7 @@ int goto_mem_save(goto_mem *m, const char *path, double wall)
         const goto_mem_entry *e = &m->e[i];
         fprintf(f, "inst %d %s %.1f %.1f %.2f %.0f %.3f %d %.1f %s\n", e->id, goto_mem_status_name(e->status),
                 e->x, e->y, e->bearing, e->dist, e->conf, e->seen, e->last_seen, e->label);
+        if (e->has_w) fprintf(f, "navw %d %.3f %.3f %s\n", e->id, e->wx, e->wz, e->label);
     }
     int ok = fflush(f) == 0 && !ferror(f);
     if (ok) fsync(fileno(f));
@@ -766,6 +791,17 @@ int goto_mem_load(goto_mem *m, const char *path)
                 m->ox = v[3]; m->oy = v[4]; m->oh = wrap180(v[5]);
                 m->spx = m->px; m->spy = m->py; m->sph = m->ph;
                 m->have_pose = m->have_offset = 1;
+            } else bad++;
+            continue;
+        }
+        if (!strncmp(l, "navw ", 5)) {
+            int id;
+            double wx, wz;
+            if (sscanf(l, "navw %d %lf %lf %n", &id, &wx, &wz, &n) == 3 && n > 0 && l[n] && isfinite(wx) &&
+                isfinite(wz) && fabs(wx) < 1000 && fabs(wz) < 1000) {
+                int i = goto_mem_find_id(m, l + n, id);
+                if (i >= 0) { m->e[i].has_w = 1; m->e[i].wx = wx; m->e[i].wz = wz; }
+                else bad++;
             } else bad++;
             continue;
         }
@@ -808,13 +844,16 @@ void goto_mem_describe(const goto_mem *m, double wall, char *out, size_t len)
                               "; %s#%d %s x=%.0f y=%.0f rel_bearing=%.0f rel_dist=%.0f est_dist=%.0f age=%.0f seen=%d conf=%.2f",
                               e->label, e->id, goto_mem_status_name(e->status), e->x, e->y, b, d, e->dist,
                               fmax(0, wall - e->last_seen), e->seen, e->conf);
+        if (e->has_w && o < len) o += (size_t)snprintf(out + o, len - o, " map=%.2f,%.2f", e->wx, e->wz);
     }
 }
 
 /* ========================================================= state machine */
 const char *goto_state_name(goto_state s)
 {
-    static const char *n[] = {"idle", "look", "search_turn", "align_turn", "approach", "mem_turn", "mem_move"};
+    static const char *n[] = {"idle", "look", "search_turn", "align_turn", "approach", "mem_turn", "mem_move",
+                              "recall", "plan", "follow_path", "occluded", "check_others", "detour",
+                              "next_candidate"};
     return (unsigned)s < sizeof n / sizeof n[0] ? n[s] : "?";
 }
 
@@ -864,7 +903,8 @@ int goto_sm_busy(const goto_sm *s) { return s->st != ST_IDLE; }
 
 int goto_sm_wants_status(const goto_sm *s)
 {
-    return s->st == ST_SEARCH_TURN || s->st == ST_ALIGN_TURN || s->st == ST_MEM_TURN || s->st == ST_MEM_MOVE;
+    return s->st == ST_SEARCH_TURN || s->st == ST_ALIGN_TURN || s->st == ST_MEM_TURN || s->st == ST_MEM_MOVE ||
+           s->st == ST_FOLLOW_PATH;
 }
 
 static double wall_now(const goto_sm *s) { return s->wall_base + s->now; }
@@ -918,6 +958,349 @@ static void finish(goto_sm *s, const char *result)
     set_state(s, ST_IDLE);
 }
 
+/* ============================================== map-guided GOTO helpers
+ * Frames: the nav/ARKit frame is metres, x/z, forward = (sin yaw, cos yaw), + yaw = LEFT.
+ * goto's bearings are degrees, + = RIGHT (like TURN). So heading to a point is
+ * atan2(dx, dz) and the TURN for it is -(that - yaw). */
+static int nav_pose(const goto_sm *s, double *x, double *z, double *yaw)
+{
+    float fx = 0, fz = 0, fy = 0;
+    if (!s->nav) return 0;
+    int src = nav_get_pose(s->nav, &fx, &fz, &fy);
+    if (src != NAV_POSE_ARKIT && src != NAV_POSE_DR) return 0;   /* stale/none: no map driving */
+    if (x) *x = fx;
+    if (z) *z = fz;
+    if (yaw) *yaw = fy;
+    return src;
+}
+
+static void sync_nav(goto_sm *s)
+{
+    if (!s->mem) return;
+    double x, z, yaw;
+    s->mem->have_nav = nav_pose(s, &x, &z, &yaw) != 0;
+    if (s->mem->have_nav) { s->mem->nx = x; s->mem->nz = z; s->mem->nyaw = yaw; }
+}
+
+/* relative bearing (deg, + right) and distance (mm) from the robot to a map point */
+static void rel_to(const goto_sm *s, double px, double pz, double *b, double *d)
+{
+    double x = 0, z = 0, yaw = 0;
+    nav_pose(s, &x, &z, &yaw);
+    double dx = px - x, dz = pz - z;
+    if (d) *d = hypot(dx, dz) * 1000.0;
+    if (b) *b = wrap180(-DEG(atan2(dx, dz) - yaw));
+}
+
+static void start_turn(goto_sm *s, goto_state st, double deg);
+static void start_look(goto_sm *s, double after);
+static void do_plan(goto_sm *s);
+static void search_step(goto_sm *s, double now);
+static int  mem_try_next(goto_sm *s);
+static void arrived(goto_sm *s);
+
+static void map_event(goto_sm *s, const char *what)
+{
+    char t[96];
+    snprintf(t, sizeof t, "%s %s #%d", what, target_name(s), s->mem_id);
+    emit(s, ACT_EVENT, 0, 0, t);
+}
+
+static void start_leg(goto_sm *s, goto_act_kind k, double amount)
+{
+    set_state(s, ST_FOLLOW_PATH);
+    s->move_id = -1;
+    s->move_deadline = s->now + 5.0;
+    s->cmd_l = s->cmd_r = 0;
+    if (k == ACT_TURN) emit(s, ACT_TURN, amount, s->cfg.search_speed, NULL);
+    else emit(s, ACT_MOVE, amount, 1.0, NULL);   /* always forward: we turn to face each waypoint */
+}
+
+/* at the end of the route: turn to face the remembered spot, then LOOK (YOLO confirms) */
+static void face_goal(goto_sm *s)
+{
+    double b, d;
+    rel_to(s, s->goal_x, s->goal_z, &b, &d);
+    s->mem_bearing = s->last_bearing = b;
+    s->mem_dist = d;
+    s->search_dir = b >= 0 ? 1 : -1;
+    s->mem_phase = 1;
+    s->leg = 2;
+    if (fabs(b) > s->cfg.align_deg) start_leg(s, ACT_TURN, b);
+    else start_look(s, s->now);
+}
+
+static void next_leg(goto_sm *s)
+{
+    while (s->path_i < s->path_n) {
+        double b, d;
+        rel_to(s, s->path[s->path_i].x, s->path[s->path_i].z, &b, &d);
+        if (d < s->cfg.nav_leg_min_mm) { s->path_i++; continue; }
+        s->leg_mm = d;
+        if (fabs(b) > s->cfg.nav_turn_min_deg) { s->leg = 0; start_leg(s, ACT_TURN, b); }
+        else { s->leg = 1; start_leg(s, ACT_MOVE, d); }
+        return;
+    }
+    if (s->exploring) {                         /* explore hop done: the phone has seen more, re-plan */
+        s->exploring = 0;
+        s->vantage = 0;
+        s->revealed_deg = 0;                    /* new spot, new view: allow another look around */
+        do_plan(s);
+        return;
+    }
+    face_goal(s);
+}
+
+/* no usable map/pose after all: the memory turn of the visual-only GOTO */
+static void map_fallback(goto_sm *s, const char *why)
+{
+    map_event(s, why);
+    s->map_mode = 0;
+    int i = goto_mem_find_id(s->mem, target_name(s), s->mem_id);
+    if (i >= 0 && s->mem->have_pose) goto_mem_relative(s->mem, i, &s->mem_bearing, &s->mem_dist);
+    s->search_dir = s->mem_bearing >= 0 ? 1 : -1;
+    s->last_bearing = s->mem_bearing;
+    s->mem_phase = 1;
+    if (fabs(s->mem_bearing) > s->cfg.align_deg) start_turn(s, ST_MEM_TURN, s->mem_bearing);
+    else start_look(s, s->now);
+}
+
+static void search_fallback(goto_sm *s)
+{
+    s->map_mode = 0;
+    s->mem_phase = 3;
+    s->searched_deg = 0;
+    search_step(s, s->now);
+}
+
+static void next_candidate(goto_sm *s, const char *why)
+{
+    set_state(s, ST_NEXT_CANDIDATE);
+    map_event(s, why);
+    int dir = s->search_dir;
+    if (mem_try_next(s)) return;
+    s->search_dir = dir;
+    search_fallback(s);
+}
+
+/* the spot was looked at: downgrade = line of sight was clear and YOLO saw nothing */
+static void check_others(goto_sm *s, int downgrade)
+{
+    set_state(s, ST_CHECK_OTHERS);
+    if (downgrade) {
+        goto_mem_miss(s->mem, goto_mem_find_id(s->mem, target_name(s), s->mem_id));
+        map_event(s, "not_there");
+    }
+    int dir = s->search_dir;
+    if (mem_try_next(s)) return;
+    s->search_dir = dir;
+    set_state(s, ST_NEXT_CANDIDATE);
+    map_event(s, "next_candidate");
+    search_fallback(s);
+}
+
+static void do_plan(goto_sm *s);
+
+/* the goal's surroundings are unmapped (LiDAR shadow): a reachable, mapped free cell that is
+ * clearly closer to the goal, so the phone can see more from there. Frontier-lite. */
+static int pick_explore(goto_sm *s)
+{
+    double x, z, yaw;
+    if (!nav_pose(s, &x, &z, &yaw)) return 0;
+    double now_d = hypot(s->goal_x - x, s->goal_z - z);
+    double cx[96], cz[96], cs[96];
+    int n = 0;
+    for (double r = 0.9; r <= 3.01 && n < 96; r += 0.3)
+        for (int k = 0; k < 16 && n < 96; k++) {
+            double a = k * 2 * M_PI / 16, px = s->goal_x + r * sin(a), pz = s->goal_z + r * cos(a);
+            if (r > now_d - 0.4 || nav_cell(s->nav, (float)px, (float)pz) != NAV_FREE) continue;
+            double score = r + 0.5 * hypot(px - x, pz - z);
+            int j = n++;
+            while (j > 0 && cs[j - 1] > score) { cx[j] = cx[j - 1]; cz[j] = cz[j - 1]; cs[j] = cs[j - 1]; j--; }
+            cx[j] = px; cz[j] = pz; cs[j] = score;
+        }
+    for (int i = 0; i < n && i < 10; i++)
+        if (nav_plan_ring(s->nav, (float)x, (float)z, (float)cx[i], (float)cz[i], 0.0f, 0.11f, s->path, 64) > 0) {
+            s->vx = cx[i];
+            s->vz = cz[i];
+            return 1;
+        }
+    return 0;
+}
+
+/* a free cell 0.7-1.3 m from the goal with a clear line of sight to it, reachable */
+static int pick_vantage(goto_sm *s)
+{
+    double x, z, yaw;
+    if (!nav_pose(s, &x, &z, &yaw)) return 0;
+    double cx[72], cz[72], cd[72];
+    int n = 0;
+    static const double R[3] = {0.7, 1.0, 1.3};
+    for (int r = 0; r < 3; r++)
+        for (int k = 0; k < 24; k++) {
+            double a = k * 2 * M_PI / 24, px = s->goal_x + R[r] * sin(a), pz = s->goal_z + R[r] * cos(a);
+            if (nav_cell(s->nav, (float)px, (float)pz) != NAV_FREE) continue;
+            if (nav_line_clear(s->nav, (float)px, (float)pz, (float)s->goal_x, (float)s->goal_z) != 1) continue;
+            double d = hypot(px - x, pz - z);
+            int j = n++;
+            while (j > 0 && cd[j - 1] > d) { cx[j] = cx[j - 1]; cz[j] = cz[j - 1]; cd[j] = cd[j - 1]; j--; }
+            cx[j] = px; cz[j] = pz; cd[j] = d;
+        }
+    for (int i = 0; i < n && i < 8; i++)
+        if (nav_plan_ring(s->nav, (float)x, (float)z, (float)cx[i], (float)cz[i], 0.0f, 0.11f, s->path, 64) >= 0) {
+            s->vx = cx[i];
+            s->vz = cz[i];
+            return 1;
+        }
+    return 0;
+}
+
+/* the map doesn't reach the goal yet (most of its approach ring unseen): go visual instead */
+static int ring_unmapped(const goto_sm *s)
+{
+    int unknown = 0, total = 0;
+    for (int k = 0; k < 24; k++) {
+        double a = k * 2 * M_PI / 24;
+        unknown += nav_cell(s->nav, (float)(s->goal_x + 0.7 * sin(a)), (float)(s->goal_z + 0.7 * cos(a))) == NAV_UNKNOWN;
+        total++;
+    }
+    return unknown * 2 > total;
+}
+
+static void do_plan(goto_sm *s)
+{
+    double x, z, yaw;
+    if (!nav_pose(s, &x, &z, &yaw)) { map_fallback(s, "no_pose"); return; }
+    set_state(s, ST_PLAN);
+    s->plan_wait = 0;
+    if (nav_count(s->nav, NAV_FREE) == 0) { map_fallback(s, "no_map"); return; }
+    /* the robot is standing here, so its own footprint is floor: the phone can't see under
+     * it. Same square nav_plan checks (ceil(0.35 / 0.1) = 4 cells each side); never clears OCC. */
+    int cx, cz;
+    if (nav_world_to_cell((float)x, (float)z, &cx, &cz))
+        for (int i = -4; i <= 4; i++)
+            for (int k = -4; k <= 4; k++)
+                if (nav_cell_at(s->nav, cx + i, cz + k) == NAV_UNKNOWN) nav_set_cell(s->nav, cx + i, cz + k, NAV_FREE);
+    int n = s->vantage ? nav_plan_ring(s->nav, (float)x, (float)z, (float)s->vx, (float)s->vz, 0.0f, 0.11f, s->path, 64)
+                       : nav_plan(s->nav, (float)x, (float)z, (float)s->goal_x, (float)s->goal_z, s->path, 64);
+    s->path_ver = nav_version(s->nav);
+    if (n >= 0) {
+        s->path_n = n;
+        s->path_i = 0;
+        char t[96];
+        snprintf(t, sizeof t, "route %s #%d %d", target_name(s), s->mem_id, n);
+        emit(s, ACT_EVENT, 0, 0, t);
+        next_leg(s);
+        return;
+    }
+    if (n == NAV_ERR_START_BLOCKED && s->revealed_deg < 360 && s->cfg.nav_reveal_deg > 0) {
+        s->revealed_deg += s->cfg.nav_reveal_deg;
+        s->leg = 3;
+        if (s->revealed_deg <= s->cfg.nav_reveal_deg) map_event(s, "reveal");
+        start_leg(s, ACT_TURN, s->cfg.nav_reveal_deg * s->search_dir);
+        return;
+    }
+    /* unknown floor blocks like an obstacle and the phone sees a 60 deg cone: before calling a
+     * goal unreachable, spin in place (re-planning every step) to map around the robot */
+    if ((n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH) && !s->vantage && !s->exploring &&
+        s->revealed_deg < 360 && s->cfg.nav_reveal_deg > 0) {
+        s->revealed_deg += s->cfg.nav_reveal_deg;
+        s->leg = 3;
+        if (s->revealed_deg <= s->cfg.nav_reveal_deg) map_event(s, "reveal");
+        start_leg(s, ACT_TURN, s->cfg.nav_reveal_deg * s->search_dir);
+        return;
+    }
+    if (n == NAV_ERR_NO_GOAL && !s->vantage && ring_unmapped(s)) {
+        /* shadowed / never seen: spin to map around us, then hop closer, then give up to visual */
+        if (s->revealed_deg < 360 && s->cfg.nav_reveal_deg > 0) {
+            s->revealed_deg += s->cfg.nav_reveal_deg;
+            s->leg = 3;
+            if (s->revealed_deg <= s->cfg.nav_reveal_deg) map_event(s, "reveal");
+            start_leg(s, ACT_TURN, s->cfg.nav_reveal_deg * s->search_dir);
+            return;
+        }
+        if (s->explores < 4 && pick_explore(s)) {
+            s->explores++;
+            s->exploring = s->vantage = 1;
+            map_event(s, "explore");
+            do_plan(s);
+            return;
+        }
+        map_fallback(s, "unmapped");
+        return;
+    }
+    if (n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH || n == NAV_ERR_TOO_LONG) {
+        if (s->vantage) { s->vantage = 0; check_others(s, 0); return; }   /* can't reach a better view */
+        next_candidate(s, "no_route");
+        return;
+    }
+    map_fallback(s, n == NAV_ERR_NO_MAP ? "no_map" : n == NAV_ERR_START_BLOCKED ? "start_blocked" : "no_plan");
+}
+
+/* a leg was aborted by the guard / obstacle / deadman: re-plan once it's clear */
+static void leg_blocked(goto_sm *s, const char *why)
+{
+    char t[96];
+    snprintf(t, sizeof t, "blocked:%s %s #%d", why, target_name(s), s->mem_id);
+    emit(s, ACT_EVENT, 0, 0, t);
+    if (++s->replans > (int)s->cfg.nav_max_replans) { goto_sm_fail(s, s->now, "blocked"); return; }
+    set_state(s, ST_PLAN);
+    s->plan_wait = 1;
+}
+
+static int path_blocked(const goto_sm *s)
+{
+    double x, z;
+    if (!nav_pose(s, &x, &z, NULL)) return 0;
+    for (int i = s->path_i; i < s->path_n; i++) {
+        if (nav_line_clear_ex(s->nav, (float)x, (float)z, s->path[i].x, s->path[i].z, 0.0f) == 0) return 1;
+        x = s->path[i].x;
+        z = s->path[i].z;
+    }
+    return 0;
+}
+
+static void leg_done(goto_sm *s)
+{
+    switch (s->leg) {
+    case 0: {
+        double d;
+        rel_to(s, s->path[s->path_i].x, s->path[s->path_i].z, NULL, &d);
+        if (d < s->cfg.nav_leg_min_mm) { s->path_i++; next_leg(s); return; }
+        s->leg = 1;
+        s->leg_mm = d;
+        start_leg(s, ACT_MOVE, d);
+        return;
+    }
+    case 1: s->path_i++; next_leg(s); return;
+    case 2: start_look(s, s->now + s->cfg.settle_s); return;
+    default: do_plan(s); return;                    /* 3: reveal turn done */
+    }
+}
+
+/* LOOK at the remembered spot (reached over the map) found nothing */
+static void map_look_failed(goto_sm *s)
+{
+    double x, z;
+    int los = nav_pose(s, &x, &z, NULL)
+            ? nav_line_clear(s->nav, (float)x, (float)z, (float)s->goal_x, (float)s->goal_z) : -1;
+    if (los == 0) {
+        set_state(s, ST_OCCLUDED);
+        map_event(s, "occluded");               /* may still be there: don't downgrade it */
+        if (s->detoured_id != s->mem_id && pick_vantage(s)) {
+            s->detoured_id = s->mem_id;
+            set_state(s, ST_DETOUR);
+            map_event(s, "detour");
+            s->vantage = 1;
+            do_plan(s);
+            return;
+        }
+        check_others(s, 0);
+        return;
+    }
+    check_others(s, 1);
+}
+
 /* the stop + beep + event of an arrival, and a precise memory entry for the target */
 static void arrived(goto_sm *s)
 {
@@ -937,6 +1320,8 @@ static void arrived(goto_sm *s)
         if (i < 0) i = goto_mem_sight(m, &s->cfg, lab, ax, ay, wb, d, 0.5, wall_now(s));
         goto_mem_entry *e = &m->e[i];
         e->x = ax; e->y = ay; e->bearing = wb; e->dist = d;
+        sync_nav(s);
+        mem_set_w(m, e, s->last_bearing, d, 0);
         e->status = MEM_FRESH;
         e->seen++;
         e->last_seen = wall_now(s);
@@ -954,7 +1339,16 @@ static int mem_try_next(goto_sm *s)
     if (!m || !m->have_pose || s->target < 0 || s->n_tried >= (int)s->cfg.memory_tries ||
         s->n_tried >= (int)(sizeof s->mem_tried / sizeof s->mem_tried[0]))
         return 0;
-    int i = goto_mem_best(m, s->objs->obj[s->target], wall_now(s), s->cfg.memory_max_age_s, s->mem_tried, s->n_tried);
+    int i = goto_mem_best(m, s->objs->obj[s->target], wall_now(s), s->recall ? 1e18 : s->cfg.memory_max_age_s,
+                          s->mem_tried, s->n_tried);
+    if (i < 0 && s->recall) {                  /* "where it was": even a gone one, newest first */
+        for (int k = 0; k < m->n; k++) {
+            int sk = 0;
+            for (int j = 0; j < s->n_tried; j++) sk |= s->mem_tried[j] == m->e[k].id;
+            if (!sk && !strcmp(m->e[k].label, s->objs->obj[s->target]) && (i < 0 || m->e[k].last_seen > m->e[i].last_seen))
+                i = k;
+        }
+    }
     if (i < 0) return 0;
     s->mem_id = m->e[i].id;
     s->mem_tried[s->n_tried++] = s->mem_id;
@@ -965,6 +1359,23 @@ static int mem_try_next(goto_sm *s)
     char t[80];
     snprintf(t, sizeof t, "remembered %s #%d", s->objs->obj[s->target], s->mem_id);
     emit(s, ACT_EVENT, 0, 0, t);
+    s->map_mode = 0;
+    s->vantage = s->exploring = s->explores = 0;
+    if (s->nav && nav_pose(s, NULL, NULL, NULL)) {
+        const goto_mem_entry *e = &m->e[i];
+        double b, d, x, z, yaw;
+        if (e->has_w) { s->goal_x = e->wx; s->goal_z = e->wz; }
+        else {                                  /* seen before the phone: project from the memory frame */
+            nav_pose(s, &x, &z, &yaw);
+            goto_mem_relative(m, i, &b, &d);
+            s->goal_x = x + d / 1000.0 * sin(yaw - RAD(b));
+            s->goal_z = z + d / 1000.0 * cos(yaw - RAD(b));
+        }
+        s->map_mode = 1;
+        set_state(s, ST_RECALL);
+        do_plan(s);
+        return 1;
+    }
     if (fabs(s->mem_bearing) > s->cfg.align_deg) start_turn(s, ST_MEM_TURN, s->mem_bearing);
     else start_look(s, s->now);
     return 1;
@@ -978,6 +1389,7 @@ static int mem_try_next(goto_sm *s)
  *   3. normal 360 search in search_step_deg steps, then give up */
 static void look_failed(goto_sm *s, double now)
 {
+    if (s->map_mode && s->mem_phase == 1) { map_look_failed(s); return; }
     if (s->mem_phase == 1 && s->cfg.memory_drive_mm > 0) {
         double mm = fmin(s->cfg.memory_drive_mm, s->mem_dist - s->cfg.arrive_dist_mm);
         if (mm >= 50.0) {
@@ -998,6 +1410,11 @@ static void look_failed(goto_sm *s, double now)
         s->mem_phase = 3;                     /* full search from here, toward the last remembered side */
         s->searched_deg = 0;
     }
+    search_step(s, now);
+}
+
+static void search_step(goto_sm *s, double now)
+{
     if (s->searched_deg + 1e-6 >= s->cfg.search_max_deg) {
         goto_sm_fail(s, now, "not found");
         return;
@@ -1027,8 +1444,71 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->mode = MODE_GOTO;
     s->mem_phase = 0;
     s->n_tried = 0;
+    s->map_mode = s->vantage = 0;
+    s->replans = 0;
+    s->detoured_id = 0;
+    s->path_n = s->path_i = 0;
     if (mem_try_next(s)) return;
+    if (s->recall) { start_look(s, now); goto_sm_fail(s, now, "not remembered"); return; }
     start_look(s, now);                        /* look before turning: it may be in view */
+}
+
+void goto_sm_recall(goto_sm *s, double now, int target)
+{
+    s->recall = 1;
+    goto_sm_goto(s, now, target);
+    s->recall = 0;                            /* only widens the first pick + no blind start */
+}
+
+void goto_sm_set_nav(goto_sm *s, nav_t *nav) { s->nav = nav; }
+
+void goto_sm_guard(goto_sm *s, double now, int permit, unsigned long long epoch)
+{
+    s->now = now;
+    s->guard_ok = permit;
+    if (!s->guard_known) { s->guard_known = 1; s->guard_epoch = s->lease_epoch = epoch; return; }
+    if (epoch == s->guard_epoch) return;
+    s->guard_epoch = epoch;
+    /* a denial happened since this APPROACH leg started: the lease is void, end the leg */
+    if (s->st == ST_APPROACH && s->lease_epoch != epoch) goto_sm_drive_refused(s, now, "guard epoch changed");
+}
+
+int goto_sm_move_refused(goto_sm *s, double now, const char *why)
+{
+    s->now = now;
+    if (s->st != ST_FOLLOW_PATH) return 0;
+    if (s->leg == 2) {
+        char t[96];
+        snprintf(t, sizeof t, "guard_face %s #%d %.40s", target_name(s), s->mem_id, why ? why : "-");
+        emit(s, ACT_EVENT, 0, 0, t);
+        start_look(s, now);
+        return 1;
+    }
+    leg_blocked(s, "guard");
+    return 1;
+}
+
+void goto_sm_drive_refused(goto_sm *s, double now, const char *why)
+{
+    s->now = now;
+    if (s->st != ST_APPROACH) return;
+    emit(s, ACT_STOP, 0, 0, NULL);
+    s->cmd_l = s->cmd_r = 0;
+    char t[96];
+    snprintf(t, sizeof t, "guard_stop %s %.40s", target_name(s), why ? why : "-");
+    emit(s, ACT_EVENT, 0, 0, t);
+    /* lidar_guard stops ~0.6 m from anything straight ahead. If that's the target, centred
+     * and already big in the frame, we're docked: that's an arrival, not an obstacle. */
+    double need = goto_cfg_arrive_h(&s->cfg, target_name(s));
+    if (s->have_track && now - s->last_seen < 0.5 && fabs(s->last_bearing) <= s->cfg.realign_deg &&
+        s->ema_h >= 0.5 * need) {
+        arrived(s);
+        return;
+    }
+    if (++s->replans > (int)s->cfg.nav_max_replans) { goto_sm_fail(s, now, "blocked"); return; }
+    s->have_track = 0;
+    s->searched_deg = 0;
+    start_look(s, now + s->cfg.nav_guard_wait_s);    /* new leg (new lease) only after a fresh look */
 }
 
 void goto_sm_scan(goto_sm *s, double now)
@@ -1131,6 +1611,7 @@ static const goto_det *pick(const goto_sm *s, const goto_frame *f)
 static void begin_approach(goto_sm *s)
 {
     set_state(s, ST_APPROACH);
+    s->lease_epoch = s->guard_epoch;           /* DL lease for this leg */
     s->arrive_count = 0;
     s->last_seen = s->now;
     s->last_tick = 0;                         /* send D on the next tick */
@@ -1166,7 +1647,10 @@ void goto_sm_frame(goto_sm *s, double now, const goto_frame *f)
     s->last_frame = now;
     /* remember everything seen, whenever the camera is steady and the pose is current */
     if (s->mem && !s->pose_moving && !goto_sm_wants_status(s) && !(s->st == ST_LOOK && now < s->fresh_after))
+    {
+        sync_nav(s);
         goto_mem_observe(s->mem, &s->cfg, s->objs, f, wall_now(s));
+    }
     if (s->st == ST_IDLE) return;
     if (s->mode == MODE_SCAN) {
         s->frames++;
@@ -1253,8 +1737,28 @@ void goto_sm_tick(goto_sm *s, double now)
     case ST_ALIGN_TURN:
     case ST_MEM_TURN:
     case ST_MEM_MOVE:
-        if (now > s->move_deadline) { goto_sm_fail(s, now, s->st == ST_MEM_MOVE ? "move timed out" : "turn timed out"); return; }
-        if (due) { emit(s, ACT_DRIVE, 0, 0, NULL); s->last_tick = now; }   /* keepalive, no abort */
+    case ST_FOLLOW_PATH:
+        if (now > s->move_deadline) {
+            goto_sm_fail(s, now, s->st == ST_MEM_MOVE || (s->st == ST_FOLLOW_PATH && s->leg == 1) ? "move timed out"
+                                                                                                   : "turn timed out");
+            return;
+        }
+        /* deadman keepalive: goto.c PINGs at 10 Hz while it waits on a move (a zero D would be
+         * refused while the guard denies, and tars_motor's abort is what we want then) */
+        if (s->st == ST_FOLLOW_PATH && s->nav && nav_version(s->nav) != s->path_ver && s->leg <= 1) {
+            s->path_ver = nav_version(s->nav);
+            if (path_blocked(s)) {                    /* the map changed under the route */
+                emit(s, ACT_STOP, 0, 0, NULL);
+                leg_blocked(s, "map");
+            }
+        }
+        return;
+    case ST_PLAN:
+        /* CLEAR + a short wait; or, still BLOCKED after 3x the wait, re-plan anyway: the new
+         * route starts with a pivot, which tars_motor allows under a fresh forward BLOCKED */
+        if (s->plan_wait && (((!s->guard_known || s->guard_ok) && now - s->state_since >= s->cfg.nav_guard_wait_s) ||
+                             now - s->state_since >= 3 * s->cfg.nav_guard_wait_s))
+            do_plan(s);
         return;
     case ST_APPROACH: {
         if (now - s->last_seen > s->cfg.lost_s) {
@@ -1278,7 +1782,9 @@ void goto_sm_tick(goto_sm *s, double now)
         if (m > 1.0) { l /= m; r /= m; }
         s->cmd_l = l;
         s->cmd_r = r;
-        emit(s, ACT_DRIVE, l, r, NULL);
+        char ep[24] = "";
+        if (s->guard_known) snprintf(ep, sizeof ep, "%llu", s->lease_epoch);
+        emit(s, ACT_DRIVE, l, r, ep);
         return;
     }
     default:
@@ -1300,7 +1806,13 @@ void goto_sm_move_status(goto_sm *s, double now, int move_id, const char *move, 
     if (!goto_sm_wants_status(s) || s->move_id < 0 || move_id != s->move_id) return;
     if (!strcmp(move, "running")) return;
     if (!strcmp(move, "done")) {
-        start_look(s, now + s->cfg.settle_s);
+        if (s->st == ST_FOLLOW_PATH) leg_done(s);
+        else start_look(s, now + s->cfg.settle_s);
+        return;
+    }
+    if (s->st == ST_FOLLOW_PATH && why && (!strcmp(why, "lidar_guard") || !strcmp(why, "obstacle") ||
+                                           !strcmp(why, "watchdog") || !strncmp(why, "guard", 5))) {
+        leg_blocked(s, why);
         return;
     }
     /* aborted / idle (replaced): obstacle, bump, tip, stop from someone else */
@@ -1317,12 +1829,16 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
     for (char *p = tn; *p; p++) if (*p == ' ') *p = '_';
     snprintf(out, len,
              "state=%s target=%s result=%s seen=%d bearing=%.1f h=%.2f searched=%.0f fps=%.1f "
-             "elapsed=%.1f frames=%d hits=%d l=%.2f r=%.2f mode=%s mem=%s",
+             "elapsed=%.1f frames=%d hits=%d l=%.2f r=%.2f mode=%s mem=%s map=%s path=%d/%d replans=%d "
+             "guard=%s",
              goto_state_name(s->st), tn, s->result,
              s->st == ST_APPROACH && s->now - s->last_seen < 0.5, s->last_bearing,
              s->have_track ? s->ema_h : 0.0, s->searched_deg, s->fps_ema,
              s->st != ST_IDLE ? s->now - s->started : 0.0, s->frames, s->frames_with_target,
              s->cmd_l, s->cmd_r, s->mode == MODE_SCAN ? "scan" : "goto",
              s->mem_phase == 1 ? "turned" : s->mem_phase == 2 ? "drove" : s->mem_phase == 3 ? "not_there"
-             : s->mem_phase == 4 ? "hit" : "-");
+             : s->mem_phase == 4 ? "hit" : "-",
+             !s->nav ? "off" : s->map_mode ? (s->vantage ? "detour" : "route") : "ready",
+             s->path_i, s->path_n, s->replans,
+             !s->guard_known ? "-" : s->guard_ok ? "clear" : "denied");
 }

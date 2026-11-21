@@ -379,10 +379,10 @@ static void sift_down(nav_t *n, int i, int size)
     }
 }
 
-static double heuristic(int idx, int tx, int tz)
+static double heuristic(int idx, int tx, int tz, int span)
 {
     int dx = idx % NAV_SIZE - tx, dz = idx / NAV_SIZE - tz;
-    double d = sqrt((double)(dx * dx + dz * dz)) - RING_SPAN;
+    double d = sqrt((double)(dx * dx + dz * dz)) - span;
     return d > 0 ? d : 0.0;
 }
 
@@ -391,10 +391,29 @@ static int is_clear(const nav_t *n, int x, int z)
     return x >= 0 && z >= 0 && x < NAV_SIZE && z < NAV_SIZE && n->clear[z * NAV_SIZE + x];
 }
 
+static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, double ring_min, double ring_max,
+                           nav_pt_t *out, int max_out);
+
 int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, int max_out)
+{
+    return nav_plan_ring_d(n, sx, sz, tx, tz, NAV_RING_MIN, NAV_RING_MAX, out, max_out);
+}
+
+int nav_plan_ring(nav_t *n, float sx, float sz, float tx, float tz, float ring_min, float ring_max,
+                  nav_pt_t *out, int max_out)
+{
+    return nav_plan_ring_d(n, sx, sz, tx, tz, ring_min, ring_max, out, max_out);
+}
+
+static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, double ring_min, double ring_max,
+                           nav_pt_t *out, int max_out)
 {
     if (!n || (max_out > 0 && !out) || max_out < 0) return NAV_ERR_ARG;
     if (!isfinite(sx) || !isfinite(sz) || !isfinite(tx) || !isfinite(tz)) return NAV_ERR_ARG;
+    if (!isfinite(ring_min) || !isfinite(ring_max) || ring_min < 0 || ring_max < ring_min || ring_max > NAV_RING_MAX + 1e-5)
+        return NAV_ERR_ARG;
+    /* mapping.py's fixed [-9, 9] window for the default ring (parity); tighter for smaller rings */
+    int span = ring_max >= NAV_RING_MAX - 1e-5 ? RING_SPAN : (int)ceil(ring_max / NAV_RES) + 1;
     if (nav_count(n, NAV_FREE) == 0) return NAV_ERR_NO_MAP;
 
     /* footprint inflation: the (2r+1)^2 square must be all observed FREE */
@@ -425,11 +444,11 @@ int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, in
 
     memset(n->goal, 0, sizeof n->goal);
     int n_goals = 0;
-    for (int dx = -RING_SPAN; dx <= RING_SPAN; dx++) {
-        for (int dz = -RING_SPAN; dz <= RING_SPAN; dz++) {
+    for (int dx = -span; dx <= span; dx++) {
+        for (int dz = -span; dz <= span; dz++) {
             int cx = t_x + dx, cz = t_z + dz;
             double d = hypot(centre_x(cx) - (double)tx, centre_z(cz) - (double)tz);
-            if (d >= NAV_RING_MIN && d <= NAV_RING_MAX && is_clear(n, cx, cz)) {
+            if (d >= ring_min && d <= ring_max && is_clear(n, cx, cz)) {
                 n->goal[cz * NAV_SIZE + cx] = 1;
                 n_goals++;
             }
@@ -440,7 +459,7 @@ int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, in
     for (int i = 0; i < N_CELLS; i++) { n->g[i] = INFINITY; n->pos[i] = -1; n->parent[i] = -1; }
     int start = s_z * NAV_SIZE + s_x, size = 0, end = -1;
     n->g[start] = 0.0;
-    n->f[start] = heuristic(start, t_x, t_z);
+    n->f[start] = heuristic(start, t_x, t_z, span);
     n->heap[0] = start; n->pos[start] = 0; size = 1;
     static const int DX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
     static const int DZ[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
@@ -459,7 +478,7 @@ int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, in
             int nxt = nz * NAV_SIZE + nx;
             if (ng < n->g[nxt]) {
                 n->g[nxt] = ng;
-                n->f[nxt] = ng + heuristic(nxt, t_x, t_z);
+                n->f[nxt] = ng + heuristic(nxt, t_x, t_z, span);
                 n->parent[nxt] = cur;
                 if (n->pos[nxt] < 0) { n->heap[size] = nxt; n->pos[nxt] = size; size++; }
                 sift_up(n, n->pos[nxt]);
