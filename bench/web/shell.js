@@ -67,7 +67,17 @@ const Bench = (() => {
     info = await (await fetch('/panels.json')).json();
     const t = info.target || {};
     document.getElementById('target').textContent =
-      `target: ${t.name}` + (t.name === 'pi' ? ` (${t.relay})` : ` (motor ${t.motor})`);
+      `target: ${t.name}` + (t.name === 'pi' ? ` (${t.relay})` : ` (motor ${t.motor})`) +
+      (info.hidden && info.hidden.length ? ` · sim-only panels hidden: ${info.hidden.join(', ')}` : '');
+    // SIM vs REAL ROBOT: always visible, so nobody mistakes the sim for the car (or the reverse)
+    const badge = document.getElementById('badge');
+    if (badge) {
+      const real = t.name === 'pi' || t.name === 'usb';
+      badge.textContent = t.name === 'pi' ? 'REAL ROBOT (Pi)' : t.name === 'usb' ? 'REAL ROBOT (Uno on USB)' : 'SIM';
+      badge.className = 'badge ' + (real ? 'real' : 'sim');
+      document.body.classList.toggle('real-robot', real);
+      document.title = (real ? 'REAL ROBOT · ' : 'SIM · ') + 'TARS bench';
+    }
     connect();
     for (const f of info.panels) {
       await new Promise(res => {

@@ -29,6 +29,10 @@ WEB = os.path.join(HERE, "web")
 PLUGINS = os.path.join(HERE, "plugins")
 REPO = os.path.dirname(HERE)
 
+# Panels that only mean something with the simulated car/room. Hidden on the real targets
+# (usb = real Uno + motors on this Mac, pi = the real robot) unless --all-panels.
+SIM_ONLY_PANELS = {"car.js", "world2d.js"}
+
 CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
           ".css": "text/css; charset=utf-8", ".json": "application/json",
           ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg"}
@@ -156,7 +160,12 @@ def make_handler(bench: Bench):
             if method == "GET" and path == "/panels.json":
                 pdir = os.path.join(WEB, "panels")
                 names = sorted(f for f in os.listdir(pdir) if f.endswith(".js")) if os.path.isdir(pdir) else []
-                return self._send(200, {"panels": names, "plugins": sorted(bench.plugins), "target": bench.target})
+                hidden = []
+                if bench.target["name"] != "sim" and not getattr(bench.args, "all_panels", False):
+                    hidden = [n for n in names if n in SIM_ONLY_PANELS]
+                    names = [n for n in names if n not in SIM_ONLY_PANELS]
+                return self._send(200, {"panels": names, "hidden": hidden, "plugins": sorted(bench.plugins),
+                                        "target": bench.target, "real": bench.target["name"] != "sim"})
             fn = bench._routes.get((method, path))
             if fn:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -218,10 +227,26 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--motor", default="127.0.0.1:5555", help="tars_motor host:port (sim/usb)")
     ap.add_argument("--goto", default="127.0.0.1:5570", help="goto host:port (sim/usb)")
     ap.add_argument("--voice", default="127.0.0.1:5574", help="tars_voice laptop port (sim/usb)")
-    ap.add_argument("--relay", default="", help="pi target: <pi-ip>[:5575] of mission_relay")
-    ap.add_argument("--key", default=os.environ.get("MISSION_KEY", ""), help="pi target: relay key")
+    ap.add_argument("--relay", default="", help="pi target: <pi-ip>[:5575] of mission_relay "
+                    "(default $TARS_HOST or tars.local)")
+    ap.add_argument("--key", default=os.environ.get("MISSION_KEY", ""), help="pi target: relay key (env MISSION_KEY)")
     ap.add_argument("--plugins", default="", help="comma list to load only some plugins")
-    return ap.parse_args(argv)
+    # mission control's flags (iter2-autonomy/mission/laptop/mission.py)
+    ap.add_argument("--speed", type=float, default=0.5, help="WASD start speed (fraction of max)")
+    ap.add_argument("--laptop-stt", action="store_true",
+                    help="mission panel push-to-talk: whisper on the laptop, send only HEAR <text>")
+    ap.add_argument("--stt-cli", default=os.path.join(REPO, "iter2-autonomy", "voice", "build", "stt_cli"))
+    ap.add_argument("--model", default=os.path.join(REPO, "iter2-autonomy", "voice", "models", "ggml-tiny.en-q5_1.bin"))
+    ap.add_argument("--all-panels", action="store_true", help="show sim-only panels on usb/pi targets too")
+    a = ap.parse_args(argv)
+    if a.target == "pi":
+        a.relay = a.relay or os.environ.get("TARS_HOST", "tars.local")
+        if not a.key:
+            ap.error("--target pi needs the relay key: --key <key> or MISSION_KEY=<key> "
+                     "(the same one mission_relay was started with)")
+    if a.laptop_stt and not (os.path.exists(a.stt_cli) and os.path.exists(a.model)):
+        ap.error(f"--laptop-stt needs {a.stt_cli} (make -C iter2-autonomy/voice host) and {a.model}")
+    return a
 
 
 def main(argv=None) -> int:
