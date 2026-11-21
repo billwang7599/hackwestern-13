@@ -126,6 +126,11 @@ def serve():
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else 'status'
+    if command == 'stop':
+        STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / 'paused').touch()
+    elif command == 'start':
+        (STATE / 'paused').unlink(missing_ok=True)
     if command == 'run':
         serve()
     elif command == 'start':
