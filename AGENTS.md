@@ -4,7 +4,7 @@ Read [PLAN.md](PLAN.md) first. It has the architecture, the CPU budget and the c
 
 ## Ground rules
 
-- **QNX native is the selling point.** Everything that runs on the robot is C/C++ built with `qcc` for QNX 8.0 (aarch64le): `tars_motor`, voice, the intent classifier, go-to and the detector. Python is only for laptop tools, model export/training and Mac test harnesses. `pi/tars_bridge.py` is a bring-up tool, not the demo path.
+- **QNX native is the selling point.** Everything that runs on the robot is C/C++ built with `qcc` for QNX 8.0 (aarch64le): `tars_motor`, voice, the intent classifier, go-to and the detector. Python is only for laptop tools, model export/training and Mac test harnesses. No Python fallbacks on the robot: if the native path breaks, fix it.
 - **Hackathon, 30 h.** Prefer the smallest change that works on the real robot. No refactors for their own sake.
 - **Fully local at runtime.** Nothing on the robot may need the laptop or the internet once it's booted. The laptop is only for building, deploying and WASD teleop.
 - **Pi decides, Uno moves.** Pi code never drives motor pins. The Uno never decides where to go.
