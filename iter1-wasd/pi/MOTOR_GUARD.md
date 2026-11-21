@@ -148,3 +148,7 @@ this operation followed by a bounded drive pulse. Headless status now includes
 `keyboard` (keys, last_press, last_keys, event_count, owner, connection state),
 and motor serial device presence plus historical Arduino READY message count.
 Keyboard input is reported even when the LiDAR gate refuses motor output.
+
+### Physical keyboard obstacle override
+
+Hold either Shift key and press one WASD direction on the Pi keyboard. Release Shift or the direction to stop. Each shifted press lasts at most two seconds. The manual bridge renews a 150 ms native lease at quarter speed. The supervisor gives only the dashboard and motor server a per-run credential for the KD command. An opted-in guard tags fresh classified obstacles with GOB1 and a zero permit byte. Ordinary drive and autonomous clients still see a denial. Missing or stale input, loss of tracking, stop, bump and tip-over still inhibit the shifted drive.

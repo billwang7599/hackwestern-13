@@ -138,6 +138,11 @@ class DebugDrive:
         return self.left, self.right
 
 
+def classified_obstacle(safety):
+    return (safety.get('live') is True and safety.get('connected') is True
+            and safety.get('verdict') == 'BLOCKED' and safety.get('reason') == 'obstacle')
+
+
 class MotorLink:
     """Best-effort phone command bridge; the native gate is the final authority.
 
@@ -150,6 +155,8 @@ class MotorLink:
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.requested = (0.0, 0.0)
+        self.override_key = None
+        self.keyboard_auth = os.getenv("TARS_KEYBOARD_AUTH")
         self.generation = 0
         self.denied_generation = -1
         self.lease_generation = -1
@@ -163,8 +170,9 @@ class MotorLink:
         self.nav_event = ''
         self.nav_event_time = 0.0
 
-    def update(self, left, right, generation):
+    def update(self, left, right, generation, override_key=None):
         with self.lock:
+            self.override_key = override_key
             self.requested = (left, right)
             self.generation = generation
             self.expires = time.monotonic() + 0.15
@@ -200,11 +208,14 @@ class MotorLink:
                 pass
             self.stop.wait(2)
 
+    def desired_locked(self):
+        if time.monotonic() >= self.expires or self.generation == self.denied_generation:
+            return (0.0, 0.0), self.generation
+        return self.requested, self.generation
+
     def desired(self):
         with self.lock:
-            if time.monotonic() >= self.expires or self.generation == self.denied_generation:
-                return (0.0, 0.0), self.generation
-            return self.requested, self.generation
+            return self.desired_locked()
 
     @staticmethod
     def parse_status(line):
@@ -267,8 +278,9 @@ class MotorLink:
                             self.latest, self.received = initial, time.monotonic()
                             self.denied_generation = self.generation
                         while not self.stop.is_set():
-                            (left, right), generation = self.desired()
                             with self.lock:
+                                (left, right), generation = self.desired_locked()
+                                key = self.override_key
                                 stop_now = self.stop_pending
                                 self.stop_pending = False
                                 if (left or right) and self.lease_generation != generation:
@@ -281,6 +293,8 @@ class MotorLink:
                             starting_drive = driving and not sent_drive
                             if driving or sent_drive or stop_now:
                                 command = f'DL {epoch} {left:.3f} {right:.3f}' if driving else 'S'
+                                if driving and key in ('w', 'a', 's', 'd') and self.keyboard_auth:
+                                    command = f'KD {self.keyboard_auth} {key}'
                                 reply = exchange(command)
                                 with self.lock:
                                     self.error = None if reply.startswith('OK') else reply
@@ -300,7 +314,7 @@ class MotorLink:
                                 self.latest, self.received = status, time.monotonic()
                                 # STATUS can still describe the idle watchdog tick
                                 # immediately after the first accepted DL refreshed it.
-                                if driving and status['inhibited'] and not (starting_drive and status['reason'] == 'watchdog'):
+                                if driving and status['inhibited'] and not (starting_drive and (status['reason'] == 'watchdog' or (key and status['reason'] == 'guard_blocked'))):
                                     self.denied_generation = generation
                             self.stop.wait(0.05)
                         exchange('S')

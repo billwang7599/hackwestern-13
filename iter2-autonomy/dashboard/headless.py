@@ -9,7 +9,7 @@ import threading
 import time
 from dashboard import Feed, stop_feed
 from video import VideoFeed
-from control import ControlLink, DebugDrive, MotorLink
+from control import ControlLink, DebugDrive, MotorLink, classified_obstacle
 from mapping import SceneFeed
 from edge_status import EdgeStatus
 from headless_keyboard import HeadlessKeyboard
@@ -154,18 +154,20 @@ def main():
             native = motors.snapshot()
             was_claimed = keyboard.drive.claimed
             previous_mask = keyboard.previous
-            keyboard_live = keyboard.sample(enabled and permitted and native.get('connected', False))
+            keyboard_ready = enabled and native.get('connected', False)
+            override_ready = keyboard_ready and classified_obstacle(edge_snapshot['safety'])
+            keyboard_live = keyboard.sample(keyboard_ready and permitted, override_ready)
             if keyboard_live and keyboard.previous & 16 and not previous_mask & 16:
                 motors.request_stop()
             if was_claimed and not keyboard.drive.claimed:
                 drive.command({'op': 'halt'}, now)
                 left = right = 0
             if keyboard.drive.claimed:
-                left, right = keyboard.drive.state(keyboard_live and enabled and permitted and native.get('connected', False))
+                left, right = keyboard.drive.state(keyboard_live and keyboard_ready and (permitted or (keyboard.override_key and override_ready)))
                 if keyboard.drive.generation != last_keyboard_generation:
                     drive.generation += 1
                     last_keyboard_generation = keyboard.drive.generation
-            motors.update(left, right, drive.generation)
+            motors.update(left, right, drive.generation, keyboard.override_key if keyboard.drive.claimed else None)
             motor_status = motors.snapshot()
             motor_status['serial_device'] = os.environ.get('TARS_MOTOR_DEVICE')
             motor_status['serial_device_present'] = os.path.exists(os.environ.get('TARS_MOTOR_DEVICE', ''))

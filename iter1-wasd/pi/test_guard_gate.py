@@ -24,7 +24,7 @@ class GateHarness(unittest.TestCase):
         self.tcp, self.udp = port(), port(socket.SOCK_DGRAM)
         self.sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.proc = subprocess.Popen([BINARY, '-b', 'stub', '-l', '-g', str(self.udp),
-                                      '-p', str(self.tcp)], stderr=subprocess.DEVNULL)
+                                      '-p', str(self.tcp)], env=dict(os.environ, TARS_KEYBOARD_AUTH='k'*32), stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
                 self.sock = socket.create_connection(('127.0.0.1', self.tcp), timeout=.2)
@@ -157,6 +157,38 @@ class GateTests(GateHarness):
             wait_for(moving)
         finally:
             done.set(); link.stop.set(); producer.join(2); worker.join(2)
+
+    def test_shift_only_bypasses_a_classified_obstacle(self):
+        key = 'KD ' + 'k'*32 + ' w'
+        def obstacle():
+            stamp = time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000
+            self.sender.sendto(struct.pack('!4sQB', b'GOB1', stamp, 0), ('127.0.0.1', self.udp))
+        def wheels():
+            return list(map(float, self.command('STATUS').split()[1:3]))
+
+        self.assertTrue(self.command(key).startswith('ERR'))
+        self.send(0); time.sleep(.03)
+        self.assertTrue(self.command(key).startswith('ERR'))
+        obstacle(); time.sleep(.03)
+        self.assertTrue(self.command('KD invalid w').startswith('ERR'))
+        self.assertTrue(self.command('D .25 .25').startswith('ERR'))
+        self.assertEqual(self.command(key), 'OK')
+        time.sleep(.04)
+        self.assertGreater(min(wheels()), 0)
+        # Continued obstacle reports cannot renew a released keyboard lease.
+        for _ in range(6):
+            obstacle(); time.sleep(.04)
+        self.assertEqual(wheels(), [0, 0])
+        self.assertEqual(self.command(key), 'OK')
+        self.assertEqual(self.command('S'), 'OK')
+        time.sleep(.03)
+        self.assertEqual(wheels(), [0, 0])
+        self.assertEqual(self.command(key), 'OK')
+        self.send(0); time.sleep(.03)
+        self.assertEqual(wheels(), [0, 0])
+        self.assertTrue(self.command(key).startswith('ERR'))
+        time.sleep(.12)
+        self.assertTrue(self.command(key).startswith('ERR'))
 
     def test_nonfinite_drive_rejected(self):
         self.clear()

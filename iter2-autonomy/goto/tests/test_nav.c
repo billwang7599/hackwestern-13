@@ -43,7 +43,9 @@ static size_t ldr1(unsigned char *buf, int framed, uint32_t flags, float px, flo
     size_t o = 0;
     memcpy(p, "LDR1", 4); o = 4;
     o += put32(p + o, 7);                 /* seq */
-    o += put32(p + o, 0); o += put32(p + o, 123456);   /* uptime u64 */
+    static uint64_t source_us = 1000000;
+    source_us += 200000;
+    o += put32(p + o, (uint32_t)(source_us >> 32)); o += put32(p + o, (uint32_t)source_us);
     o += put32(p + o, flags);
     o += put32(p + o, count);
     o += putf(p + o, px); o += putf(p + o, 1.0f); o += putf(p + o, pz); o += putf(p + o, yaw);
@@ -302,6 +304,65 @@ static void test_ldr1(void)
     CHECK(nav_ingest_ldr1(N, buf, len) == NAV_LDR1_MAPPED, "1024 points, framed");
 }
 
+/* Dynamic occupancy: distinct whole frames, bounded gaps, real elapsed time. */
+static void test_recovery(void)
+{
+    unsigned char b[NAV_LDR1_MAX_BODY];
+    float floor_pts[80][3];
+    for (int i = 0; i < 80; i++) {
+        floor_pts[i][0] = cw(100); floor_pts[i][1] = 0; floor_pts[i][2] = cw(60 + i);
+    }
+    room();
+    nav_set_robot_radius(N, 0.1f);
+    fill(100, 60, 101, 140, NAV_OCC);
+    nav_pt_t route[NAV_MAX_PATH];
+    CHECK(nav_plan(N, cw(90), cw(100), cw(115), cw(100), route, NAV_MAX_PATH) < 0,
+          "temporary wall blocks A*");
+    size_t len = ldr1(b, 0, 7, 0, 0, 0, 0, floor_pts, 80);
+    nav_ingest_ldr1_at(N, b, len, 1000000);
+    for (int i = 0; i < 20; i++)
+        CHECK(nav_ingest_ldr1_at(N, b, len, 1100000 + i * 100000) == NAV_LDR1_OLD,
+              "replayed packet not clearance evidence");
+    CHECK(nav_cell_at(N, 100, 100) == NAV_OCC, "replay/silence cannot clear a wall");
+    for (int i = 0; i < 5; i++) {
+        len = ldr1(b, 0, 7, 0, 0, 0, 0, floor_pts, 80);
+        nav_ingest_ldr1_at(N, b, len, 4000000 + i * 150000);
+        if (i < 4) CHECK(nav_cell_at(N, 100, 100) == NAV_OCC, "hysteresis retains obstacle");
+    }
+    CHECK(nav_cell_at(N, 100, 100) == NAV_FREE, "five floor frames over 600ms clear temporary wall");
+    CHECK(nav_plan(N, cw(90), cw(100), cw(115), cw(100), route, NAV_MAX_PATH) > 0,
+          "A* route reopens using the recovered grid");
+    float both[2][3] = {{cw(100), 0, cw(100)}, {cw(100), .5f, cw(100)}};
+    len = ldr1(b, 0, 7, 0, 0, 0, 0, both, 2);
+    nav_ingest_ldr1_at(N, b, len, 5000000);
+    CHECK(nav_cell_at(N, 100, 100) == NAV_OCC, "new obstacle blocks immediately even with floor in frame");
+    float one[1][3] = {{cw(100), 0, cw(100)}};
+    for (int i = 0; i < 8; i++) {
+        len = ldr1(b, 0, 7, 0, 0, 0, 0, one, 1);
+        nav_ingest_ldr1_at(N, b, len, 5100000 + i);  /* burst, not elapsed observations */
+    }
+    CHECK(nav_cell_at(N, 100, 100) == NAV_OCC, "backlog burst cannot clear obstacle");
+    for (int i = 0; i < 5; i++) {
+        len = ldr1(b, 0, 7, 0, 0, 0, 0, one, 1);
+        nav_ingest_ldr1_at(N, b, len, 6000000 + i * 600000); /* gaps too long */
+    }
+    CHECK(nav_cell_at(N, 100, 100) == NAV_OCC, "disconnected observations cannot accumulate");
+    for (int i = 0; i < 4; i++) {
+        len = ldr1(b, 0, 7, 0, 0, 0, 0, one, 1);
+        nav_ingest_ldr1_at(N, b, len, 10000000 + i * 150000);
+    }
+    len = ldr1(b, 0, 0, 0, 0, 0, 0, one, 1);
+    nav_ingest_ldr1_at(N, b, len, 10600000);
+    len = ldr1(b, 0, 7, 0, 0, 0, 0, one, 1);
+    nav_ingest_ldr1_at(N, b, len, 10750000);
+    CHECK(nav_cell_at(N, 100, 100) == NAV_OCC, "tracking loss cancels pending recovery");
+    for (int i = 0; i < 8; i++) {
+        len = ldr1(b, 0, 7, 0, 0, 0, 0, both, 2);
+        nav_ingest_ldr1_at(N, b, len, 11000000 + i * 150000);
+    }
+    CHECK(nav_cell_at(N, 100, 100) == NAV_OCC, "persistent person/wall is not cleared by adjacent floor");
+}
+
 /* deterministic fuzz: mutated good packets + random bytes; must never crash
  * (ASan/UBSan build) and must only ever return a documented code */
 static uint64_t rng = 0x9e3779b97f4a7c15ull;
@@ -336,7 +397,7 @@ static void test_fuzz(int iters)
         memcpy(h, buf, len);
         int rc = nav_ingest_ldr1(N, h, len);
         free(h);
-        if (rc != NAV_LDR1_MAPPED && rc != NAV_LDR1_SKIPPED && rc != NAV_LDR1_BAD) bad_rc++;
+        if (rc != NAV_LDR1_MAPPED && rc != NAV_LDR1_SKIPPED && rc != NAV_LDR1_OLD && rc != NAV_LDR1_BAD) bad_rc++;
         mapped += rc == NAV_LDR1_MAPPED;
         if (it % 5000 == 0) {        /* plan on whatever the fuzz produced */
             nav_pt_t p[NAV_MAX_PATH];
@@ -378,6 +439,7 @@ int main(int argc, char **argv)
     test_line_clear();
     test_pose();
     test_ldr1();
+    test_recovery();
     test_big_map();
     test_fuzz(iters);
     nav_free(N);

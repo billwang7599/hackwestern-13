@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import secrets
 import select
 import signal
 import socket
@@ -35,7 +36,12 @@ def serve():
     backend = os.environ.get('TARS_MOTOR_BACKEND', 'stub')
     if backend not in ('stub', 'uno', 'pico'):
         raise ValueError('TARS_MOTOR_BACKEND must be stub, uno, or pico')
-    motor_command = [str(HERE.parents[1] / 'iter1-wasd/pi/build/tars_motor'), '-b', backend, '-l', '-g', '5568']
+    flat_layout = HERE.parent.name == 'pi'
+    motor_dir = HERE.parent if flat_layout else HERE.parents[1] / 'iter1-wasd/pi'
+    phone_ports = (5557, 5558, 5559, 5561, 5562, 5563)
+    if not flat_layout:
+        phone_ports += (5573,)
+    motor_command = [str(motor_dir / 'build/tars_motor'), '-b', backend, '-l', '-g', '5568']
     if backend != 'stub':
         device = os.environ.get('TARS_MOTOR_DEVICE')
         if not device or not (device.startswith('/dev/') or device == str(STATE / 'uno-serial')):
@@ -44,7 +50,7 @@ def serve():
     print('Motor backend: ' + backend + (' (no physical motor output)' if backend == 'stub' else ''), flush=True)
     commands = {
         'usbmuxd': ['sudo', '-n', 'sh', str(USB / 'run-usbmuxd.sh')],
-        **{f'proxy{p}': [str(USB / 'install/bin/iproxy'), '-l', '-s', '127.0.0.1', f'{p}:{p}'] for p in (5557, 5558, 5559, 5561, 5562, 5563, 5573)},
+        **{f'proxy{p}': [str(USB / 'install/bin/iproxy'), '-l', '-s', '127.0.0.1', f'{p}:{p}'] for p in phone_ports},
         **({'uno_bridge': ['sudo', '-n', sys.executable, str(USB / 'uno_bridge.py')]}
            if backend == 'uno' and device == str(STATE / 'uno-serial') else {}),
         'motor': motor_command,
@@ -55,8 +61,35 @@ def serve():
            if os.environ.get('TARS_ENABLE_MIDAS') == '1' else {}),
         'headless': [sys.executable, str(HERE / 'headless.py')],
     }
+    # The installed flat Pi layout keeps navigation under iter2-autonomy.
+    nav = HERE.parent / 'goto'
+    if not nav.is_dir():
+        nav = HERE.parents[1] / 'iter2-autonomy/goto'
+    keyboard_auth = secrets.token_hex(16)
+    nav_mode = env.get('TARS_ENABLE_GOTO', 'map')
+    commands['guard'] += ['--identify-obstacles', '1']
+    if nav_mode != '0':
+        commands['guard'] += ['--nav-port', '5572']
+        commands['goto'] = [str(nav / 'build/goto'), '-c', str(nav / 'goto.conf'),
+                            '-o', str(nav / 'objects.txt')]
+        if nav_mode == 'map':
+            # Add the map to the manual-drive profile without enabling autonomy.
+            commands['goto'] += ['-m', '127.0.0.1:0']
+        elif nav_mode == '1':
+            commands['guard'] += ['--require-clear', '1']
+        else:
+            raise ValueError('TARS_ENABLE_GOTO must be 0, 1 or map')
+
     def launch(name):
-        children[name] = subprocess.Popen(commands[name], env=env, stdin=subprocess.DEVNULL)
+        child_env = env
+        if name in ('motor', 'headless'):
+            child_env = dict(env, TARS_KEYBOARD_AUTH=keyboard_auth)
+        elif name == 'goto':
+            preload = str(nav / 'build/loopback_bind.so')
+            if not os.path.isfile(preload):
+                raise RuntimeError('Missing QNX goto loopback binding library')
+            child_env = dict(env, LD_PRELOAD=preload + (':' + env['LD_PRELOAD'] if env.get('LD_PRELOAD') else ''))
+        children[name] = subprocess.Popen(commands[name], env=child_env, stdin=subprocess.DEVNULL)
         print(f'Started {name}: {children[name].pid}', flush=True)
     def terminate(proc):
         if proc.poll() is None:
@@ -72,7 +105,7 @@ def serve():
         admin.bind(ADDRESS)
         admin.listen(4)
         # Refuse to compete with an independently running proxy.
-        for port in (5555, 5557, 5558, 5559, 5561, 5562, 5563, 5573):
+        for port in (5555, *phone_ports, *((5570, 5571, 5572) if 'goto' in commands else ())):
             with socket.socket() as probe:
                 if probe.connect_ex(('127.0.0.1', port)) == 0:
                     raise RuntimeError(f'Port {port} already in use; stop the existing proxy first')

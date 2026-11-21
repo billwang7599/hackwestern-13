@@ -34,6 +34,7 @@
 #define TARS_NAV_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #define NAV_SIZE      200
 #define NAV_RES       0.1
@@ -53,6 +54,9 @@
 #define NAV_FLOOR_BAND  0.06       /* |h| <= this: observed floor -> FREE */
 #define NAV_OBS_MIN     0.08       /* MIN_HEIGHT <= h <= MAX_HEIGHT: OCC  */
 #define NAV_OBS_MAX     1.2
+#define NAV_CLEAR_FRAMES 5
+#define NAV_CLEAR_SPAN_US 600000u
+#define NAV_CLEAR_GAP_US 500000u
 #define NAV_DEFAULT_ROBOT_RADIUS 0.35   /* mapping.py ROBOT_RADIUS; set the real one */
 #define NAV_RING_MIN    0.6        /* approach ring around the target, metres */
 #define NAV_RING_MAX    0.85
@@ -79,9 +83,10 @@ enum { NAV_POSE_NONE = 0, NAV_POSE_ARKIT = 1, NAV_POSE_DR = 2, NAV_POSE_STALE = 
 
 /* LDR1 ingest results (>= 0 is a valid packet) */
 enum { NAV_LDR1_MAPPED = 0, NAV_LDR1_SKIPPED = 1 /* valid, but tracking/floor not OK: no map change */,
+       NAV_LDR1_OLD = 2 /* duplicate/out-of-order: no pose/map/freshness change */,
        NAV_LDR1_BAD = -1 };
 
-nav_t *nav_new(void);                     /* ~1.4 MB, all scratch preallocated; NULL on OOM */
+nav_t *nav_new(void);                     /* ~2.2 MiB, all scratch preallocated; NULL on OOM */
 void   nav_free(nav_t *n);
 void   nav_reset(nav_t *n);               /* all cells UNKNOWN, pose/anchor/floor forgotten */
 void   nav_set_robot_radius(nav_t *n, float metres);  /* footprint for inflation (default 0.35) */
@@ -94,7 +99,7 @@ int  nav_get_pose(const nav_t *n, float *x, float *z, float *yaw_rad);  /* NAV_P
  * have been measured before the move ended (link latency; DR is already current). */
 unsigned nav_pose_seq(const nav_t *n);
 
-/* One world point. y_above_floor = point y - floor y.
+/* Single-point fixture/debug helper, not the live ingest/recovery path. y_above_floor = point y - floor y.
  * |h| <= 0.06 -> FREE if it was UNKNOWN (never clears an obstacle);
  * 0.08 <= h <= 1.2 -> OCC; anything else is ignored. */
 void nav_mark_point(nav_t *n, float x, float y_above_floor, float z);
@@ -111,6 +116,8 @@ void nav_carve_ray(nav_t *n, float x0, float z0, float x1, float z1);
  * sets the pose when tracking+heading are set. A floor_y jump > 0.1 m
  * clears the grid (like mapping.py). Returns NAV_LDR1_*. */
 int nav_ingest_ldr1(nav_t *n, const unsigned char *buf, size_t len);
+/* Explicit monotonic receive time for deterministic recovery tests. */
+int nav_ingest_ldr1_at(nav_t *n, const unsigned char *buf, size_t len, uint64_t received_us);
 
 /* A* from (sx,sz) to the approach ring around (tx,tz). Writes the corners of
  * the route (collinear cells removed, start excluded, last = approach point,
@@ -129,7 +136,9 @@ int nav_line_clear(const nav_t *n, float x0, float z0, float x1, float z1);
 int nav_line_clear_ex(const nav_t *n, float x0, float z0, float x1, float z1, float end_margin);
 
 int      nav_cell(const nav_t *n, float x, float z);   /* NAV_UNKNOWN off-map */
-unsigned nav_version(const nav_t *n);                  /* bumps on every grid change */
+unsigned nav_version(const nav_t *n);
+unsigned nav_generation(const nav_t *n);
+int nav_floor(const nav_t *n, float *floor, float *camera_y);
 
 /* Debug / tests */
 int  nav_cell_at(const nav_t *n, int ix, int iz);

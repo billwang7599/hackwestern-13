@@ -64,6 +64,25 @@ class HeadlessKeysTest(unittest.TestCase):
         self.assertEqual(k.snapshot()['last_press'],['W'])
         self.assertEqual(k.snapshot()['last_keys'],['RELEASE'])
 
+    def test_shift_chord_release_stop_and_stale(self):
+        k = HeadlessKeyboard()
+        for t,mask in [(10,0),(10.1,64),(10.2,65)]:
+            k.clock=lambda: t
+            k.latest=(int(t*1e6),1,mask)
+            k.sample(False, obstacle_override=True)
+        self.assertEqual(k.override_key, 'w')
+        self.assertEqual(k.snapshot()['keys'], ['W','SHIFT'])
+        self.frame(k,10.3,1)
+        self.assertIsNone(k.override_key)
+        self.assertEqual(k.drive.state(True),(0,0))
+        self.frame(k,10.4,0); self.frame(k,10.5,65)
+        self.frame(k,10.6,81)
+        self.assertIsNone(k.override_key)
+        self.frame(k,10.7,0); self.frame(k,10.8,65)
+        k.clock=lambda:11.2
+        self.assertFalse(k.sample(False, True))
+        self.assertIsNone(k.override_key)
+
     def test_disconnect_and_future_timestamp(self):
         k=HeadlessKeyboard()
         self.frame(k,10,0); self.frame(k,10.1,1)

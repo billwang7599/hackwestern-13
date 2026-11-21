@@ -49,7 +49,7 @@ tbody tr+tr td{border-top:1px solid #263237}
   <div class="legend" id="depth-key" title="Distance from the phone">0 m<i class="ramp"></i>20 m+</div>
 </section>
 <section class="map floor">
-  <div class="bar"><h2>Floor map</h2><div class="tools"><button id="floor-reset">Recenter</button><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in">+</button></div></div>
+  <div class="bar"><h2>Floor map <small id="map-source" class="muted"></small></h2><div class="tools"><button id="floor-reset">Recenter</button><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in">+</button></div></div>
   <canvas id="floor" title="Drag or two-finger pan · pinch to zoom" aria-label="Floor occupancy and planned path"></canvas>
   <div class="legend"><i class="key free"></i>Free<i class="key blocked"></i>Blocked<i class="key inferred"></i>Inferred</div>
 </section>
@@ -163,6 +163,8 @@ async function update() {
         if (!response.ok) throw Error();
         room = await response.json();
         patches = unpack(room.surface_splats);
+        el('map-source').textContent = room.grid_source === 'native-nav'
+            ? (room.native_map_live ? '· A* map' : '· A* map stale') : '· preview';
         if (room.pose && room.points3d?.length && framedSession !== (room.session ?? 'current')) {
             fitScene();
             fitFloor();

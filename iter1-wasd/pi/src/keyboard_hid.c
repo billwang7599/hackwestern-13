@@ -23,12 +23,13 @@ static void stop(int s) { (void)s; running=0; }
 static void report(struct hidd_connection *c, struct hidd_report *r, void *data, _Uint32t n, _Uint32t flags, void *u) {
     (void)c; (void)r; (void)u;
     unsigned char *p=data; int m=0;
-    if (n!=8 || (flags&HIDD_REPORT_BUFFER_OVERFLOW) || (n==8 && p[0])) m=16;
+    if (n!=8 || (flags&HIDD_REPORT_BUFFER_OVERFLOW) || (n==8 && (p[0] & ~0x22u))) m=16;
     else for (unsigned i=2;i<8;i++) {
         switch(p[i]) { case 0x1a:m|=1;break; case 0x16:m|=2;break;
         case 4:m|=4;break; case 7:m|=8;break; case 0x29:case 0x2c:m|=16;break;
         case 9:m|=32;break; case 1:case 2:case 3:m|=16;break; }
     }
+    if (n==8 && (p[0] & 0x22u) && !(m & 16)) m |= 64; /* left or right Shift */
     pthread_mutex_lock(&lock); mask=m; stamp=micros(); pthread_mutex_unlock(&lock);
 }
 static void insertion(struct hidd_connection *c, hidd_device_instance_t *d) {

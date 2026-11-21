@@ -92,6 +92,8 @@ static nav_t *nav;
 static double nav_last_pose = -1, nav_last_pkt = -1;   /* last tracking-OK pose packet, any packet */
 static int nav_ark_live;
 static long nav_pkts, nav_bad;
+static int nav_map_valid;
+static char nav_session[65];
 
 /* ------------------------------------------------------------------ time */
 static double now_s(void)
@@ -423,6 +425,64 @@ static int motor_ready(conn *c)
 static char last_det[LINE_MAX_] = "{}";
 static double last_det_t = -1;
 
+/* Single-threaded snapshot: grid, pose and active A* route belong to one instant. */
+static void nav_snapshot(int fd)
+{
+    float x = 0, z = 0, yaw = 0, floor = 0, cy = 0;
+    int source = nav_get_pose(nav, &x, &z, &yaw);
+    int have_floor = nav_floor(nav, &floor, &cy);
+    double age = nav_last_pkt < 0 ? -1 : (now_s() - nav_last_pkt) / time_scale;
+    int live = nav_map_valid && have_floor && nav_ark_live && source == NAV_POSE_ARKIT &&
+               age >= 0 && age <= cfg.nav_pose_fresh_s;
+    size_t cap = NAV_SIZE * NAV_SIZE + 20000, o;
+    char *out = malloc(cap);
+    if (!out) { send_str(fd, "ERR out of memory\n"); return; }
+    o = (size_t)snprintf(out, cap,
+        "{\"source\":\"native-nav\",\"instance\":%ld,\"epoch\":%u,\"version\":%u,"
+        "\"session\":\"%s\",\"size\":%d,\"resolution\":%.2f,\"origin\":[%.2f,%.2f],"
+        "\"live\":%s,\"feed_age_s\":%.3f,\"floor_ready\":%s,\"floor_y\":%.4f,"
+        "\"pose\":[%.4f,%.4f,%.4f,%.5f],\"robot_radius\":%.2f,\"grid\":\"",
+        (long)getpid(), nav_generation(nav), nav_version(nav), nav_session, NAV_SIZE, NAV_RES,
+        NAV_ORIGIN_X, NAV_ORIGIN_Z, live ? "true" : "false", age, have_floor ? "true" : "false",
+        floor, x, cy, z, yaw, NAV_DEFAULT_ROBOT_RADIUS);
+    for (int iz = 0; iz < NAV_SIZE; iz++)
+        for (int ix = 0; ix < NAV_SIZE; ix++) out[o++] = (char)('0' + nav_cell_at(nav, ix, iz));
+    o += (size_t)snprintf(out + o, cap - o, "\",\"path\":[");
+    int count = sm.map_mode && goto_sm_busy(&sm) ? sm.path_n : 0;
+    for (int i = 0; i < count && i < NAV_MAX_PATH; i++)
+        o += (size_t)snprintf(out + o, cap - o, "%s[%.3f,%.3f]", i ? "," : "", sm.path[i].x, sm.path[i].z);
+    snprintf(out + o, cap - o, "],\"path_index\":%d,\"state\":\"%s\"}\n",
+             count ? sm.path_i : 0, goto_state_name(sm.st));
+    /* A stalled visualizer must never block navigation/STOP handling. Allow one
+     * bounded snapshot in the socket buffer; discard the connection on backpressure.
+     * The display rejects a truncated line and reconnects, with no local fallback. */
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        shutdown(fd, SHUT_RDWR); free(out); return;
+    }
+    size_t length = strlen(out), sent = 0;
+    while (sent < length) {
+        ssize_t k = send(fd, out + sent, length - sent, MSG_DONTWAIT);
+        if (k < 0 && errno == EINTR) continue;
+        if (k <= 0) { shutdown(fd, SHUT_RDWR); break; }
+        sent += (size_t)k;
+    }
+    fcntl(fd, F_SETFL, flags);
+    free(out);
+}
+
+static void reset_nav_map(void)
+{
+    goto_sm_cancel(&sm, now_s(), "map reset");
+    run_actions();
+    nav_reset(nav);
+    nav_last_pkt = nav_last_pose = -1;
+    nav_ark_live = nav_map_valid = 0;
+    /* Positions from a different AR world must not become navigation targets. */
+    goto_mem_init(&mem);
+    mem.dirty = 1;
+}
+
 static void handle_ctl(conn *c, char *line)
 {
     char cmd[16] = "", reply[4096];
@@ -463,6 +523,22 @@ static void handle_ctl(conn *c, char *line)
         snprintf(reply, sizeof reply, "%s recall %s\n", goto_sm_busy(&sm) ? "OK" : "ERR not remembered:", objs.obj[t]);
         send_str(c->fd, reply);
         run_actions();
+    } else if (!strcasecmp(cmd, "NAV") && !strcasecmp(arg, "SNAPSHOT")) {
+        nav_snapshot(c->fd);
+    } else if (!strcasecmp(cmd, "NAV") && !strcasecmp(arg, "RESET")) {
+        reset_nav_map();
+        send_str(c->fd, "OK reset\n");
+    } else if (!strcasecmp(cmd, "NAV") && !strncasecmp(arg, "SESSION ", 8)) {
+        const char *token = arg + 8;
+        if (strlen(token) != 64 || strspn(token, "0123456789abcdef") != 64) {
+            send_str(c->fd, "ERR session must be a SHA-256 hex token\n");
+        } else {
+            if (strcmp(token, nav_session)) {
+                reset_nav_map();
+                snprintf(nav_session, sizeof nav_session, "%s", token);
+            }
+            send_str(c->fd, "OK session\n");
+        }
     } else if (!strcasecmp(cmd, "NAV") && !strcasecmp(arg, "ROUTE")) {
         /* the route goto is following, in the nav (ARKit) frame, metres; i = next waypoint */
         size_t o = (size_t)snprintf(reply, sizeof reply, "OK route=");
@@ -612,6 +688,8 @@ static void nav_packet(const unsigned char *b, size_t len)
     int r = nav_ingest_ldr1(nav, b, len);
     nav_pkts++;
     if (r < 0) { nav_bad++; return; }
+    if (r == NAV_LDR1_OLD) return;
+    nav_map_valid = r == NAV_LDR1_MAPPED;
     nav_last_pkt = now_s();
     if (len >= off + 20) {
         unsigned flags = (unsigned)b[off + 16] << 24 | (unsigned)b[off + 17] << 16 | (unsigned)b[off + 18] << 8 | b[off + 19];
@@ -683,6 +761,8 @@ static void accept_into(int lfd, conn *arr, int n, const char *what)
     int fd = accept(lfd, NULL, NULL);
     if (fd < 0) return;
     int one = 1;
+    int capacity = 131072;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &capacity, sizeof capacity);
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
 #ifdef SO_NOSIGPIPE
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);

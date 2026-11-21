@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 #define GATE_TTL_US 100000ULL
-static int fd = -1, enabled, permit;
+static int fd = -1, enabled, permit, obstacle;
 static uint64_t stamp;
 static const char *reason = "disabled";
 static uint64_t now_us(void) {
@@ -34,7 +34,7 @@ int guard_gate_init(int port) {
 int guard_gate_poll(void) {
     if (!enabled) return 1;
     unsigned char packet[32];
-    int denied_this_poll = 0, invalid_this_poll = 0;
+    int denied_this_poll = 0, invalid_this_poll = 0, other_denial = 0;
     /* Small fixed packets; bounded work even if a faulty sender floods us.
        Timestamp uses this host's CLOCK_MONOTONIC, so queued/replayed CLEAR
        packets cannot extend a lease. Localhost is a trust boundary, not auth. */
@@ -42,12 +42,14 @@ int guard_gate_poll(void) {
         ssize_t n=recv(fd,packet,sizeof packet,0);
         if (n<0) break;
         uint64_t now=now_us();
-        if (n!=13 || memcmp(packet,"GAT1",4) || packet[12]>1) {
+        int classified = n == 13 && !memcmp(packet,"GOB1",4) && packet[12] == 0;
+        if (n!=13 || (!classified && memcmp(packet,"GAT1",4)) || packet[12]>1) {
             permit=0; denied_this_poll=1; invalid_this_poll=1; reason="guard_invalid"; continue;
         }
         uint64_t sent=be64(packet+4);
         if (sent<=stamp || sent>now || now-sent>=GATE_TTL_US) continue;
-        stamp=sent; permit=packet[12];
+        stamp=sent; permit=packet[12]; obstacle=classified;
+        if (!permit && !classified) other_denial=1;
         if (!permit) denied_this_poll=1;
         reason=permit ? "clear" : "guard_blocked";
     }
@@ -58,11 +60,13 @@ int guard_gate_poll(void) {
     /* Only a well-formed, fresh BLOCKED may read as "guard_blocked": tars_motor
        lets an in-place TURN through on that reason, so an invalid packet or a
        stale/missing guard must never be relabelled as blocked. */
+    if (invalid_this_poll || stale || other_denial) obstacle=0;
     if (invalid_this_poll) { reason="guard_invalid"; return 0; }
     if (denied_this_poll) { if (!stale) reason="guard_blocked"; return 0; }
     if (permit) reason="clear";
     return permit;
 }
+int guard_gate_obstacle(void) { return obstacle; }
 long guard_gate_age_ms(void) { return stamp ? (long)((now_us()-stamp)/1000) : -1; }
 const char *guard_gate_reason(void) { return reason; }
 void guard_gate_close(void) { if(fd>=0) close(fd); fd=-1; }

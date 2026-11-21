@@ -154,6 +154,9 @@ static int   estop;                       /* 1 = some stop is holding the wheels
 static const char *estop_why = "none";
 static struct timespec last_cmd;
 /* multi-client ownership (client ids start at 1; 0 = nobody) */
+static const char *keyboard_auth;
+static long long keyboard_until; /* renewed only by authenticated physical-key commands */
+static int keyboard_obstacle;
 static int   drive_owner;                 /* last client to set a non-zero D */
 static int   mv_owner;                    /* client that started the current MOVE/TURN */
 static int   hold_cid;                    /* client whose S is holding the others */
@@ -529,8 +532,14 @@ static void *control_thread(void *arg)
         pthread_mutex_lock(&lock);
         if (guard_permit && !gate_ok) ++guard_epoch;
         guard_permit = gate_ok; guard_age = guard_gate_age_ms(); guard_reason = guard_gate_reason();
-        if (!gate_ok) {
+        keyboard_obstacle = guard_gate_obstacle();
+        int expired_key = keyboard_until && now >= keyboard_until;
+        int key_drive = keyboard_until > now && (gate_ok || keyboard_obstacle);
+        if (expired_key || (!gate_ok && !key_drive)) {
             target_l = target_r = 0;
+            keyboard_until = 0;
+        }
+        if (!gate_ok) {
             /* lidar_guard watches a FORWARD corridor only, so an in-place pivot isn't what it
              * guards: while it reports a fresh BLOCKED (not stale/missing/invalid) an exact TURN
              * may run, so the robot can turn away from what's ahead, if it fits the pivot
@@ -549,8 +558,8 @@ static void *control_thread(void *arg)
         memset(&arm_req, 0, sizeof arm_req);
         int halt = req_halt, zero = req_zero, level = req_level;
         int stop_g = req_stop_gesture, reset = req_reset;
-        int hard = req_hard_stop;
-        long long hard_rx = stop_rx_ms;
+        int hard = req_hard_stop || expired_key;
+        long long hard_rx = req_hard_stop ? stop_rx_ms : now;
         req_hard_stop = 0;
         const gesture_t *start_g = req_gesture;
         char dev_g[48];
@@ -588,14 +597,14 @@ static void *control_thread(void *arg)
         int wd_tripped = ms_since(&last_cmd) > cfg_wd_ms;
         if (wd_tripped) { tl = tr = 0.0f; target_l = target_r = 0.0f; ctl_move_abort_locked("watchdog"); }
         /* Obstacle: allow turning/reversing, block net forward motion. */
-        int blocked = dist >= 0.0f && dist < OBSTACLE_STOP_M && (tl + tr) > 0.0f;
+        int blocked = !key_drive && dist >= 0.0f && dist < OBSTACLE_STOP_M && (tl + tr) > 0.0f;
         if (moving && dist >= 0.0f && dist < OBSTACLE_STOP_M && mv_kind == 'M' && mv_req > 0)
             ctl_move_abort_locked("obstacle");
         int bumped = now < bump_until_ms;
-        if (blocked || tipped || bumped || !gate_ok) { tl = tr = 0.0f; target_l = target_r = 0.0f; }
-        estop = wd_tripped || blocked || tipped || bumped || !gate_ok;
+        if (blocked || tipped || bumped || (!gate_ok && !key_drive)) { tl = tr = 0.0f; target_l = target_r = 0.0f; }
+        estop = wd_tripped || blocked || tipped || bumped || (!gate_ok && !key_drive);
         estop_why = tipped ? "tipped" : bumped ? "bump" : blocked ? "obstacle"
-                  : !gate_ok ? guard_reason : wd_tripped ? "watchdog" : "none";
+                  : (!gate_ok && !key_drive) ? guard_reason : wd_tripped ? "watchdog" : "none";
         last_dist = dist;
         /* Hard stop on estop (no slew); smooth otherwise. */
         out_l = (estop || hard) ? tl : slew(out_l, tl);
@@ -692,10 +701,23 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
 
     sscanf(line, "%15s", cmd);
 
-    if (!strcasecmp(cmd, "D") || !strcasecmp(cmd, "DL")) {
+    int keyboard = !strcasecmp(cmd, "KD");
+    if (keyboard || !strcasecmp(cmd, "D") || !strcasecmp(cmd, "DL")) {
         int leased = !strcasecmp(cmd, "DL");
         unsigned long long epoch = 0;
-        int parsed = leased ? sscanf(line, "%*s %llu %f %f", &epoch, &a, &b)
+        int parsed;
+        if (keyboard) {
+            char token[33], key, extra;
+            if (!cfg_local || !cfg_guard_port || !keyboard_auth ||
+                sscanf(line, "%*s %32s %c %c", token, &key, &extra) != 2 ||
+                strcmp(token, keyboard_auth) || !strchr("wasd", key)) {
+                snprintf(reply, rlen, "ERR invalid keyboard request\n");
+                return;
+            }
+            a = key == 'w' || key == 'd' ? .25f : -.25f;
+            b = key == 'w' || key == 'a' ? .25f : -.25f;
+            parsed = 2;
+        } else parsed = leased ? sscanf(line, "%*s %llu %f %f", &epoch, &a, &b)
                             : sscanf(line, "%*s %f %f", &a, &b);
         if (parsed != (leased ? 3 : 2) || !isfinite(a) || !isfinite(b)) {
             snprintf(reply, rlen, "ERR usage: D <left> <right>\n");
@@ -707,7 +729,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         if (leased && epoch != guard_epoch) {
             target_l = target_r = 0.0f;
             snprintf(reply, rlen, "ERR guard epoch changed; new command required\n");
-        } else if ((why = motion_refused()) != NULL) {
+        } else if ((why = motion_refused()) != NULL && !(keyboard && keyboard_obstacle && !tipped)) {
             target_l = target_r = 0.0f;
             snprintf(reply, rlen, "ERR %s\n", why);
         } else if (left > 0) {
@@ -719,6 +741,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
             snprintf(reply, rlen, "ERR held: stop from another client (%lld ms left)\n",
                      hold_until_ms - now_ms());
         } else {
+            keyboard_until = keyboard ? now_ms() + 150 : 0;
             target_l = clampf(a, -1, 1);
             target_r = clampf(b, -1, 1);
             if (fabsf(target_l) >= 0.03f || fabsf(target_r) >= 0.03f) drive_owner = cid;
@@ -741,6 +764,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         hold_cid = cid;
         hold_until_ms = stop_rx_ms + cfg_hold_ms;
         drive_owner = 0;
+        keyboard_until = 0;
         stop_count++;
         if (mv_state == MV_RUNNING) req_move_abort = "stop";
         req_gesture = NULL;
@@ -1087,7 +1111,7 @@ static void *client_thread(void *arg)
             if (*verb && strcasecmp(verb,"STATUS") && strcasecmp(verb,"PING") &&
                 strcasecmp(verb,"VIS") && strcasecmp(verb,"GESTURES") && strcasecmp(verb,"WHO") &&
                 (strcasecmp(verb,"POSE") || strstr(start," ") != NULL))
-                action_log("motor", cid, start, reply);
+                action_log("motor", cid, !strcasecmp(verb, "KD") ? "shift+WASD" : start, reply);
             start = nl + 1;
         }
         used = strlen(start);
@@ -1099,7 +1123,7 @@ static void *client_thread(void *arg)
      * alone (it has its own watchdog feed). Arms finish their current move. */
     pthread_mutex_lock(&lock);
     int mine = drive_owner == cid || drive_owner == 0;
-    if (mine) { target_l = target_r = 0.0f; drive_owner = 0; }
+    if (mine) { target_l = target_r = 0.0f; drive_owner = 0; keyboard_until = 0; }
     int abort_mv = mv_state == MV_RUNNING && mv_owner == cid;
     if (abort_mv) { req_move = 0; req_move_abort = "disconnect"; }
     if (mine || abort_mv) { req_hard_stop = 1; stop_rx_ms = now_ms(); }
@@ -1127,6 +1151,8 @@ static void usage(const char *argv0)
 
 int main(int argc, char **argv)
 {
+    keyboard_auth = getenv("TARS_KEYBOARD_AUTH");
+    if (keyboard_auth && strlen(keyboard_auth) != 32) keyboard_auth = NULL;
     int opt;
     while ((opt = getopt(argc, argv, "b:d:p:w:r:k:H:g:lh")) != -1) {
         switch (opt) {

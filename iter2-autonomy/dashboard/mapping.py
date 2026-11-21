@@ -15,6 +15,7 @@ import struct
 import threading
 import time
 from fusion import FusionPublisher
+from native_map import NativeGrid
 
 MAX_PACKET = 512 * 1024
 SIZE = 200
@@ -206,7 +207,8 @@ def read_scene(sock):
 
 
 class Map:
-    def __init__(self, save_path=None, clock=time.monotonic):
+    def __init__(self, save_path=None, clock=time.monotonic, native=None):
+        self.native = native
         self.lock = threading.RLock()
         self.clock = clock
         self.save_path = Path(save_path) if save_path else Path(__file__).resolve().parent / 'state/map.json'
@@ -283,6 +285,7 @@ class Map:
                         self.message = 'New AR session; cancelled pending saved-map restore'
                 self._clear_geometry()
                 self.session = scene['session']
+                if self.native is not None: self.native.set_session(self.session)
                 self.floor_y = None
                 self.frames = 0
             self.timestamp, self.received = scene['timestamp'], now
@@ -326,29 +329,36 @@ class Map:
                     self.scan_stations.popitem(last=False)
             if scene['points']:
                 self.scan_bins.add(int((self.pose[3] % (2 * math.pi)) / (2 * math.pi) * 36))
-            # Only directly observed floor endpoints become free. Do not infer
-            # drive clearance beneath high camera rays or behind obstacles.
-            ground, obstacles = set(), set()
-            for point in scene['points']:
-                key = tuple(math.floor(c / RESOLUTION) for c in point)
-                self.voxels[key] = None
-                self.voxels.move_to_end(key)
-                while len(self.voxels) > MAX_VOXELS:
-                    self.voxels.popitem(last=False)
-                cell = self.cell(point[0], point[2])
-                if cell is None:
-                    continue
-                index = cell[1] * SIZE + cell[0]
-                height = point[1] - self.floor_y
-                if abs(height) <= 0.06:
-                    ground.add(index)
-                elif MIN_HEIGHT <= height <= MAX_HEIGHT:
-                    obstacles.add(index)
-            for index in ground:
-                if self.grid[index] == 0:
-                    self.grid[index] = 1
-            for index in obstacles:
-                self.grid[index] = 2
+            if self.native is None:  # Offline reference model used by planner parity tests only.
+                # Only directly observed floor endpoints become free. Do not infer
+                # drive clearance beneath high camera rays or behind obstacles.
+                ground, obstacles = set(), set()
+                for point in scene['points']:
+                    key = tuple(math.floor(c / RESOLUTION) for c in point)
+                    self.voxels[key] = None
+                    self.voxels.move_to_end(key)
+                    while len(self.voxels) > MAX_VOXELS:
+                        self.voxels.popitem(last=False)
+                    cell = self.cell(point[0], point[2])
+                    if cell is None:
+                        continue
+                    index = cell[1] * SIZE + cell[0]
+                    height = point[1] - self.floor_y
+                    if abs(height) <= 0.06:
+                        ground.add(index)
+                    elif MIN_HEIGHT <= height <= MAX_HEIGHT:
+                        obstacles.add(index)
+                for index in ground:
+                    if self.grid[index] == 0:
+                        self.grid[index] = 1
+                for index in obstacles:
+                    self.grid[index] = 2
+            if self.native is not None:
+                for point in scene['points']:
+                    key = tuple(math.floor(c / RESOLUTION) for c in point)
+                    self.voxels[key] = None
+                    self.voxels.move_to_end(key)
+                    while len(self.voxels) > MAX_VOXELS: self.voxels.popitem(last=False)
             self._remember_cloud(scene, now)
             self._objects(scene['objects'], now, scene['timestamp'])
             self._plan(now)
@@ -589,6 +599,10 @@ class Map:
         return None
 
     def _plan(self, now, force=False):
+        if self.native is not None:
+            self.path = []
+            self.plan_status = 'Native A* route shown when navigation is active'
+            return
         inferred_cells = self._inferred_cells(now)
         if inferred_cells != self.last_inferred_cells:
             self.last_inferred_cells = inferred_cells
@@ -729,7 +743,7 @@ class Map:
                                 'currently_seen': tracking_live and age is not None and age <= OBJECT_VISIBLE_SECONDS,
                                 'stale': not tracking_live or age is None or age > TARGET_FRESH_SECONDS,
                                 'restored': obj.get('restored', False)})
-            return {'session': self.session, 'tracking': self.tracking,
+            result = {'session': self.session, 'tracking': self.tracking,
                     **self._persistent_snapshot(now),
                     'live': self._gate(now) is None, 'floor_ready': self.floor_y is not None,
                     'tracking_live': tracking_live, 'connected': self.connected,
@@ -756,10 +770,18 @@ class Map:
                     'message': (self.message + (' · Scan this area: turn slowly and pause for detections'
                                 if len(self.scan_bins) < 32 else ' · Local area scanned'))
                                if tracking_live and self.floor_y is not None else self.message}
+            if self.native is not None:
+                # Replace all occupancy/route fields atomically. No Python-map fallback.
+                result.update(self.native.snapshot())
+                result['inferred_obstacle_cells'] = 0
+            return result
 
     def _saved(self):
+        native = self.native.snapshot() if self.native is not None else None
+        if native is not None and not native['native_map_live']:
+            raise ValueError('Native navigation map is unavailable; cannot save occupancy')
         return {'version': 1, 'session': self.session, 'floor_y': self.floor_y,
-                'grid': ''.join(str(v) for v in self.grid),
+                'grid': native['grid'] if native is not None else ''.join(str(v) for v in self.grid),
                 'surfaces': list(self.surfaces.values()),
                 'voxels': [list(k) for k in self.voxels],
                 'objects': [{k: obj[k] for k in ('id', 'label', 'position', 'confidence')}
@@ -801,7 +823,7 @@ class Map:
     def _restore(self, value):
         self._clear_geometry()
         self.surfaces.update((surface_key(row), row) for row in value.get('surfaces', []))
-        self.grid = bytearray(int(c) for c in value['grid'])
+        if self.native is None: self.grid = bytearray(int(c) for c in value['grid'])
         self.voxels = OrderedDict((tuple(p), None) for p in value['voxels'])
         self.floor_y = value['floor_y']
         self.objects = OrderedDict((obj['id'], dict(
@@ -817,6 +839,7 @@ class Map:
                     raise ValueError('Invalid map command')
                 op = command.get('op')
                 if op == 'map_clear':
+                    if self.native is not None: self.native.reset()
                     self._clear_geometry()
                     self.pending_restore = None
                     self.restore_baseline = None
@@ -834,7 +857,8 @@ class Map:
                     self.restore_baseline = self.session or None
                     self.path = []
                     self.plan_dirty = True
-                    message = 'Waiting for matching saved AR session and normal tracking'
+                    message = ('Restoring visual memory; native navigation requires fresh observations'
+                               if self.native is not None else 'Waiting for matching saved AR session and normal tracking')
                 elif op == 'select_target':
                     target = command.get('id')
                     if not isinstance(target, str) or target not in self.objects:
@@ -855,7 +879,7 @@ class Map:
 class SceneFeed:
     def __init__(self, port=5561, mapper=None, fusion_port=0):
         self.port = port
-        self.mapper = mapper if mapper is not None else Map()
+        self.mapper = mapper if mapper is not None else Map(native=NativeGrid())
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.sock = None
@@ -867,6 +891,8 @@ class SceneFeed:
         self.fusion = FusionPublisher(fusion_port)
 
     def run(self):
+        if self.mapper.native is not None:
+            threading.Thread(target=self.mapper.native.run, args=(self.stop,), daemon=True).start()
         while not self.stop.is_set():
             try:
                 with socket.create_connection(('127.0.0.1', self.port), timeout=2) as sock:

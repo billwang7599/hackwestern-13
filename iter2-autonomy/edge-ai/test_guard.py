@@ -29,6 +29,7 @@ def packet(seq=1, source_us=None, flags=7, points=None, pose=(0, 0.5, 0, 0), flo
 
 class GuardFixture(unittest.TestCase):
     fusion_enabled = False
+    require_clear = False
     @classmethod
     def setUpClass(cls):
         if 'GUARD_BINARY' not in os.environ:
@@ -48,7 +49,8 @@ class GuardFixture(unittest.TestCase):
             self.fusion_port = unused.getsockname()[1]
         self.proc = subprocess.Popen([str(BINARY), '--port', str(self.server.getsockname()[1]),
                                       '--status-port', str(self.status.getsockname()[1]),
-                                      '--fusion-port', str(self.fusion_port if self.fusion_enabled else 0)],
+                                      '--fusion-port', str(self.fusion_port if self.fusion_enabled else 0),
+                                      '--require-clear', '1' if self.require_clear else '0'],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
         self.client, _ = self.server.accept()
@@ -112,12 +114,20 @@ class GuardTests(GuardFixture):
             self.assertEqual(result['verdict'], 'UNKNOWN')
             self.assertEqual(result['reason'], reason)
             self.assertFalse(result['permit'])
+    def test_tracking_and_sparse_coverage_policy(self):
+        for seq, (flags, points, verdict, permit) in enumerate(((3, floor_points(), 'UNKNOWN', False),
+                (7, [[0, 0, .4]] * 15, 'CAUTION', False if self.require_clear else True),
+                (7, [], 'UNKNOWN', False)), start=1):
+            self.send_packet(packet(seq=seq, flags=flags, points=points))
+            result = self.wait_status(lambda s: s.get('frames') == seq)
+            self.assertEqual(result['verdict'], verdict)
+            self.assertEqual(result['permit'], permit)
 
     def test_partial_coverage_permitted(self):
         self.send_packet(packet(points=[[0, 0, .4]]))
         result = self.wait_status(lambda s: s.get('frames') == 1)
         self.assertEqual(result['verdict'], 'CAUTION')
-        self.assertTrue(result['permit'])
+        self.assertEqual(result['permit'], not self.require_clear)
 
     def test_missing_calibration_does_not_publish_obstacle_distance(self):
         self.send_packet(packet(flags=3, points=floor_points() + [[0, .2, .35]]))
@@ -314,6 +324,11 @@ class FusionTests(GuardFixture):
         result = self.wait_status(lambda s: s['inferred_invalid'] >= 1)
         self.assertEqual(result['stop_source'], 'inferred')
         self.assertFalse(result['permit'])
+
+
+class StrictCoverageTests(GuardTests):
+    # All guard/disconnect/invalid-data checks also run under autonomous policy.
+    require_clear = True
 
 
 if __name__ == '__main__':

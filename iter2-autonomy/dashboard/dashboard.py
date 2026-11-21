@@ -12,7 +12,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'iphone-usb'))
 from receive_motion import validate
 from video import VideoFeed
-from control import ControlLink, DebugDrive, MotorLink
+from control import ControlLink, DebugDrive, MotorLink, classified_obstacle
 from keyboard_drive import KeyboardDrive
 from mapping import SceneFeed
 from edge_status import EdgeStatus
@@ -202,7 +202,8 @@ def main():
                 # SDL_KeyboardEvent keysym.sym is at byte 20.
                 key = C.c_int32.from_buffer(event, 20).value
                 repeat = C.c_uint8.from_buffer(event, 13).value
-                keyboard.event(kind, key, bool(repeat), C.c_uint8.from_buffer(event, 12).value)
+                keyboard.event(kind, key, bool(repeat), C.c_uint8.from_buffer(event, 12).value,
+                               C.c_uint16.from_buffer(event, 24).value)
                 if kind == 0x300 and key in (32, 27) and not repeat:
                     motors.request_stop()
                 if kind == 0x300 and key == ord('f') and not repeat:
@@ -318,11 +319,13 @@ def main():
             left, right = drive.state(now, enabled and link.connected and permitted)
             if keyboard.claimed:
                 native = motors.snapshot()
-                left, right = keyboard.state(enabled and permitted and native.get('connected', False))
+                left, right = keyboard.state(enabled and native.get('connected', False) and
+                                             (permitted or (keyboard.shifted and classified_obstacle(edge_snapshot['safety']))))
                 if keyboard.generation != last_keyboard_generation:
                     drive.generation += 1
                     last_keyboard_generation = keyboard.generation
-            motors.update(left, right, drive.generation)
+            override_key = chr(keyboard.key) if keyboard.claimed and keyboard.key and keyboard.shifted else None
+            motors.update(left, right, drive.generation, override_key)
             motor_status = motors.snapshot()
             link.publish(dict(type='status', mode='dashboard', streaming=enabled,
                               motion_hz=round(rate, 1), camera_fps=round(camera_rate, 1),

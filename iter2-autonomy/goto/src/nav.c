@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -28,6 +29,11 @@
 struct nav {
     unsigned char grid[N_CELLS];
     unsigned version;
+    unsigned generation;
+    uint64_t source_us;
+    float camera_y;
+    unsigned char frame[N_CELLS], clear_hits[N_CELLS];
+    uint64_t clear_since[N_CELLS], clear_last[N_CELLS];
     double robot_radius;
     int    have_floor;
     double floor_y;
@@ -93,6 +99,11 @@ void nav_reset(nav_t *n)
 {
     if (!n) return;
     memset(n->grid, NAV_UNKNOWN, sizeof n->grid);
+    memset(n->clear_hits, 0, sizeof n->clear_hits);
+    memset(n->clear_since, 0, sizeof n->clear_since);
+    memset(n->clear_last, 0, sizeof n->clear_last);
+    n->source_us = 0;
+    n->generation++;
     n->have_floor = 0;
     n->ark_ok = n->have_ark = n->have_dr = n->have_anchor = n->have_lost = 0;
     n->version++;
@@ -136,6 +147,12 @@ int nav_cell(const nav_t *n, float x, float z)
 }
 
 unsigned nav_version(const nav_t *n) { return n ? n->version : 0; }
+unsigned nav_generation(const nav_t *n) { return n ? n->generation : 0; }
+int nav_floor(const nav_t *n, float *floor, float *camera_y) {
+    if (floor) *floor = n ? (float)n->floor_y : 0;
+    if (camera_y) *camera_y = n ? n->camera_y : 0;
+    return n && n->have_floor;
+}
 unsigned nav_pose_seq(const nav_t *n) { return n ? n->pose_seq : 0; }
 
 /* ---- pose -------------------------------------------------------------- */
@@ -306,6 +323,13 @@ static int befloat(const unsigned char *p, float *out)
 
 int nav_ingest_ldr1(nav_t *n, const unsigned char *buf, size_t len)
 {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return nav_ingest_ldr1_at(n, buf, len, (uint64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000);
+}
+
+int nav_ingest_ldr1_at(nav_t *n, const unsigned char *buf, size_t len, uint64_t received_us)
+{
     if (!n || !buf) return NAV_LDR1_BAD;
     const unsigned char *p = buf;
     size_t size = len;
@@ -326,22 +350,60 @@ int nav_ingest_ldr1(nav_t *n, const unsigned char *buf, size_t len)
         if (!befloat(p + NAV_LDR1_HEADER + i * 4, &v)) return NAV_LDR1_BAD;
     }
 
+    uint64_t source_us = (uint64_t)be32(p + 8) << 32 | be32(p + 12);
+    if (source_us <= n->source_us) return NAV_LDR1_OLD;
+    n->source_us = source_us;
+    n->camera_y = pose[1];
     int pose_ok = (flags & (NAV_LDR1_TRACKING | NAV_LDR1_HEADING)) == (NAV_LDR1_TRACKING | NAV_LDR1_HEADING);
     nav_set_pose(n, pose[0], pose[2], pose[3], pose_ok);
 
     if ((flags & (NAV_LDR1_TRACKING | NAV_LDR1_FLOOR)) != (NAV_LDR1_TRACKING | NAV_LDR1_FLOOR))
+    {
+        memset(n->clear_hits, 0, sizeof n->clear_hits);
         return NAV_LDR1_SKIPPED;
+    }
     if (n->have_floor && fabs((double)floor_y - n->floor_y) > 0.1) {
         memset(n->grid, NAV_UNKNOWN, sizeof n->grid);           /* floor recalibrated */
+        memset(n->clear_hits, 0, sizeof n->clear_hits);
+        n->generation++;
         n->version++;
     }
     n->have_floor = 1;
     n->floor_y = floor_y;
+    memset(n->frame, 0, sizeof n->frame);
     for (uint32_t i = 0; i < count; i++) {
         float x, y, z;
         const unsigned char *q = p + NAV_LDR1_HEADER + i * 12;
         befloat(q, &x); befloat(q + 4, &y); befloat(q + 8, &z);
-        nav_mark_point(n, x, (float)((double)y - floor_y), z);
+        int ix, iz;
+        if (!nav_world_to_cell(x, z, &ix, &iz)) continue;
+        int k = iz * NAV_SIZE + ix;
+        double h = (double)y - floor_y;
+        if (fabs(h) <= NAV_FLOOR_BAND) n->frame[k] |= 1;
+        else if (h >= NAV_OBS_MIN && h <= NAV_OBS_MAX) n->frame[k] |= 2;
+    }
+    /* One vote per cell per whole frame. Obstacle wins regardless of point order.
+     * Never clear on silence, high rays, duplicated packets or a burst of backlog. */
+    for (int k = 0; k < N_CELLS; k++) {
+        if (n->frame[k] & 2) {
+            set_idx(n, k, NAV_OCC);
+            n->clear_hits[k] = 0;
+        } else if (n->frame[k] & 1) {
+            if (n->grid[k] == NAV_UNKNOWN) set_idx(n, k, NAV_FREE);
+            if (n->grid[k] != NAV_OCC) continue;
+            if (!n->clear_hits[k] || received_us < n->clear_last[k] ||
+                    received_us - n->clear_last[k] > NAV_CLEAR_GAP_US) {
+                n->clear_hits[k] = 0;
+                n->clear_since[k] = received_us;
+            }
+            n->clear_last[k] = received_us;
+            if (n->clear_hits[k] < NAV_CLEAR_FRAMES) n->clear_hits[k]++;
+            if (n->clear_hits[k] >= NAV_CLEAR_FRAMES &&
+                    received_us - n->clear_since[k] >= NAV_CLEAR_SPAN_US) {
+                set_idx(n, k, NAV_FREE);
+                n->clear_hits[k] = 0;
+            }
+        }
     }
     return NAV_LDR1_MAPPED;
 }

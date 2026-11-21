@@ -1,3 +1,4 @@
+#include "navigation_feed.hpp"
 // Independent LiDAR clearance gate. No AI dependency; native motor consumes a bounded heartbeat.
 // QNX scheduling: https://qnx.com/developers/docs/8.0/com.qnx.doc.neutrino.lib_ref/topic/t/threadctl.html
 #include <arpa/inet.h>
@@ -212,7 +213,8 @@ static int connect_local(unsigned port) {
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) || error) { close(fd); return -1; }
     return fd;
 }
-static void receiver(Shared& shared, unsigned port, int cpu) {
+static void receiver(Shared& shared, unsigned port, int cpu, unsigned nav_port) {
+    NavigationFeed navigation(nav_port);
     const Scheduling scheduling = schedule(18, cpu);
     std::fprintf(stderr, "LiDAR receiver policy=%d priority=%d runmask=%u schedule_error=%d affinity_error=%d\n",
                  scheduling.policy, scheduling.priority, scheduling.runmask, scheduling.error, scheduling.affinity_error);
@@ -271,6 +273,8 @@ static void receiver(Shared& shared, unsigned port, int cpu) {
                     candidate.map_supported=true;
                 }
             }
+            // Copy only validated fresh wire data. Planner cannot hold up guard ACKs.
+            if (candidate.backlog_ms <= 100) navigation.send(payload.data(), size);
             previous_source = candidate.source_us; previous_seq = candidate.seq;
             candidate.frames = ++accepted;
             pthread_mutex_lock(&shared.mutex);
@@ -291,8 +295,9 @@ static int number(const char* value, int minimum, int maximum) {
     return int(n);
 }
 int main(int argc, char** argv) {
-    unsigned port = 5562, status_port = 5564, motor_port = 0, fusion_port = 0;
+    unsigned port = 5562, status_port = 5564, motor_port = 0, fusion_port = 0, nav_port = 0;
     int seconds = 0, cpu = 3;
+    bool require_clear = false, identify_obstacles = false;
     for (int i = 1; i < argc; ++i) {
         if (i + 1 >= argc) { std::fprintf(stderr, "Missing option value\n"); return 2; }
         const char* key = argv[i]; int value = number(argv[++i], 0, 65535);
@@ -300,7 +305,10 @@ int main(int argc, char** argv) {
         if (!std::strcmp(key, "--port") && value) port = unsigned(value);
         else if (!std::strcmp(key, "--status-port") && value) status_port = unsigned(value);
         else if (!std::strcmp(key, "--motor-port")) motor_port = unsigned(value);
+        else if (!std::strcmp(key, "--nav-port")) nav_port = unsigned(value);
         else if (!std::strcmp(key, "--fusion-port")) fusion_port = unsigned(value);
+        else if (!std::strcmp(key, "--identify-obstacles") && value <= 1) identify_obstacles = value != 0;
+        else if (!std::strcmp(key, "--require-clear") && value <= 1) require_clear = value != 0;
         else if (!std::strcmp(key, "--seconds")) seconds = value;
         else if (!std::strcmp(key, "--cpu") && value < 32) cpu = value;
         else { std::fprintf(stderr, "Unknown/invalid option: %s\n", key); return 2; }
@@ -312,9 +320,10 @@ int main(int argc, char** argv) {
     sockaddr_in target{}; target.sin_family = AF_INET; target.sin_port = htons(uint16_t(status_port));
     target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     sockaddr_in motor_target = target; motor_target.sin_port = htons(uint16_t(motor_port));
-    auto motor_gate = [&](bool permit) {
+    auto motor_gate = [&](bool permit, bool obstacle = false) {
         if (!motor_port) return;
         uint8_t packet[13] = {'G','A','T','1'};
+        if (identify_obstacles && obstacle) std::memcpy(packet, "GOB1", 4);
         timespec t{}; clock_gettime(CLOCK_MONOTONIC, &t);
         uint64_t stamp = uint64_t(t.tv_sec) * 1000000 + uint64_t(t.tv_nsec) / 1000;
         for (int i = 0; i < 8; ++i) packet[4+i] = uint8_t(stamp >> (56 - 8*i));
@@ -324,7 +333,7 @@ int main(int argc, char** argv) {
     Fusion fusion;
     if (!fusion.open(fusion_port)) { std::perror("fusion UDP bind"); close(output); return 1; }
     Shared shared;
-    std::thread reader(receiver, std::ref(shared), port, cpu);
+    std::thread reader(receiver, std::ref(shared), port, cpu, nav_port);
     const Scheduling scheduling = schedule(20, cpu);
     std::fprintf(stderr, "LiDAR guard 100 Hz, stale=%d ms, native motor gate; policy=%d priority=%d runmask=%u schedule_error=%d affinity_error=%d\n",
                  STALE_MS, scheduling.policy, scheduling.priority, scheduling.runmask, scheduling.error, scheduling.affinity_error);
@@ -354,7 +363,7 @@ int main(int argc, char** argv) {
         else if (locked) verdict = sample.verdict == Verdict::Blocked ? "BLOCKED" :
             sample.verdict == Verdict::Clear ? "CLEAR" : sample.verdict == Verdict::Caution ? "CAUTION" : "UNKNOWN";
         const char* lidar_verdict = verdict;
-        const bool lidar_permit = !stale && locked && (sample.verdict == Verdict::Clear || sample.verdict == Verdict::Caution);
+        const bool lidar_permit = !stale && locked && (sample.verdict == Verdict::Clear || (!require_clear && sample.verdict == Verdict::Caution));
         const bool received_inferred_stop = fusion.poll();
         const uint64_t fusion_now = host_us();
         const bool inferred_live = fusion.live(fusion_now);
@@ -377,7 +386,7 @@ int main(int argc, char** argv) {
         else if (!(sample.flags & 4)) reason = "aim_forward";
         else if (!sample.points) reason = "no_depth_points";
         else if (!permit) reason = "obstacle";
-        motor_gate(permit);
+        motor_gate(permit, !std::strcmp(verdict, "BLOCKED") && !std::strcmp(reason, "obstacle"));
         if (now >= next_status || stopping) {
             next_status = now + milliseconds(50);
             if (combined_nearest >= 0) std::snprintf(nearest, sizeof nearest, "%.4f", combined_nearest);
