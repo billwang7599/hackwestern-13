@@ -135,6 +135,20 @@ def main() -> int:
         check(st["pred"] == "INCOMING", "STATUS pred=INCOMING")
         check(duty > 0.0, f"duty {duty:+.3f} > 0 (paddle at 0, target to the right)")
 
+        check(st.get("ctl_kind") == "observer", "default controller = observer (sim port)")
+
+        print("shadowing: ball still at x=+0.08 -> target 0.5*x (sim policy)")
+        time.sleep(0.4)   # ball unseen > 250 ms -> fresh track
+        tgt = 0.0
+        rng = random.Random(3)
+        for _ in range(20):
+            tgt, _d = c.frame((0.08 + rng.gauss(0, 0.002), 0.40 + rng.gauss(0, 0.002)))
+            time.sleep(DT)
+        st = c.status()
+        check(st["pred"] == "AWAY" and abs(tgt - 0.04) < 0.006,
+              f"still ball: pred=AWAY, target {tgt:.4f} ~ 0.04")
+        time.sleep(1.1)   # re-arm before the next test
+
         print("save by accelerometer HIT (stub SIMHIT), debounced")
         hits_sent = []
 
@@ -162,6 +176,15 @@ def main() -> int:
         c.roll(-0.05, 0.50, 0.0, -1.0, until=lambda x, y: y < 0.04)
         c.roll(-0.05, 0.04, 0.0, +0.8, until=lambda x, y: y > 0.20, rng=random.Random(2))
         check(c.status()["saves"] == "2", "ball bounced back from y<0.10 -> saves=2")
+
+        print("Uno lines: '#' ignored, READY twice = reboot")
+        check(c.cmd("SIMUNO # no accelerometer found") == "OK SIMUNO", "SIMUNO accepted")
+        check(c.cmd("SIMUNO READY") == "OK SIMUNO" and c.cmd("SIMUNO READY") == "OK SIMUNO",
+              "two READYs injected")
+        time.sleep(0.05)
+        st = c.status()
+        check(st["uno_ready"] == "2", "uno_ready=2 (second READY = Uno rebooted)")
+        check(st["hits"] == "2" and st["saves"] == "2", "'#' line changed no counters")
 
         print("goal")
         check(c.cmd("GOAL") == "OK GOAL 1", "GOAL -> OK GOAL 1")
@@ -212,6 +235,29 @@ def main() -> int:
         check("[stub] S (shutdown)" in out, "motor stopped on exit")
         check("[stub] C 1500" in out, "celebrate (C) sent on save")
         check("[stub] N 256" in out, "needle (N) moved to +2 points after two saves")
+        check("[uno] # no accelerometer found" in out and "[uno] ? #" not in out,
+              "'#' line logged as Uno status, not as unknown")
+        check("Uno rebooted, needle zero lost" in out, "reboot warning logged")
+
+        print("legacy controller: --ctl pd")
+        port2 = free_port()
+        p2 = subprocess.Popen([BIN, "-b", "stub", "-p", str(port2), "--ctl", "pd",
+                               "--rpm", "90", "--delay-ms", "60"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            c2 = Client(port2)
+            st2 = c2.status()
+            check(st2["ctl_kind"] == "pd" and abs(float(st2["kp"]) - 15) < 1e-9
+                  and st2["model_rpm"] == "90", "--ctl pd: kp=15 duty/m, --rpm 90 shown")
+            check(c2.cmd("GAINS 10 0.3") == "OK 10.000 0.300", "GAINS sets the pd gains")
+            for _ in range(5):
+                _t, d2 = c2.frame((0.0, 0.5), paddle_x=-0.08)
+                time.sleep(DT)
+            check(d2 > 0.15, f"pd drives paddle at -0.08 towards 0 (duty {d2:+.3f})")
+            c2.sock.close()
+        finally:
+            p2.send_signal(signal.SIGINT)
+            p2.wait(timeout=5)
         ok = True
     except Exception as e:  # noqa: BLE001
         print(f"FAIL: {e}")

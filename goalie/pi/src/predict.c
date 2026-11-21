@@ -58,6 +58,8 @@ pred_result_t predict_eval(const predictor_t *p)
     memset(&r, 0, sizeof r);
     r.state = PRED_NONE;
     if (p->count == 0) return r;
+    r.count = p->count;
+    r.x_last = newest(p, 0)->x;
 
     /* Pick the window. */
     const double t_new = newest(p, 0)->t;
@@ -93,12 +95,22 @@ pred_result_t predict_eval(const predictor_t *p)
     r.t_cross = r.y > 0.0 ? r.y / -r.vy : 0.0;
     if (r.t_cross > PRED_MAX_T_CROSS_S) { r.state = PRED_AWAY; return r; }
 
-    double xr = predict_fold(r.x + r.vx * r.t_cross, p->wall_half_w);
-    if (xr >  PRED_GOAL_HALF_W) xr =  PRED_GOAL_HALF_W;
-    if (xr < -PRED_GOAL_HALF_W) xr = -PRED_GOAL_HALF_W;
+    double xr = r.x + r.vx * r.t_cross;
+    if (p->wall_half_w > PRED_BALL_R) xr = predict_fold(xr, p->wall_half_w - PRED_BALL_R);
     r.x_cross = xr;
     r.state = PRED_INCOMING;
     return r;
+}
+
+double predict_target(const pred_result_t *r, double x_lim)
+{
+    double v;
+    switch (r->state) {
+    case PRED_INCOMING: v = r->x_cross; break;
+    case PRED_AWAY:     v = PRED_SHADOW_GAIN * r->x; break;
+    default:            v = r->count > 0 ? PRED_SHADOW_GAIN * r->x_last : 0.0; break;
+    }
+    return v < -x_lim ? -x_lim : v > x_lim ? x_lim : v;
 }
 
 const char *predict_state_name(pred_state_t s)

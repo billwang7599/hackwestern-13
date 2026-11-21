@@ -1,0 +1,147 @@
+Beat the Goalie: integration run (no hardware)
+date: 2026-11-21 01:16 EST   host: Darwin arm64   git: 61ccad4-dirty
+
+Loop: vision/fake_ball.py (30 fps, 40 ms latency, 3 mm noise, 2% dropouts, 7 cm blade)
+  -> TCP F lines -> REAL C server pi/build/goalie_motor_host -b stub --rpm 100 --tau 0.045 --delay-ms 40
+  -> OK <target> <duty> -> fake paddle (vmax 1.26 m/s at duty 1, tau 0.045 s ~ 100 RPM pivot)
+Each scenario: 20 shots, same seed. LINUX = EMULATED (SCHED_OTHER + random 0-30 ms stalls).
+
+### A. 1.0 m/s casual roll, QNX, observer controller
+$ fake_ball.py --shots 20 --speed 1.0 --mode QNX --paddle-vmax 1.26 --paddle-tau 0.045
+shot   1: aim +0.068 m  1.03 m/s  -> SAVE    (paddle +0.072)
+shot   2: aim -0.034 m  1.06 m/s  -> SAVE    (paddle -0.046)
+shot   3: aim -0.017 m  0.91 m/s  -> SAVE    (paddle -0.020)
+  ...
+20 shots at 1.00 m/s: 20 saves, 0 goals, 0 wide/stopped (save rate 100%)
+server: mode=QNX saves=20 goals=0 jit_max_us=19784 loop_hz=200.4  link errors: 0
+STATUS: mode=QNX sched=RR emulated=0 ctl_kind=observer saves=20 goals=0 hits=0 jit_avg_us=552 jit_max_us=19784 loop_hz=200.4 model_rpm=100 kp=3.0 kd=0.1
+
+### B. 2.0 m/s, QNX, observer
+$ fake_ball.py --shots 20 --speed 2.0 --mode QNX --paddle-vmax 1.26 --paddle-tau 0.045
+shot   1: aim +0.068 m  2.06 m/s  -> SAVE    (paddle +0.042)
+shot   2: aim -0.088 m  2.19 m/s  -> SAVE    (paddle -0.074)
+shot   3: aim +0.096 m  2.08 m/s  -> SAVE    (paddle +0.065)
+  ...
+20 shots at 2.00 m/s: 20 saves, 0 goals, 0 wide/stopped (save rate 100%)
+server: mode=QNX saves=20 goals=0 jit_max_us=2502 loop_hz=200.0  link errors: 0
+STATUS: mode=QNX sched=RR emulated=0 ctl_kind=observer saves=20 goals=0 hits=0 jit_avg_us=508 jit_max_us=2502 loop_hz=200.0 model_rpm=100 kp=3.0 kd=0.1
+
+### C. 2.0 m/s, LINUX (emulated), observer
+$ fake_ball.py --shots 20 --speed 2.0 --mode LINUX --paddle-vmax 1.26 --paddle-tau 0.045
+shot   1: aim +0.068 m  2.06 m/s  -> SAVE    (paddle +0.057)
+shot   2: aim -0.088 m  2.19 m/s  -> SAVE    (paddle -0.110)
+shot   3: aim +0.009 m  2.06 m/s  -> SAVE    (paddle +0.056)
+  ...
+20 shots at 2.00 m/s: 19 saves, 1 goals, 0 wide/stopped (save rate 95%)
+server: mode=LINUX saves=19 goals=1 jit_max_us=31606 loop_hz=110.8  link errors: 0
+STATUS: mode=LINUX sched=OTHER emulated=1 ctl_kind=observer saves=19 goals=1 hits=0 jit_avg_us=4332 jit_max_us=31606 loop_hz=110.8 model_rpm=100 kp=3.0 kd=0.1
+
+### D. 3.0 m/s, QNX, observer
+$ fake_ball.py --shots 20 --speed 3.0 --mode QNX --paddle-vmax 1.26 --paddle-tau 0.045
+shot   1: aim +0.068 m  3.09 m/s  -> SAVE    (paddle +0.013)
+shot   2: aim -0.096 m  2.79 m/s  -> SAVE    (paddle -0.064)
+shot   3: aim -0.079 m  2.93 m/s  -> GOAL    (paddle +0.021)
+  ...
+20 shots at 3.00 m/s: 16 saves, 4 goals, 0 wide/stopped (save rate 80%)
+server: mode=QNX saves=15 goals=4 jit_max_us=667 loop_hz=200.0  link errors: 0
+STATUS: mode=QNX sched=RR emulated=0 ctl_kind=observer saves=15 goals=4 hits=0 jit_avg_us=511 jit_max_us=667 loop_hz=200.0 model_rpm=100 kp=3.0 kd=0.1
+
+### E. 3.0 m/s, LINUX (emulated), observer
+$ fake_ball.py --shots 20 --speed 3.0 --mode LINUX --paddle-vmax 1.26 --paddle-tau 0.045
+shot   1: aim +0.068 m  3.09 m/s  -> GOAL    (paddle -0.002)
+shot   2: aim +0.036 m  2.83 m/s  -> SAVE    (paddle +0.002)
+shot   3: aim +0.094 m  2.88 m/s  -> GOAL    (paddle +0.035)
+  ...
+20 shots at 3.00 m/s: 12 saves, 8 goals, 0 wide/stopped (save rate 60%)
+server: mode=LINUX saves=11 goals=8 jit_max_us=31541 loop_hz=85.5  link errors: 0
+STATUS: mode=LINUX sched=OTHER emulated=1 ctl_kind=observer saves=11 goals=8 hits=0 jit_avg_us=4419 jit_max_us=31541 loop_hz=85.5 model_rpm=100 kp=3.0 kd=0.1
+
+### F. slow motor (~30 RPM: vmax 0.38 m/s), 1.5 m/s, QNX
+$ fake_ball.py --shots 20 --speed 1.5 --mode QNX --paddle-vmax 0.38 --paddle-tau 0.045
+shot   1: aim +0.068 m  1.54 m/s  -> SAVE    (paddle +0.024)
+shot   2: aim +0.049 m  1.43 m/s  -> SAVE    (paddle +0.024)
+shot   3: aim -0.096 m  1.37 m/s  -> SAVE    (paddle -0.041)
+  ...
+20 shots at 1.50 m/s: 20 saves, 0 goals, 0 wide/stopped (save rate 100%)
+server: mode=QNX saves=20 goals=0 jit_max_us=2029 loop_hz=199.9  link errors: 0
+STATUS: mode=QNX sched=RR emulated=0 ctl_kind=observer saves=20 goals=0 hits=0 jit_avg_us=539 jit_max_us=2029 loop_hz=199.9 model_rpm=100 kp=3.0 kd=0.1
+
+### Sample of stub motor commands (server log, scenario A start; the stub prints M only when it changes)
+[stub] N 0
+[stub] M -0.193
+[stub] N 0
+[stub] M 0.000
+[stub] M 0.219
+[stub] M 0.000
+[stub] M -0.221
+[stub] M 0.000
+[stub] M -0.208
+[stub] M 0.000
+[stub] M 0.253
+[stub] M 0.199
+[stub] M 0.000
+[stub] M -0.201
+[stub] M 0.000
+[stub] M 0.426
+[stub] M 0.345
+[stub] M 0.281
+[stub] M 0.211
+[stub] M 0.000
+[stub] M 1.000
+[stub] M 0.856
+[stub] M 0.749
+[stub] M 0.656
+[stub] M 0.573
+... 11169 distinct M lines in total
+
+### Server events (saves/goals/watchdog/mode), first 15
+[ctl] MODE QNX (SCHED_RR prio 40, absolute-time ticks)
+[ctl] WATCHDOG: nothing for 300 ms -> park centre
+[ctl] commands back, watchdog cleared
+[game] SAVE #1 (reversal)
+[game] SAVE #2 (reversal)
+[game] SAVE #3 (reversal)
+[game] SAVE #4 (reversal)
+[game] SAVE #5 (reversal)
+[game] SAVE #6 (reversal)
+[game] SAVE #7 (reversal)
+[game] SAVE #8 (reversal)
+[game] SAVE #9 (reversal)
+[game] SAVE #10 (reversal)
+[game] SAVE #11 (reversal)
+[game] SAVE #12 (reversal)
+
+### G. legacy camera-PD controller (--ctl pd), 2.0 m/s, QNX
+$ fake_ball.py --shots 20 --speed 2.0 --mode QNX --paddle-vmax 1.26 --paddle-tau 0.045
+shot   1: aim +0.068 m  2.06 m/s  -> SAVE    (paddle +0.057)
+shot   2: aim -0.088 m  2.19 m/s  -> GOAL    (paddle +0.005)
+shot   3: aim +0.009 m  2.06 m/s  -> SAVE    (paddle +0.007)
+  ...
+20 shots at 2.00 m/s: 13 saves, 7 goals, 0 wide/stopped (save rate 65%)
+server: mode=QNX saves=13 goals=7 jit_max_us=3315 loop_hz=200.0  link errors: 0
+STATUS: mode=QNX sched=RR emulated=0 ctl_kind=pd saves=13 goals=7 hits=0 jit_avg_us=514 jit_max_us=3315 loop_hz=200.0 model_rpm=100 kp=15.0 kd=0.4
+
+### H. legacy camera-PD controller (--ctl pd), 3.0 m/s, QNX
+$ fake_ball.py --shots 20 --speed 3.0 --mode QNX --paddle-vmax 1.26 --paddle-tau 0.045
+shot   1: aim +0.068 m  3.09 m/s  -> GOAL    (paddle -0.037)
+shot   2: aim +0.036 m  2.83 m/s  -> GOAL    (paddle -0.050)
+shot   3: aim +0.094 m  2.88 m/s  -> GOAL    (paddle -0.050)
+  ...
+20 shots at 3.00 m/s: 8 saves, 12 goals, 0 wide/stopped (save rate 40%)
+server: mode=QNX saves=8 goals=12 jit_max_us=1495 loop_hz=200.0  link errors: 0
+STATUS: mode=QNX sched=RR emulated=0 ctl_kind=pd saves=8 goals=12 hits=0 jit_avg_us=518 jit_max_us=1495 loop_hz=200.0 model_rpm=100 kp=15.0 kd=0.4
+
+### How to read this
+- Real-time run over TCP (server threads, OS scheduling, Python timing): the
+  same seed does NOT give identical results run to run. Expect +-1-2 shots per
+  scenario; a 90% vs 100% difference at 2 m/s is within that noise.
+- "N shots at": fake_ball's ground truth. "server:"/"STATUS:": the C server's
+  own counters (vision-only save detection: the fake world sends no Uno HIT).
+  At 3 m/s the server can miss a save (ball moves 10 cm per frame, so the
+  bounce-back is seen late); on hardware the Uno's accelerometer HIT covers it.
+- The fake paddle is a linear first-order motor with a 7 cm blade and no
+  deadband/friction; the C observer assumes the sim's pivot model (friction
+  offset 0.10, deadband comp 0.12), so it is deliberately a bit mismatched.
+  The save rates show the software loop works end to end; they are NOT a
+  hardware prediction. Use goalie/sim with your measured RPM for that.
+- LINUX mode is an emulation (SCHED_OTHER + injected 0-30 ms stalls).

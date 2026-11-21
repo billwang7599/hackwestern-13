@@ -28,8 +28,8 @@ from field import BALL_R, DEFAULT_PORT, FIELD_W, GOAL_HALF_W, WD_MS
 
 TICK_S = 0.005            # 200 Hz
 FIT_N = 4                 # samples in the velocity fit
-VY_IN = -0.05             # in flight if vy below this
-VY_OUT = 0.05             # reversed if vy above this
+VY_IN = -0.15             # in flight if vy below this (contract, = sim VY_IN)
+VY_OUT = 0.15             # reversed if vy above this (contract)
 SAVE_ZONE_Y = 0.10
 REARM_Y = 0.25
 REARM_UNSEEN_S = 1.0
