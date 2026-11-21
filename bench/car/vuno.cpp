@@ -264,13 +264,14 @@ static std::string profile_json() {
 }
 
 static std::string truth_json() {
-  char b[1024];
+  char b[1536];
   snprintf(b, sizeof b,
            "{\"t\":%llu,\"x\":%.4f,\"y\":%.4f,\"th\":%.4f,\"v\":%.4f,\"w\":%.4f,\"wl\":%.4f,\"wr\":%.4f,"
            "\"pwm_l\":%d,\"pwm_r\":%d,\"batt_v\":%.3f,\"contact\":%s,"
            "\"batt_a\":%.3f,\"mode_l\":%d,\"mode_r\":%d,\"odo\":%.4f,\"roll\":%.1f,"
            "\"imu\":[%.3f,%.3f,%.3f],\"led\":%d,\"buzz\":%d,\"btn\":%d,"
            "\"fw\":\"%s\",\"boots\":%d,\"stalls\":%llu,\"stall_max_ms\":%llu,\"plugged\":%s,\"host_open\":%s,\"pty\":\"%s\","
+           "\"batt_v_min\":%.3f,\"batt_v_low\":%.3f,\"ch_a\":[%.3f,%.3f],\"ilim\":[%d,%d],\"stall\":[%d,%d],\"sag_resets\":%d,\"motors_per_side\":%d,"
            "\"faults\":{\"tip\":%s,\"lift_left\":%s,\"lift_right\":%s,\"brownout\":%s,\"unplug\":%s}}",
            (unsigned long long)(car->t * 1000), car->x, car->y, car->th, car->v, car->w, car->s[0], car->s[1],
            pwm_signed(0), pwm_signed(1), car->vb, car->contact ? "true" : "false",
@@ -280,6 +281,8 @@ static std::string truth_json() {
            mock_pin_input[PIN_BUTTON] == LOW,
            fw_running ? "run" : "reset", fw_boots, (unsigned long long)stall_n, (unsigned long long)stall_max_ms, unplugged ? "false" : "true", host_open ? "true" : "false",
            jesc(unplugged ? "" : pty_path).c_str(),
+           car->vb_min, car->vb_min_seen < 1e8 ? car->vb_min_seen : car->vb_min, car->ich[0], car->ich[1],
+           car->ilim[0], car->ilim[1], car->stall[0], car->stall[1], car->sag_resets, car->nmot(),
            car->f_tip ? "true" : "false", car->f_lift[0] ? "true" : "false", car->f_lift[1] ? "true" : "false",
            car->browned() ? "true" : "false", unplugged ? "true" : "false");
   return b;
@@ -379,6 +382,8 @@ static std::string handle_ctl(const std::string &msg, const sockaddr_in &from) {
       if (!found) subs.push_back({a, real_us() + 5000000});
     } else if (k == "reset") {
       fw_hold_reset(200000);   // the RESET button: short, no host open involved
+    } else if (k == "stats_reset") {
+      car->reset_stats();   // batt_v_low starts over (tests: "lowest battery during this TURN")
     } else if (k == "get") {
       extra += ",\"profile\":" + profile_json() + ",\"truth\":" + truth_json();
       extra += ",\"link\":\"" + jesc(opt_link) + "\"";
@@ -515,10 +520,12 @@ int main(int argc, char **argv) {
     }
 
     // brownout: below the Uno's threshold it sits in reset; boots when power is back
+    // (the "brownout" fault, or the motors sagging the battery: Car::sag_low())
     double ur = car->P("uno_resets_below_v");
-    bool low = ur > 0 && car->browned() && car->brown_v < ur;
+    bool low = ur > 0 && ((car->browned() && car->brown_v < ur) || car->sag_low());
     if (low && !brown_reset) { brown_reset = true; fw_running = false; pins_reset(); fw_boot_at_us = 0;
-                               fprintf(stderr, "[vuno] brownout: Uno reset\n"); }
+                               fprintf(stderr, "[vuno] brownout: Uno reset (%s, battery min %.2f V)\n",
+                                       car->sag_low() ? "motor sag" : "fault", car->vb_min); }
     if (!low && brown_reset) { brown_reset = false; fw_hold_reset(100000); }   // power-on: no Optiboot wait
 
     if (btn_release_us && now >= btn_release_us) { mock_pin_input[PIN_BUTTON] = HIGH; btn_release_us = 0; }

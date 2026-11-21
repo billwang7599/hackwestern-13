@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Virtual SM11 through the REAL host tars_motor (unchanged, -b uno -d <pty>).
 
-    python3 bench/tests/test_car.py          (builds bench/car + iter1-wasd/pi host)
+    python3 bench/tests/test_car.py [--profile sm11_2wd]   (builds bench/car + iter1-wasd/pi host)
+
+The plumbing (READY, watchdogs, faults, calibration loop) runs on the 2WD profile by
+default because its TURN/dc-spin checks need a car that can spin at the firmware's duty.
+The 4WD sm11 profile (the real car) can't, with the current guesses: see
+test_car_4wd.py, which compares the two through the same firmware and tars_motor.
 
 What runs: iter1-wasd/uno/tars/tars.ino (CAR_SM11) compiled for the Mac with the
 firmware test mocks, bench/car/physics.h, and tars_motor_host. Every port is free
@@ -54,13 +59,13 @@ def load() -> str:
 class Rig:
     """vuno + tars_motor on free ports, a truth listener, a client connection."""
 
-    def __init__(self, seed: int = 1, watchdog_ms: int = 300):
+    def __init__(self, seed: int = 1, watchdog_ms: int = 300, profile: str = "sm11_2wd"):
         self.tr = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.tr.bind(("127.0.0.1", 0))
         self.ctl_port = free_port(socket.SOCK_DGRAM)
         self.port = free_port()
         self.log = open(os.path.join(tempfile.gettempdir(), f"test_car_{self.port}.log"), "w")
-        self.car, self.dev = car.start("sm11", self.tr.getsockname()[1], self.ctl_port, seed,
+        self.car, self.dev = car.start(profile, self.tr.getsockname()[1], self.ctl_port, seed,
                                        link=os.path.join(tempfile.gettempdir(), f"tars-vuno-test-{self.ctl_port}"),
                                        log=self.log)
         self.motor = car.start_motor(self.dev, self.port, watchdog_ms=watchdog_ms, log=self.log)
@@ -185,10 +190,14 @@ def run_wheel_cal(rig: Rig, args: list[str], measure) -> tuple[int, str]:
 
 
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--profile", default="sm11_2wd")
+    a = ap.parse_args()
     car.build()
     car.build_motor()
-    print(f"load {load()}", flush=True)
-    rig = Rig(seed=7)
+    print(f"load {load()}  profile {a.profile}", flush=True)
+    rig = Rig(seed=7, profile=a.profile)
     try:
         # ---- READY handshake (power-on boot, then the DTR reset when tars_motor opens it)
         t = rig.wait(lambda: rig.status().get("ready") == "1", 6.0)
