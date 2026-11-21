@@ -3,6 +3,8 @@
  * TCP line protocol (one command per line, reply "OK ..." or "ERR <why>"):
  *   D <left> <right>     drive, each in [-1, 1] (must be resent < watchdog ms)
  *   DL <epoch> <l> <r> leased drive: epoch from STATUS; a guard denial invalidates it
+ *                      (guard denial: D/DL/MOVE refused + aborted; an in-place TURN still runs
+ *                      while the reason is a fresh guard_blocked, so the robot can pivot away)
  *   S                    stop driving NOW (no slew), cancel any gesture, halt both arms
  *   G <name>             gesture: wave point shrug nod stance fold
  *   A <arm> <deg> [dps]  arm 0=left 1=right to an absolute angle -> "OK <deg>"
@@ -328,6 +330,7 @@ static void ctl_arm_model(float dt)
 }
 
 static void ctl_move_abort_locked(const char *why);
+static int guard_pivot_ok(void);
 
 static void ctl_event(const motor_event_t *ev, long long now)
 {
@@ -459,8 +462,13 @@ static void *control_thread(void *arg)
         guard_permit = gate_ok; guard_age = guard_gate_age_ms(); guard_reason = guard_gate_reason();
         if (!gate_ok) {
             target_l = target_r = 0;
-            req_move = 0;
-            ctl_move_abort_locked("lidar_guard");
+            /* lidar_guard watches a FORWARD corridor only, so an in-place pivot isn't what it
+             * guards: while it reports a fresh BLOCKED (not stale/missing/invalid) an exact TURN
+             * may run, so the robot can turn away from what's ahead. Drives and MOVE stop. */
+            if (!(mv_kind == 'R' && guard_pivot_ok())) {
+                req_move = 0;
+                ctl_move_abort_locked("lidar_guard");
+            }
             req_stop_gesture = req_halt = 1;
             req_gesture = NULL; req_dev_gesture[0] = 0;
             memset(arm_req, 0, sizeof arm_req);
@@ -582,6 +590,11 @@ static void *control_thread(void *arg)
 static void feed_watchdog(void) { clock_gettime(CLOCK_MONOTONIC, &last_cmd); }
 
 /* Called with `lock` held. NULL = motion allowed, else the ERR reason. */
+static int guard_pivot_ok(void)
+{
+    return !strcmp(guard_gate_reason(), "guard_blocked");
+}
+
 static const char *motion_refused(void)
 {
     if (tipped) return "tipped over: stand TARS up, then send RESET";
@@ -748,7 +761,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         pthread_mutex_lock(&lock);
         feed_watchdog();
         long long left = bump_until_ms - now_ms();
-        if ((why = motion_refused()) != NULL) {
+        if ((why = motion_refused()) != NULL && !(kind == 'R' && !tipped && guard_pivot_ok())) {
             snprintf(reply, rlen, "ERR %s\n", why);
         } else if (left > 0) {
             snprintf(reply, rlen, "ERR bumped: driving paused %lld ms\n", left);

@@ -1001,13 +1001,25 @@ def test_guard_gate() -> None:
         ep2 = c.status()["guard_epoch"]
         check(c.cmd(f"DL {ep2} 0.5 0.5") == "OK", "new-epoch DL accepted")
         c.cmd("S")
-        r = c.cmd("TURN 30")
+        r = c.cmd("MOVE 100")
         keepalive_for(c, 0.2)
         g.permit = 0
         time.sleep(0.15)
         st = c.status()
-        check(st["move"] == "aborted" and st["move_why"] == "lidar_guard", f"denial aborts an exact TURN ({st['move_why']})")
-        g.stop()
+        check(st["move"] == "aborted" and st["move_why"] == "lidar_guard", f"BLOCKED aborts an exact MOVE ({st['move_why']})")
+        # forward-only guard: a fresh BLOCKED still lets the robot pivot away (TURN), nothing else
+        r = c.cmd("TURN 30")
+        check(r.startswith("OK"), f"TURN accepted while BLOCKED (pivot away) ({r})")
+        keepalive_for(c, 0.3)
+        st = c.status()
+        check(st["move"] == "running" and st["move_kind"] == "TURN", f"... and keeps running ({st['move']})")
+        check(c.cmd("MOVE 50").startswith("ERR guard_blocked"), "MOVE still refused while BLOCKED")
+        check(c.cmd("D 0.3 -0.3").startswith("ERR"), "D (even a spin) still refused while BLOCKED")
+        g.stop()                                     # guard goes silent -> stale: the pivot stops too
+        time.sleep(0.3)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "lidar_guard", f"stale guard aborts the pivot ({st['move']} {st['move_why']})")
+        check(c.cmd("TURN 10").startswith("ERR guard_stale"), "TURN refused when the guard is stale")
         time.sleep(0.3)
         st = c.status()
         check(st["guard_permit"] == "0" and st["guard_reason"] == "guard_stale", f"silent guard -> stale -> deny ({st['guard_reason']})")
