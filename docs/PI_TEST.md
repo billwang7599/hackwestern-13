@@ -341,7 +341,7 @@ cd ~/voice
 Say, about 30 cm from the mic: **"TARS, turn left"** → `[heard] "TARS, turn left." ... TURN -30`, the
 robot beeps and turns. Then try "TARS, go forward", "TARS, turn right ninety", **"Stop!"** (no "TARS" needed),
 and "TARS, go to the trash can" (→ `[goto] GOTO trash can`; it just logs `unreachable` until the go-to
-controller on port 5557 is running, and that's fine). Speech without "TARS" is ignored. **Press the Uno
+controller on port 5570 is running, and that's fine). Speech without "TARS" is ignored. **Press the Uno
 button** and you have 4 s to give a command without saying "TARS" (use this on a noisy floor).
 
 Write down the `stt=…ms` numbers from the `[heard]` lines (whisper time per command) with and without
@@ -364,18 +364,18 @@ Needs Steps 2–5 working. Details are in `goto/README.md`.
    - If `camera_open failed`: check that the QNX `sensor` service is running and that its config lists the USB webcam.
 3. **Model alone:** run `./detect --camera camapi:1 --stdout --no-udp` and hold a cup or bottle in view. You should see a `"label":"cup"` box, and stderr prints fps every 5 s. Expect about 5–10 fps.
 4. **Wheels in the air:** start `tars_motor`, `./goto -c goto.conf -o objects.txt &` and `./detect &`, then from the laptop:
-   `printf 'GOTO cup\n' | nc <pi-ip> 5557`. It beeps once.
+   `printf 'GOTO cup\n' | nc <pi-ip> 5570`. It beeps once.
    - With the cup out of view: the wheels do 30° turns. After 12 of them (a full circle) it beeps three times.
    - With the cup in view: the wheels spin forward, and the faster side is the side the cup is on.
 5. **On the floor:** put a trash can 1–2 m away and `GOTO trash can`. It should turn toward it, crawl up (about 4 cm/s) and stop about 0.5 m away with one beep.
-   - **Watch:** `printf 'STATUS\n' | nc <pi-ip> 5557` shows `state= h= bearing=`.
+   - **Watch:** `printf 'STATUS\n' | nc <pi-ip> 5570` shows `state= h= bearing=`.
    - **If it stops too early or too late:** change `arrive_h_frac` in `goto.conf`. It's the box height ÷ frame height at the spot where you want it to stop.
 6. **Stop test:** during an approach, `printf 'S\n' | nc <pi-ip> 5555`. The wheels stop at once, and goto STATUS shows `result=cancelled:stop`.
 7. **Object memory** (`goto/README.md`, "Object memory"):
    - `printf 'POSE\n' | nc <pi-ip> 5555` → `OK x y hdg epoch moving`. Drive 1 m with WASD and check `x` says about 1000. Spin 360° and check `hdg` comes back near 0. Write down how far off it is: that's the drift.
-   - `printf 'SCAN\n' | nc <pi-ip> 5557` (or say "TARS, look around"): 12 × 30° turns, then `printf 'MEMORY\n' | nc <pi-ip> 5557` lists e.g. `trash can#1 fresh ... est_dist=`. Compare `est_dist` with a tape measure. If it's way off, set `cam_height_mm` / `cam_pitch_deg` in `goto.conf`.
+   - `printf 'SCAN\n' | nc <pi-ip> 5570` (or say "TARS, look around"): 12 × 30° turns, then `printf 'MEMORY\n' | nc <pi-ip> 5570` lists e.g. `trash can#1 fresh ... est_dist=`. Compare `est_dist` with a tape measure. If it's way off, set `cam_height_mm` / `cam_pitch_deg` in `goto.conf`.
    - Turn the robot away by hand with WASD, then `GOTO trash can`: the first move should be one TURN straight toward it, not a 30° search.
-   - It's saved in `/data/home/qnxuser/goto/memory.txt`. **If you carry the robot somewhere else, say "TARS, forget everything" or send `FORGET` to 5557**, because the remembered positions are relative to where it was.
+   - It's saved in `/data/home/qnxuser/goto/memory.txt`. **If you carry the robot somewhere else, say "TARS, forget everything" or send `FORGET` to 5570**, because the remembered positions are relative to where it was.
 
 ---
 

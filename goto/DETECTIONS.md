@@ -28,8 +28,8 @@ Other keys (`"track_id"`, `"cls"`, nested objects) are allowed and ignored. `"sc
 
 | How | Address | Use when |
 |---|---|---|
-| **UDP** (recommended) | `127.0.0.1:5558`, one datagram per frame | Default. The detector can crash or restart without breaking anything. |
-| TCP | `127.0.0.1:5558`, newline-separated stream | Your code already has a socket writer. |
+| **UDP** (recommended) | `127.0.0.1:5571`, one datagram per frame | Default. The detector can crash or restart without breaking anything. |
+| TCP | `127.0.0.1:5571`, newline-separated stream | Your code already has a socket writer. |
 | stdin | `detector \| goto -i` | Quick pipes and testing. |
 
 The ports are bound to localhost only, so the detector runs on the Pi next to `goto`.
@@ -42,7 +42,7 @@ The ports are bound to localhost only, so the detector runs on the Pi next to `g
 #include "yolo_post.hpp"                    // goto/src
 // dets: std::vector<yolo::Det>{cls, conf, x1, y1, x2, y2} in frame pixels
 std::string line = yolo::to_json(t, frame_w, frame_h, dets, class_names);
-sendto(udp_fd, line.data(), line.size(), 0, (sockaddr*)&goto_addr, sizeof goto_addr);  // 127.0.0.1:5558
+sendto(udp_fd, line.data(), line.size(), 0, (sockaddr*)&goto_addr, sizeof goto_addr);  // 127.0.0.1:5571
 ```
 
 If your network outputs raw YOLOv8/YOLO11 tensors, `yolo::letterbox()` and `yolo::decode()` in the same header do the pre- and post-processing, including NMS and undoing the letterbox.
@@ -56,7 +56,7 @@ for r in model.predict(source=0, stream=True, imgsz=320, verbose=False):
     h, w = r.orig_shape
     dets = [{"label": r.names[int(c)], "conf": float(p), "box": [float(v) for v in b]}
             for b, c, p in zip(r.boxes.xyxy.tolist(), r.boxes.cls.tolist(), r.boxes.conf.tolist())]
-    sock.sendto(json.dumps({"t": 0, "w": w, "h": h, "dets": dets}).encode(), ("127.0.0.1", 5558))
+    sock.sendto(json.dumps({"t": 0, "w": w, "h": h, "dets": dets}).encode(), ("127.0.0.1", 5571))
 ```
 
 To drive the robot from a laptop detector, run `goto` on the laptop as well (`goto/build/goto_host -m <pi-ip>:5555`). It's a dev-only setup: Wi-Fi latency makes steering worse.
@@ -65,6 +65,6 @@ To drive the robot from a laptop detector, run `goto` on the laptop as well (`go
 
 ```sh
 echo '{"w":640,"h":480,"dets":[{"label":"bin","conf":0.9,"box":[300,200,340,300]}]}' \
-  | nc -u -w0 127.0.0.1 5558          # goto STATUS frames= should go up during a GOTO
-printf 'STATUS\n' | nc 127.0.0.1 5557
+  | nc -u -w0 127.0.0.1 5571          # goto STATUS frames= should go up during a GOTO
+printf 'STATUS\n' | nc 127.0.0.1 5570
 ```

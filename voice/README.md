@@ -11,7 +11,7 @@ USB mic ─► io-audio (libasound snd_pcm, 16 kHz mono)          src/audio.c
              1. normalise   2. wake word "TARS"   3. SAFETY STOP pass
              4. classifier  5. slots: amount ("ninety", "half a metre"), object ("the bin" → trash can)
         ─► TCP 5555 tars_motor:  S · MOVE ±mm · TURN ±deg · STATUS · LED · BEEP
-        ─► TCP 5557 go-to:       GOTO <object> · CANCEL                       src/main.c
+        ─► TCP 5570 go-to:       GOTO <object> · CANCEL                       src/main.c
 ```
 
 Python is only used off the robot: training (`intent/train.py`), `intent/try.py` and the tests.
@@ -22,7 +22,7 @@ Python is only used off the robot: training (`intent/train.py`), `intent/try.py`
 | "TARS, back up" / "…reverse 30 centimetres" | `MOVE -300` / `MOVE -300` |
 | "TARS, turn left" / "…turn right ninety" / "…hang a left" | `TURN -30` / `TURN 90` / `TURN -30` |
 | "TARS, turn around" / "…do a spin" | `TURN 180` / `TURN 360` |
-| "TARS, go to the trash can" / "…find the door" / "…head over to that bin" | `GOTO trash can` / `GOTO door` / `GOTO trash can` → 5557 |
+| "TARS, go to the trash can" / "…find the door" / "…head over to that bin" | `GOTO trash can` / `GOTO door` / `GOTO trash can` → 5570 |
 | "TARS, status" | `STATUS` (logged) + `BEEP 2` |
 | **"Stop" / "halt" / "freeze" / "whoa"** (no wake word needed) · "TARS, no / wait / hold on" | **`S` to tars_motor, then `CANCEL` to go-to** |
 | anything else after "TARS" / unknown object ("go to the kitchen") | nothing moves; `LED no` + `BEEP 3` |
@@ -149,7 +149,7 @@ through `tars_voice_host` (whisper tiny.en-q5_1, 2 threads) into the real `pi/bu
 | crowd chatter + noise, 15 dB SNR | 4/21 | 4/21 | 0 |
 | crowd chatter + noise, 10 dB SNR | 3/21 | 3/21 | 0 |
 
-Every stop clip stops in clean and white noise, and every `S` is followed by `CANCEL` on 5557. The
+Every stop clip stops in clean and white noise, and every `S` is followed by `CANCEL` on 5570. The
 go-to controller received exactly the `GOTO` lines sent. A real-time stdin test also checks that the
 **talk button** works: "Turn left." without the wake word is ignored, then after a press it gives `TURN -30`.
 
@@ -198,7 +198,7 @@ If the Pi is too slow with YOLO running, try `threads = 3`, or `get_model.sh --b
 
 | Path | What |
 |---|---|
-| `src/main.c` | `tars_voice`: config, loop, routing to 5555/5557, wake carry-over, talk button |
+| `src/main.c` | `tars_voice`: config, loop, routing to 5555/5570, wake carry-over, talk button |
 | `src/audio.c` | capture: QNX io-audio (`snd_pcm_*` plugin API), WAV file, raw stdin |
 | `src/vad.c`, `src/stt.c` | VAD; whisper.cpp wrapper + repeat-loop filter |
 | `intent/intent.c/.h` | C inference: normalise, wake, safety, features, softmax, slots, objects |
@@ -226,7 +226,7 @@ If the Pi is too slow with YOLO running, try `threads = 3`, or `get_model.sh --b
 - **Real voices and real rooms:** the end-to-end audio is synthetic (`say`) with synthetic noise. No
   human voice or real mic has been tested.
 - **Pi latency and CPU** numbers above are estimates.
-- **The go-to controller protocol** (`GOTO <canonical name>` / `CANCEL`, one line each, on 5557, reply
+- **The go-to controller protocol** (`GOTO <canonical name>` / `CANCEL`, one line each, on 5570, reply
   optional) is this branch's assumption. The `kothar/goto` worker hadn't published its interface yet.
   Canonical names contain spaces (`GOTO trash can`).
 - `start_voice.sh` boot integration: which startup file the QNX image uses is unverified.

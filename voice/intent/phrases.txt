@@ -239,7 +239,7 @@ stop	emergency stop
 stop	stop driving
 stop	okay stop
 
-# ---------------------------------------------------------------- goto -> "GOTO <object>" to the go-to controller (TCP 5557)
+# ---------------------------------------------------------------- goto -> "GOTO <object>" to the go-to controller (TCP 5570)
 # {o} = an object; train.py fills it from objects.txt (and with things NOT in
 # objects.txt, so "go to the kitchen" is still goto -> "don't know that object").
 goto	go to the {o}

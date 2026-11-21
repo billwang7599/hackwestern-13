@@ -1,10 +1,10 @@
 /* goto: "TARS, go to the trash can". QNX-native go-to-object controller.
  *
  *   detections (JSON lines) ──► goto ──► tars_motor (TCP 5555: D / S / TURN / BEEP / LED)
- *   voice / laptop  ──GOTO──►  (control port TCP 5557)
+ *   voice / laptop  ──GOTO──►  (control port TCP 5570)
  *
  * Inputs
- *   control  TCP 5557, one command per line, reply "OK ..." / "ERR ...":
+ *   control  TCP 5570, one command per line, reply "OK ..." / "ERR ...":
  *              GOTO <object words>   start (or retarget). Aliases: goto/objects.txt
  *              CANCEL | STOP | S     stop now (sends S to tars_motor even when idle)
  *              STATUS                "OK state=.. target=.. result=.. ..."
@@ -19,7 +19,7 @@
  *                                    cancelled/failed:../scanning/scanned ..)
  *              PING                  "OK PONG"
  *   detect   one JSON object per line/datagram, see goto/DETECTIONS.md:
- *              UDP 127.0.0.1:5558, or TCP 127.0.0.1:5558 (line stream), or stdin (-i)
+ *              UDP 127.0.0.1:5571, or TCP 127.0.0.1:5571 (line stream), or stdin (-i)
  *
  * Safety: S always goes out first; D is resent at tick_hz (>= 5 Hz) while
  * driving so tars_motor's 500 ms watchdog never trips mid-approach, and if
@@ -526,8 +526,8 @@ static void usage(const char *argv0)
             "usage: %s [-m host:port] [-p ctl_port] [-u det_port] [-i] [-c goto.conf]\n"
             "          [-o objects.txt] [-r rt_prio] [-v] [-T time_scale]\n"
             "  -m  tars_motor address (default 127.0.0.1:5555)\n"
-            "  -p  control port, GOTO/CANCEL/STATUS (default 5557, all interfaces)\n"
-            "  -u  detections port, UDP + TCP on 127.0.0.1 (default 5558)\n"
+            "  -p  control port, GOTO/CANCEL/STATUS (default 5570, all interfaces)\n"
+            "  -u  detections port, UDP + TCP on 127.0.0.1 (default 5571)\n"
             "  -i  also read detection lines from stdin (detect | goto -i)\n"
             "  -M  object memory file (default memory_path in goto.conf, next to it; - = RAM only)\n"
             "  -r  SCHED_RR priority (default 20, below tars_motor's 30; 0 = don't)\n"
@@ -536,7 +536,7 @@ static void usage(const char *argv0)
 
 int main(int argc, char **argv)
 {
-    int ctl_port = 5557, det_port = 5558, use_stdin = 0, rt_prio = 20;
+    int ctl_port = 5570, det_port = 5571, use_stdin = 0, rt_prio = 20;
     const char *cfg_path = NULL, *obj_path = NULL;
     int opt;
     const char *mem_opt = NULL;

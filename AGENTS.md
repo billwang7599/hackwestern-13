@@ -40,15 +40,16 @@ The sensor-fusion design, state machine and port map are in [docs/ARCHITECTURE.m
 Unsupported → `ERR`, with no change to motor state.
 Several clients at once: `S` from any client stops everything and holds other clients' non-zero `D` for 1.5 s (`ERR held`); a disconnect only stops a drive or move that client started.
 
-**voice → go-to controller (TCP 5557, one line each, reply optional):** `GOTO <canonical object>` (e.g. `GOTO trash can`) · `CANCEL` (on every stop, and before any manual `MOVE`/`TURN`) · `SCAN` ("look around") · `FORGET [object]` ("forget everything" / "forget the bin").
+**voice → go-to controller (TCP 5570, one line each, reply optional):** `GOTO <canonical object>` (e.g. `GOTO trash can`) · `CANCEL` (on every stop, and before any manual `MOVE`/`TURN`) · `SCAN` ("look around") · `FORGET [object]` ("forget everything" / "forget the bin").
 
 **`tars_motor` → Uno (USB serial 115200):** `D l r`, `M <mm>`, `R <deg>`, `S`, `K diam track`, `L <0-3>`, `B <n>`.
 **Uno → `tars_motor`:** `READY`, `DONE M|R <n>`, `ABORT …`, `T <deg>` tipped, `B <mg>` bump, `BTN TEACH`, `BTN FORGET`.
 The full spec is in the header comment of `uno/tars/tars.ino`.
 
-**Clients → `goto` (TCP 5557):** `GOTO <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.
-Object memory (`goto/README.md`) stores instances (`trash can#1`, `#2`) with status fresh/stale/gone in `memory.txt` next to `goto.conf`. **Port note:** the teammate's stack on main (23c8a36) also uses 5557/5558, so expect a port change when merging.
-**Detectors → `goto` (UDP/TCP 127.0.0.1:5558):** one JSON line per frame, `{"w","h","dets":[{"label","conf","box":[x1,y1,x2,y2]}]}`. See `goto/DETECTIONS.md`.
+**Clients → `goto` (TCP 5570):** `GOTO <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.
+Object memory (`goto/README.md`) stores instances (`trash can#1`, `#2`) with status fresh/stale/gone in `memory.txt` next to `goto.conf`.
+**Ports.** Andrew's stack owns 5555 and 5557–5569 (`pi/edge-ai/README.md`). Ours: `goto` control 5570 (was 5557), detections 5571 (was 5558). *Pending Andrew's sign-off.* Never bind 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
+**Detectors → `goto` (UDP/TCP 127.0.0.1:5571):** one JSON line per frame, `{"w","h","dets":[{"label","conf","box":[x1,y1,x2,y2]}]}`. See `goto/DETECTIONS.md`.
 
 ## Before you commit
 

@@ -51,7 +51,7 @@ static void usage(const char *a0)
             "  --iou X           NMS IoU (default 0.45)\n"
             "  --fps X           cap the frame rate to save CPU (default 8, 0 = no cap)\n"
             "  --threads N       ONNX Runtime intra-op threads (default 2)\n"
-            "  --udp HOST:PORT   where goto listens (default 127.0.0.1:5558)\n"
+            "  --udp HOST:PORT   where goto listens (default 127.0.0.1:5571)\n"
             "  --no-udp          don't send UDP\n"
             "  --stdout          also print each JSON line (detect --stdout --no-udp | goto -i)\n"
             "  --frames N        stop after N frames (benchmarks / tests)\n"
@@ -66,7 +66,7 @@ int main(int argc, char **argv)
 #else
     std::string cam;
 #endif
-    std::string model = "models/yolo_world.onnx", labels_path = "models/labels.txt", udp = "127.0.0.1:5558";
+    std::string model = "models/yolo_world.onnx", labels_path = "models/labels.txt", udp = "127.0.0.1:5571";
     bool nomodel = false, to_stdout = false, use_udp = true, quiet = false;
     int imgsz = 320, threads = 2;
     long max_frames = 0;

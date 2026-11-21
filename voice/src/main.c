@@ -3,7 +3,7 @@
  *   mic (io-audio) -> VAD (20 ms frames) -> segment <= 3 s -> whisper.cpp tiny.en
  *     -> text -> intent_decide() (safety stop, wake word, classifier, slots)
  *     -> lines to tars_motor (TCP 5555): S | MOVE | TURN | STATUS, + LED/BEEP
- *     -> "GOTO <object>" / "CANCEL" to the go-to controller (TCP 5557, goto/)
+ *     -> "GOTO <object>" / "CANCEL" to the go-to controller (TCP 5570, goto/)
  *   stop  = S to tars_motor FIRST, then CANCEL to the go-to controller
  *   move  = CANCEL to go-to, then MOVE/TURN to tars_motor (manual beats go-to)
  * Talk button (button_talk=1): a short press of the Uno button (STATUS
@@ -293,7 +293,7 @@ int main(int argc, char **argv)
     snprintf(c.model, sizeof c.model, "models/ggml-tiny.en-q5_1.bin");
     snprintf(c.host, sizeof c.host, "127.0.0.1");
     snprintf(c.goto_host, sizeof c.goto_host, "127.0.0.1");
-    c.goto_port = 5557; c.goto_reply_ms = 300; c.wake_carry_ms = 4000; c.button_talk = 1;
+    c.goto_port = 5570; c.goto_reply_ms = 300; c.wake_carry_ms = 4000; c.button_talk = 1;
     snprintf(c.prompt, sizeof c.prompt, "%s", DEFAULT_PROMPT);
     c.port = 5555; c.threads = 2; c.audio_ctx = 0; c.require_wake = 1; c.led_ms = 1500;
     vad_defaults(&c.vad);

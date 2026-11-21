@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 INTENTS = ["forward", "back", "left", "right", "turn_around", "stop",
            "goto", "spin", "status", "scan", "forget", "unknown"]
-GOTO_PREFIX = "@goto "              # lines for the go-to controller (TCP 5557), not tars_motor
+GOTO_PREFIX = "@goto "              # lines for the go-to controller (TCP 5570), not tars_motor
 N_FEAT = 4096                       # hashed feature bins (power of two)
 
 DEFAULT_TURN_DEG = 30
@@ -428,7 +428,7 @@ CANCEL = GOTO_PREFIX + "CANCEL"
 
 
 def command_lines(intent: str, toks: list[str]) -> list[str]:
-    """Lines in send order. '@goto X' lines go to the go-to controller (5557),
+    """Lines in send order. '@goto X' lines go to the go-to controller (5570),
     the rest to tars_motor (5555). A manual move first cancels any go-to, so
     the go-to controller's steering doesn't fight (and abort) the move."""
     val, unit = parse_amount(toks)

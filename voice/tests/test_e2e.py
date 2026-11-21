@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end voice test on a Mac: speech audio -> VAD -> whisper.cpp (tiny.en-q5_1)
 -> intent -> the REAL tars_motor (host build, -b stub) over TCP, and a fake
-go-to controller (records GOTO/CANCEL lines, like goto/ will on TCP 5557).
+go-to controller (records GOTO/CANCEL lines, like goto/ will on TCP 5570).
 
     make -C voice e2e
 

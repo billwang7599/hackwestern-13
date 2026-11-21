@@ -12,7 +12,7 @@ extern "C" {
 
 #define INTENT_MAX_LINES 3
 #define INTENT_LINE_LEN  48
-/* lines starting with this go to the go-to controller (TCP 5557), the rest to tars_motor */
+/* lines starting with this go to the go-to controller (TCP 5570), the rest to tars_motor */
 #define INTENT_GOTO_PREFIX "@goto "
 
 typedef enum {

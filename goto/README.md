@@ -4,8 +4,8 @@ Object name in, wheels out. Everything that runs on the robot is **QNX native C/
 
 ```
 voice app ──"GOTO trash can"──► goto (C, SCHED_RR 20) ──D / S / TURN / BEEP / LED──► tars_motor (C, SCHED_RR 30) ──► Uno
-                                   ▲  TCP 5557 control                         TCP 5555
-webcam ──► detect (C++, ONNX Runtime) ──JSON lines, UDP 127.0.0.1:5558──┘
+                                   ▲  TCP 5570 control                         TCP 5555
+webcam ──► detect (C++, ONNX Runtime) ──JSON lines, UDP 127.0.0.1:5571──┘
            (or the teammate's YOLO: same format, see DETECTIONS.md)
 ```
 
@@ -27,11 +27,11 @@ webcam ──► detect (C++, ONNX Runtime) ──JSON lines, UDP 127.0.0.1:5558
 4. **Approach:** it sends `D l r` at 10 Hz (the watchdog is 500 ms): a P controller on the bearing (EMA-smoothed box centre, 2° deadband), with forward speed reduced when it's off-centre. If the bearing passes 20° it stops and re-aligns.
 5. **Arrived:** the box height is ≥ 70% of the frame (person: 80%), or the box bottom touches the frame bottom. That has to hold for 2 frames. Then it sends `S`, `BEEP 1` and `LED ok`.
 6. **Lost:** no target for 1.2 s → `S`, then search again, starting toward where it was last seen.
-7. **Stop always wins:** `CANCEL` on 5557, or **an `S` from any other client** (voice "stop", teleop, ✋), cancels the GOTO. `goto` watches `tars_motor`'s `stops=` counter. If `goto` dies, `tars_motor` sees the disconnect and stops the wheels. Tipped, bumped, obstacle or a refused `D` all → `S` + `BEEP 3`.
+7. **Stop always wins:** `CANCEL` on 5570, or **an `S` from any other client** (voice "stop", teleop, ✋), cancels the GOTO. `goto` watches `tars_motor`'s `stops=` counter. If `goto` dies, `tars_motor` sees the disconnect and stops the wheels. Tipped, bumped, obstacle or a refused `D` all → `S` + `BEEP 3`.
 
 **Arrival thresholds depend on how the webcam is mounted.** The defaults assume it's about 12 cm up and level, and they stop about 0.5–0.7 m from a 0.4–0.8 m tall object. On the robot, drive up to the target by hand, read `h=` from `STATUS` and set `arrive_h_frac` in `goto.conf`.
 
-## Control port (TCP 5557)
+## Control port (TCP 5570)
 
 ```
 GOTO <words>    -> OK goto trash can | ERR unknown object '...' (robot beeps 3)
@@ -46,7 +46,7 @@ WATCH           -> OK, then async "EVENT searching|remembered <obj> #n|not_there
 PING            -> OK PONG
 ```
 
-**For the voice app:** on intent `goto` + object, send `GOTO <object words>` to 5557 and speak or beep based on the `EVENT` lines. On "stop", send `S` to 5555 (the fastest path). `goto` notices it by itself.
+**For the voice app:** on intent `goto` + object, send `GOTO <object words>` to 5570 and speak or beep based on the `EVENT` lines. On "stop", send `S` to 5555 (the fastest path). `goto` notices it by itself.
 
 ## Object memory
 
@@ -67,7 +67,7 @@ PING            -> OK PONG
 ./tars_motor -b uno -d /dev/serusb1 &                                     # 1. motors (pi/)
 ./goto -c goto.conf -o objects.txt &                                      # 2. controller
 ./detect --camera camapi:1 --model models/yolo_world.onnx --labels models/labels.txt &   # 3. eyes
-printf 'GOTO trash can\n' | nc 127.0.0.1 5557                             # or the voice app
+printf 'GOTO trash can\n' | nc 127.0.0.1 5570                             # or the voice app
 ```
 
 ## Build
