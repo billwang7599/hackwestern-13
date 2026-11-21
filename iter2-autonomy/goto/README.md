@@ -40,7 +40,9 @@ iPhone LiDAR/ARKit ──LDR1 packets (pose + world points), TCP/UDP 127.0.0.1:5
 
 ```
 GOTO <words>    -> OK goto trash can | ERR unknown object '...' (robot beeps 3)
-CANCEL|STOP|S   -> OK                 (S goes to tars_motor first, even when idle)
+STOP|S          -> OK                 (S goes to tars_motor first, even when idle)
+CANCEL          -> OK                 (S to tars_motor first only if a GOTO is running: an idle
+                                       CANCEL must not abort the manual MOVE/TURN voice sends next)
 STATUS          -> OK state=approach target=trash_can result=running seen=1 bearing=-3.2 h=0.31 searched=0 fps=7.9 ...
 OBJECTS         -> OK trash can,chair,person,...
 RESOLVE <words> -> OK trash can | ERR unknown object

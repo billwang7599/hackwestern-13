@@ -6,7 +6,8 @@
  * Inputs
  *   control  TCP 5570, one command per line, reply "OK ..." / "ERR ...":
  *              GOTO <object words>   start (or retarget). Aliases: iter2-autonomy/goto/objects.txt
- *              CANCEL | STOP | S     stop now (sends S to tars_motor even when idle)
+ *              STOP | S              stop now (sends S to tars_motor even when idle)
+ *              CANCEL                stop the GOTO (S to tars_motor only if goto is busy)
  *              STATUS                "OK state=.. target=.. result=.. ..."
  *              OBJECTS               "OK trash can,chair,..."
  *              RESOLVE <words>       "OK <canonical>" or "ERR unknown object"
@@ -492,7 +493,11 @@ static void handle_ctl(conn *c, char *line)
     const char *arg = line + strlen(cmd);
     while (*arg == ' ') arg++;
     if (!cmd[0]) return;
-    if (!strcasecmp(cmd, "CANCEL") || !strcasecmp(cmd, "STOP") || !strcasecmp(cmd, "S")) {
+    if (!strcasecmp(cmd, "CANCEL") && !goto_sm_busy(&sm)) {
+        /* nothing to cancel: no S. Voice sends CANCEL right before a manual MOVE/TURN, and our
+         * late S used to abort it. STOP / S (below) always send S, idle or not. */
+        send_str(c->fd, "OK\n");
+    } else if (!strcasecmp(cmd, "CANCEL") || !strcasecmp(cmd, "STOP") || !strcasecmp(cmd, "S")) {
         goto_sm_cancel(&sm, now_s(), "cancel");    /* S goes out before we reply */
         run_actions();
         send_str(c->fd, "OK\n");
