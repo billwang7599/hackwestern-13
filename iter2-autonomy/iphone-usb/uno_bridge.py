@@ -3,6 +3,7 @@ import ctypes as C
 import os
 import pty
 import select
+import signal
 import time
 import tty
 from pathlib import Path
@@ -16,7 +17,10 @@ def bind(name, result, *args):
 
 init = bind('init', C.c_int, C.POINTER(P))
 finish = bind('exit', None, P)
-open_uno = bind('open_device_with_vid_pid', P, P, C.c_uint16, C.c_uint16)
+devices = bind('get_device_list', C.c_ssize_t, P, C.POINTER(C.POINTER(P)))
+free_devices = bind('free_device_list', None, C.POINTER(P), C.c_int)
+descriptor = bind('get_device_descriptor', C.c_int, P, P)
+open_device = bind('open', C.c_int, P, C.POINTER(P))
 close = bind('close', None, P)
 claim = bind('claim_interface', C.c_int, P, C.c_int)
 control = bind('control_transfer', C.c_int, P,C.c_uint8,C.c_uint8,C.c_uint16,C.c_uint16,P,C.c_uint16,C.c_uint)
@@ -55,12 +59,57 @@ def bridge(handle):
         if os.path.islink(path) and os.readlink(path)==target: os.unlink(path)
         os.close(master); os.close(slave)
 
-if __name__=='__main__':
-    ctx=P()
-    if init(C.byref(ctx)): raise SystemExit('USB initialization failed')
+def connect_once():
+    ctx = P()
+    rc = init(C.byref(ctx))
+    if rc:
+        raise OSError(f'USB initialization failed ({rc})')
     try:
-        handle=open_uno(ctx,0x2341,0x0043)
-        if not handle: raise SystemExit('Uno absent')
-        try: bridge(handle)
-        finally: close(handle)
-    finally: finish(ctx)
+        entries = C.POINTER(P)()
+        count = devices(ctx, C.byref(entries))
+        if count < 0:
+            raise OSError(f'USB enumeration failed ({count})')
+        try:
+            for i in range(count):
+                raw = C.create_string_buffer(18)
+                rc = descriptor(entries[i], raw)
+                if rc:
+                    raise OSError(f'USB descriptor read failed ({rc})')
+                vendor = int.from_bytes(raw.raw[8:10], 'little')
+                product = int.from_bytes(raw.raw[10:12], 'little')
+                if vendor not in (0x2341, 0x2a03) or product != 0x0043:
+                    continue
+                handle = P()
+                rc = open_device(entries[i], C.byref(handle))
+                if rc:
+                    raise OSError(f'Uno {vendor:04x}:{product:04x} enumerated, open failed ({rc})')
+                try:
+                    bridge(handle)
+                finally:
+                    close(handle)
+                return
+            raise OSError(f'Waiting for Uno R3: QNX USB scan found {count} device(s)')
+        finally:
+            free_devices(entries, 1)
+    finally:
+        finish(ctx)
+
+
+def stop(signum, frame):
+    raise SystemExit(0)
+
+
+if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, stop)
+    if os.path.islink(path):
+        os.unlink(path)
+    previous = None
+    while True:
+        try:
+            connect_once()
+        except OSError as error:
+            message = str(error)
+            if message != previous:
+                print(message, flush=True)
+                previous = message
+        time.sleep(2)
