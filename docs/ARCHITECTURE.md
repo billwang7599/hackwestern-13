@@ -122,7 +122,7 @@ stateDiagram-v2
 - **ALIGN_TURN / APPROACH / ARRIVED**: unchanged from the built visual servo (`iter2-autonomy/goto/README.md`): one `TURN 0.9 × bearing`, then 10 Hz `D` P-control, arrive at box height ≥ 70% (person 80%) for 2 frames.
 - **SEARCH_TURN**: blind `TURN 30` steps up to 360°, starting toward the last-seen side.
 - **OCCLUDED**: `nav_line_clear(robot, instance.world) == 0` (an occupied cell between us and the spot). The object may still be there; don't downgrade it.
-- **DETOUR**: pick a free cell on the ring with clear line of sight to the spot (vantage cell), PLAN to it, LOOK again. One detour per instance.
+- **DETOUR**: pick a free cell on the ring with clear line of sight to the spot and a clear drive lane (robot-wide) to it (vantage cell), PLAN to it, LOOK again. One detour per instance. If something stands inside the robot's own footprint, the route starts with a pivot + short forward back-off away from it (never reverse).
 - **CHECK_OTHERS**: line of sight was clear and YOLO saw nothing, so mark the instance fresh → stale → gone and try the next instance of the same label.
 - **NEXT_CANDIDATE**: count tries (`memory_tries`, default 3), then fall back to SEARCH_TURN.
 - **FAILED**: `S`, `BEEP 3`, `EVENT failed:<why> <object>`.
@@ -268,7 +268,7 @@ ML at normal priority means a stop can never be starved, whatever the fps.
 
 **Run on the real Pi/QNX (Andrew's side, per `iter2-autonomy/edge-ai/README.md`):** YOLOX + MiDaS on QNX ONNX Runtime 1.24.4, `lidar_guard` with synthetic LiDAR, guard → `tars_motor` stub stop tests, live phone feeds to the Pi, a 1500-point mapping benchmark. **No physical drive** has been sent to the wheels.
 
-**Mac only (our side, iteration 2 as built):** `tars_motor` 313/313 + guard gate 19/19 (DL epoch, limited pivot-while-BLOCKED, pose), `goto` C unit 247/247 incl. ASan/UBSan, `nav` 84/84 + 1M-packet fuzz under ASan/UBSan, parity vs `mapping.py` 212/212, goto 2D sim 52/52, **scripted full-stack sim 27/27** (real `tars_motor_host` + `goto` + `tars_voice`/whisper; fake phone LDR1, fake YOLO, fake lidar_guard, fake phone speech: obstacle, occlusion → detour, moved object, STOP mid-route, visual-only, voice memory + recall), voice 149/149 (stop recall 1131/1131) and e2e 52/52, Uno 237/259/216/213, teleop 36/36. `detect` with ONNX Runtime on macOS only.
+**Mac only (our side, iteration 2 as built):** `tars_motor` 313/313 + guard gate 19/19 (DL epoch, limited pivot-while-BLOCKED, pose), `goto` C unit 265/265 incl. ASan/UBSan, `nav` 84/84 + 1M-packet fuzz under ASan/UBSan, parity vs `mapping.py` 212/212, goto 2D sim 52/52, **scripted full-stack sim 33/33** (real `tars_motor_host` + `goto` + `tars_voice`/whisper; fake phone LDR1, fake YOLO, fake lidar_guard, fake phone speech: obstacle, occlusion → detour, occlusion 0.39 m in front of the robot → back-off + detour, moved object, STOP mid-route, visual-only, voice memory + recall), voice 149/149 (stop recall 1131/1131) and e2e 52/52, Uno 237/259/216/213, teleop 36/36. `detect` with ONNX Runtime on macOS only.
 
 **Never run on the Pi/QNX/iPhone:** `goto`, `detect` (camapi never compiled), `tars_voice`, the object memory, `iter2-autonomy/goto/nav.c`, map-guided GOTO, the 5572 feed (no phone sends to it yet), the 5573 speech from voice. The blocker is still our `qcc` toolchain (Docker + SDP 8.0 in `~/qnx800`); Andrew builds with native QNX clang on the Pi, which may be the quicker route.
 
