@@ -7,7 +7,7 @@ Update the status table when you finish something.
 
 **Everything on the robot is QNX native (C/C++, qcc).** Python only on the laptop and in tests. Blocker #0: get the QNX SDP 8.0 toolchain working (`docker/run.sh`, `~/qnx800`).
 
-1. **Keyboard + motor control.** Laptop WASD over Wi-Fi to the Pi, then to the Uno and the wheels. Fast path: `pi/tars_bridge.py` (Python, no QNX build), branch `kothar/py-bridge`.
+1. **Keyboard + motor control.** Laptop WASD over Wi-Fi to the Pi, then to the Uno and the wheels. Demo path: native C `tars_motor`. Bring-up fallback until `qcc` works: `pi/tars_bridge.py` (Python, debug only).
 2. **Voice to command to YOLO "go to".** "TARS, go to the trash can": speech, then intent `goto` + object, then YOLO finds it, then the robot searches, steers and stops on arrival.
 3. *Back burner:* MediaPipe gestures, follow mode, teach-a-gesture. Keep the code, but don't spend time on it.
 
@@ -65,11 +65,10 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 | Area | Branch | State |
 |---|---|---|
 | Uno stepper firmware, `tars_motor`, WASD teleop, `docs/PI_TEST.md` | `stepper-wheels` (GitHub) | Mac tests pass. **Not run on hardware yet.** |
-| `pi/tars_bridge.py`: Python stand-in for `tars_motor`. **Bring-up/debug only** (test motors before the QNX build works); **not the demo path**, which is the native C `tars_motor` | `kothar/py-bridge` (local) | Passes all 240 `tars_motor` checks + 34 bridge checks + teleop 36/36 on Mac (stub + fake-Uno pty). **Not run on QNX/Pi/real Uno yet.** |
+| `pi/tars_bridge.py`: Python stand-in for `tars_motor`. **Bring-up/debug only** (test motors before the QNX build works); **not the demo path**, which is the native C `tars_motor` | `stepper-wheels` (GitHub) | Passes all 240 `tars_motor` checks + 34 bridge checks + teleop 36/36 on Mac (stub + fake-Uno pty). **Not run on QNX/Pi/real Uno yet.** |
 | MediaPipe gestures + follow mode | `stepper-wheels` (GitHub) | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
 | Teach-a-gesture on the spot | `kothar/learn-gesture` (local only) | Mac tests pass. Not merged. |
 | Speech + intent classifier | `kothar/voice-stt` (local, in progress) | Being built. |
-| Python bridge (no QNX build) | `kothar/py-bridge` (local, in progress) | Being built. |
 | YOLO go-to-object | `kothar/goto` (local, in progress) | Being built. The teammate's YOLO plugs in via the detection interface. |
 | Goalie / balancer experiments | `goalie/`, `balancer/` | Parked. Don't touch. |
 
@@ -85,7 +84,6 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 
 ## Next up
 
-- Merge `py-bridge` once its tests pass (priority 1).
 - Merge `voice-stt` once its tests pass, with the `goto <object>` intent added.
 - `goto/` (branch `kothar/goto`): a YOLO detection interface (JSON lines: label, conf, box), the search-and-steer program, and the YOLO-World custom-vocabulary export.
 - Demo script: "TARS, go to the trash can" → search → drive → stop on arrival → "TARS, stop".
