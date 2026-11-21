@@ -14,8 +14,12 @@ struct PointCloudView: View {
         if compact {
             CloudSceneView(cloud: cloud, reset: resetView)
                 .overlay(alignment: .topTrailing) {
-                    Button(showSurfaces ? "Points" : "Surfaces") { showSurfaces.toggle() }
-                        .font(.caption).buttonStyle(.bordered).background(.thinMaterial, in: Capsule()).padding(4)
+                    HStack(spacing: 3) {
+                        Button { resetView &+= 1 } label: { Image(systemName: "viewfinder") }
+                            .accessibilityLabel("Fit scan")
+                        Button(showSurfaces ? "Points" : "Surfaces") { showSurfaces.toggle() }
+                    }.font(.caption).buttonStyle(.bordered).controlSize(.small)
+                     .background(.thinMaterial, in: Capsule()).padding(3)
                 }
         } else {
         VStack(alignment: .leading, spacing: 10) {
@@ -213,6 +217,7 @@ private struct CloudSceneView: UIViewRepresentable {
         private var priorGridCenter: CloudPoint?
         private var priorSession: String?
         private var priorReset = -1
+        private var framedScan = false
 
         init() {
             camera.camera = SCNCamera()
@@ -286,10 +291,23 @@ private struct CloudSceneView: UIViewRepresentable {
                 priorObjects = cloud.objects
             }
             priorFloor = cloud.floor
-            if newSession || reset != priorReset {
-                let target = SCNVector3(cloud.pose?[0] ?? 0, cloud.floor ?? cloud.pose?[1] ?? 0, cloud.pose?[2] ?? 0)
-                let distance: Float = cloud.distant.isEmpty ? 4 : 12
-                camera.position = SCNVector3(target.x + distance, target.y + distance * 0.75, target.z + distance)
+            if newSession { framedScan = false }
+            if newSession || reset != priorReset || (!framedScan && !cloud.measured.isEmpty) {
+                let origin = SIMD3<Float>(cloud.pose?[0] ?? 0, cloud.pose?[1] ?? 0, cloud.pose?[2] ?? 0)
+                var low = origin, high = origin
+                // Frame observations around their center, including the phone and mapped targets.
+                for point in cloud.measured + cloud.estimated + cloud.distant + cloud.objects.map(\.point) {
+                    let xyz = SIMD3<Float>(point.x, point.y, point.z)
+                    low = simd_min(low, xyz)
+                    high = simd_max(high, xyz)
+                }
+                let center = (low + high) * 0.5
+                let target = SCNVector3(center)
+                let radius = simd_length(high - low) * 0.5
+                let range = max(3, 1.15 * radius / sin(Float.pi / 6))
+                let eye = center + simd_normalize(SIMD3<Float>(1, 0.75, 1)) * range
+                camera.position = SCNVector3(eye)
+                framedScan = !cloud.measured.isEmpty
                 camera.look(at: target)
                 view.defaultCameraController.stopInertia(); view.pointOfView = camera
                 view.defaultCameraController.target = target; priorReset = reset
