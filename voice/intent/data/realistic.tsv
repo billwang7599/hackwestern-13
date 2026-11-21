@@ -1,0 +1,101 @@
+# Hand-written, whisper-style transcripts. NOT generated, NOT used in training.
+# text <TAB> expected intent <TAB> expected first line sent to tars_motor ("-" = nothing sent / any)
+# Intent "ignore" = no wake word, nothing happens. "reject" = wake word but nothing sensible: LED no + BEEP 3 (or ignore).
+TARS, go forward.	forward	MOVE 300
+Tars, move forward.	forward	MOVE 300
+TARS, for word.	forward	MOVE 300
+Stars, go forward one meter.	forward	MOVE 1000
+Tars, forward 50 centimeters.	forward	MOVE 500
+TARS, go forward two steps.	forward	MOVE 200
+TARS, go ahead.	forward	MOVE 300
+Tars, drive forward half a meter.	forward	MOVE 500
+Cars, go forward.	forward	MOVE 300
+TARS. Go!	forward	MOVE 300
+Tars, move forward a little bit.	forward	MOVE 100
+TARS, forward 1.5 meters.	forward	MOVE 1000
+TARS, go back.	back	MOVE -300
+Tars, back up.	back	MOVE -300
+TARS, reverse.	back	MOVE -300
+Tars, go backwards 30 centimeters.	back	MOVE -300
+TARS, move back three steps.	back	MOVE -300
+TARS, back up a bit.	back	MOVE -100
+Stars, go bag.	back	MOVE -300
+TARS, turn left.	left	TURN -30
+Tars, turn lift.	left	TURN -30
+TARS, turn left 90 degrees.	left	TURN -90
+TARS, turn left ninety.	left	TURN -90
+Tars, rotate left 45°.	left	TURN -45
+TARS, go left.	left	TURN -30
+TARS, left.	left	TURN -30
+Tars, turn left a little.	left	TURN -15
+Taurus, turn left.	left	TURN -30
+TARS, turn right.	right	TURN 30
+Tars, turn write.	right	TURN 30
+TARS, turn right 90 degrees.	right	TURN 90
+TARS, turn right forty five degrees.	right	TURN 45
+Tars, rotate right 120.	right	TURN 120
+TARS, right.	right	TURN 30
+Tars, go right.	right	TURN 30
+TARS, turn right one eighty.	right	TURN 180
+TARS, turn around.	turn_around	TURN 180
+Tars, turn round.	turn_around	TURN 180
+TARS, do a U-turn.	turn_around	TURN 180
+TARS, about face.	turn_around	TURN 180
+Tars, turn a round.	turn_around	TURN 180
+TARS, spin.	spin	TURN 360
+Tars, spin around.	spin	TURN 360
+TARS, do a spin.	spin	TURN 360
+TARS, do a 360.	spin	TURN 360
+TARS, follow me.	follow	MODE follow
+Tars, follow me.	follow	MODE follow
+TARS, follow.	follow	MODE follow
+TARS, hollow me.	follow	MODE follow
+Stars, come with me.	follow	MODE follow
+TARS, gesture mode.	gestures	MODE gesture
+Tars, gestures.	gestures	MODE gesture
+TARS, back to gestures.	gestures	MODE gesture
+TARS, switch to gesture control.	gestures	MODE gesture
+TARS, learn a new gesture.	teach	MODE teach
+Tars, teach mode.	teach	MODE teach
+TARS, learn this.	teach	MODE teach
+TARS, status.	status	STATUS
+Tars, status report.	status	STATUS
+TARS, are you okay?	status	STATUS
+TARS, stop.	stop	S
+Stop!	stop	S
+stop	stop	S
+STOP.	stop	S
+Stop, stop, stop.	stop	S
+Tars, stop!	stop	S
+Halt.	stop	S
+Freeze!	stop	S
+Whoa, whoa.	stop	S
+TARS, no!	stop	S
+Tars, wait.	stop	S
+TARS, hold on.	stop	S
+Stopped.	stop	S
+Stop it.	stop	S
+TARS, stop moving.	stop	S
+Okay, stop.	stop	S
+TARS, emergency stop.	stop	S
+Tars, freeze.	stop	S
+I said stop.	stop	S
+Stob.	stop	S
+TARS, stop following me.	stop	S
+Thank you.	ignore	-
+Thanks for watching!	ignore	-
+you	ignore	-
+[BLANK_AUDIO]	ignore	-
+(music)	ignore	-
+Go forward.	ignore	-
+Turn left.	ignore	-
+That's a cool robot.	ignore	-
+What does it do?	ignore	-
+No, I think it's over there.	ignore	-
+Wait, what?	ignore	-
+TARS, thank you.	reject	-
+TARS, what's the weather?	reject	-
+TARS, tell me a joke.	reject	-
+TARS.	ignore	-
+Tars, um.	reject	-
+TARS, make me a sandwich.	reject	-

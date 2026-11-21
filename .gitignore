@@ -33,3 +33,10 @@ vision/tests/assets/
 vision/qnx/python/vendor/
 vision/qnx/cpp/tars_gesture_cpu
 gesture_view.jpg
+
+# voice
+voice/build/
+voice/models/*.bin
+voice/models/*.part
+voice/third_party/whisper.cpp/
+voice/tests/clips/
