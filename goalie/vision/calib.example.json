@@ -1,0 +1,43 @@
+{
+  "corners_px": [
+    [
+      80,
+      40
+    ],
+    [
+      560,
+      40
+    ],
+    [
+      560,
+      440
+    ],
+    [
+      80,
+      440
+    ]
+  ],
+  "field_w": 0.4,
+  "field_l": 0.6,
+  "ball": {
+    "h_lo": 5,
+    "h_hi": 25,
+    "s_lo": 120,
+    "s_hi": 255,
+    "v_lo": 120,
+    "v_hi": 255
+  },
+  "paddle": {
+    "h_lo": 45,
+    "h_hi": 85,
+    "s_lo": 80,
+    "s_hi": 255,
+    "v_lo": 60,
+    "v_hi": 255
+  },
+  "ball_min_area": 30,
+  "paddle_min_area": 40,
+  "camera": 0,
+  "width": 640,
+  "height": 480
+}
