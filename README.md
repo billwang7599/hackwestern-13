@@ -1,5 +1,13 @@
 # TARS: four slabs on wheels
 
+For the QNX self-balancing sensor prototype, see [Right Joy-Con IMU relay](JOYCON.md).
+For the wired iPhone experiment, see [MotionUSB](iphone/README.md) and
+[QNX USB transport setup](pi/iphone-usb/README.md). Rear-camera/LiDAR mapping and
+the mounted-phone surroundings display are described in [the dashboard guide](pi/dashboard/README.md).
+
+For the native QNX AI runtime, independent LiDAR guard, and 3D phone display,
+see [QNX edge AI](pi/edge-ai/README.md).
+
 > **Testing on the real Pi?** Start with **[docs/PI_TEST.md](docs/PI_TEST.md)**: build, wire,
 > bring-up, WASD teleop, calibration and troubleshooting, step by step from a fresh clone.
 > The wheels are now **two 28BYJ-48 steppers** (exact `MOVE`/`TURN`); the DC-motor build is still

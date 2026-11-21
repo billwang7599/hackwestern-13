@@ -132,7 +132,7 @@ static void parse_line(char *s)
 static void read_input(void)
 {
     char buf[128];
-    for (;;) {
+    for (int batch=0; batch<8; batch++) {
         ssize_t n = read(fd, buf, sizeof buf);
         if (n < 0) {
             if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) uno_lost(strerror(errno));
@@ -159,7 +159,7 @@ static void read_input(void)
 
 static void flush_out(void)
 {
-    while (fd >= 0 && out_len) {
+    for (int batch=0; batch<8 && fd>=0 && out_len; batch++) {
         ssize_t w = write(fd, outbuf, out_len);
         if (w < 0) {
             if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) uno_lost(strerror(errno));
@@ -197,8 +197,20 @@ static int uno_init(const char *dev)
     return 0;
 }
 
+static int uno_stop(void)
+{
+    /* A stop replaces queued drive lines instead of waiting behind them. */
+    out_len = 0;
+    if (fd >= 0) tcflush(fd, TCOFLUSH);
+    return send_line("\nS\n");
+}
+
 static int uno_drive(float l, float r)
 {
+    static int was_moving;
+    int moving = l != 0 || r != 0;
+    if (!moving && was_moving) uno_stop();
+    was_moving = moving;
     char line[48];
     snprintf(line, sizeof line, "D %.3f %.3f\n", l, r);
     int rc = send_line(line);
@@ -241,7 +253,7 @@ static int uno_beep(int n)
     return send_line(line);
 }
 
-static int uno_move_abort(void) { return send_line("S\n"); }
+static int uno_move_abort(void) { return uno_stop(); }
 static int uno_arm_halt(void) { return send_line("X\n"); }
 static int uno_arm_zero(void) { return send_line("Z\n"); }
 static int uno_level(void)    { return send_line("U\n"); }

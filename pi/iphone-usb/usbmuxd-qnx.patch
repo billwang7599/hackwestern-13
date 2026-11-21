@@ -1,0 +1,41 @@
+diff --git a/configure.ac b/configure.ac
+index 3bf88ef..d53aeaa 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -126,7 +126,7 @@ case ${host_os} in
+     AC_SUBST(WINDRES)
+     activation_method="manual"
+     ;;
+-  darwin*)
++  darwin*|*qnx*|*nto*)
+     win32=false
+     AC_MSG_RESULT([no])
+     # No support for launchd yet
+diff --git a/src/usb.c b/src/usb.c
+index 389520e..2c9b943 100644
+--- a/src/usb.c
++++ b/src/usb.c
+@@ -28,6 +28,7 @@
+ #include <stdlib.h>
+ #include <stdint.h>
+ #include <string.h>
++#include <sys/time.h>
+ 
+ #include <libusb.h>
+ 
+@@ -522,7 +523,14 @@ static int set_valid_configuration(struct libusb_device* dev, struct usb_device
+ 		return -1;
+ 	}
+ 
+-	for(j = devdesc.bNumConfigurations ; j > 0  ; j--) {
++	int max_configuration = devdesc.bNumConfigurations;
++#ifdef __QNXNTO__
++	/* Prefer the plain Apple multiplexing configuration for this prototype,
++	 * avoiding the additional proprietary USB Ethernet interface. */
++	if (devdesc.idVendor == 0x05ac && devdesc.idProduct == 0x12a8 && max_configuration >= 3)
++		max_configuration = 3;
++#endif
++	for(j = max_configuration ; j > 0  ; j--) {
+ 		if((res = libusb_get_config_descriptor_by_value(dev, j, &config)) != 0) {
+ 			usbmuxd_log(LL_NOTICE, "Could not get configuration %i descriptor for device %i-%i: %s", j, bus, address, libusb_error_name(res));
+ 			continue;

@@ -1,0 +1,87 @@
+{
+  "passed": true,
+  "sensor": "synthetic LDR1 floor returns at20Hz; no motors",
+  "ai": "actual YOLOX-Nano inference on supplied image",
+  "ai_completed": 17,
+  "ai_runtime": "1.24.4",
+  "ai_last_inference_ms": 219.320259,
+  "phases": [
+    {
+      "phase": "before_ai",
+      "heartbeats": 6,
+      "ticks_advanced": 28,
+      "frames_advanced": 5,
+      "maximum_sample_age_ms": 35.844,
+      "max_lateness_ms": 0.377,
+      "missed_ticks": 0,
+      "verdict": "CLEAR"
+    },
+    {
+      "phase": "ai_running",
+      "heartbeats": 6,
+      "ticks_advanced": 28,
+      "frames_advanced": 6,
+      "maximum_sample_age_ms": 44.945,
+      "max_lateness_ms": 0.528,
+      "missed_ticks": 0,
+      "verdict": "CLEAR"
+    },
+    {
+      "phase": "ai_sigstop",
+      "heartbeats": 9,
+      "ticks_advanced": 47,
+      "frames_advanced": 10,
+      "maximum_sample_age_ms": 45.716,
+      "max_lateness_ms": 0.528,
+      "missed_ticks": 0,
+      "verdict": "CLEAR"
+    },
+    {
+      "phase": "ai_killed",
+      "heartbeats": 6,
+      "ticks_advanced": 27,
+      "frames_advanced": 5,
+      "maximum_sample_age_ms": 35.724,
+      "max_lateness_ms": 0.528,
+      "missed_ticks": 0,
+      "verdict": "CLEAR"
+    },
+    {
+      "phase": "depth_sigstop",
+      "heartbeats": 9,
+      "ticks_advanced": 45,
+      "frames_advanced": 9,
+      "maximum_sample_age_ms": 45.856,
+      "max_lateness_ms": 0.528,
+      "missed_ticks": 0,
+      "verdict": "CLEAR"
+    },
+    {
+      "phase": "depth_killed",
+      "heartbeats": 6,
+      "ticks_advanced": 27,
+      "frames_advanced": 5,
+      "maximum_sample_age_ms": 25.851,
+      "max_lateness_ms": 0.528,
+      "missed_ticks": 0,
+      "verdict": "CLEAR"
+    }
+  ],
+  "lidar_silence_to_observed_stale_ms": 196.066,
+  "guard_reported_stale_age_ms": 195.842,
+  "scheduling": {
+    "policy": 2,
+    "priority": 20,
+    "requested_priority": 20,
+    "requested_cpu": 3,
+    "runmask": 8,
+    "schedule_error": 0,
+    "affinity_error": 0
+  },
+  "elapsed_s": 6.762,
+  "limitation": "Observed process-isolation test, not a hard real-time guarantee or physical LiDAR test",
+  "depth": "actual MiDaS-small relative-depth inference on supplied image",
+  "depth_completed": 2,
+  "depth_runtime": "1.24.4",
+  "depth_last_inference_ms": 867.615
+}

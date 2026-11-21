@@ -33,3 +33,19 @@ vision/tests/assets/
 vision/qnx/python/vendor/
 vision/qnx/cpp/tars_gesture_cpu
 gesture_view.jpg
+
+# Locally retained upstream USB sources and target build products
+vendor/iphone-usb/
+pi/iphone-usb/install/
+pi/iphone-usb/logs/
+pi/iphone-usb/probe
+pi/iphone-usb/state/
+iphone/**/xcuserdata/
+pi/dashboard/state/
+
+# Native edge-AI build products and runtime data
+pi/edge-ai/build/
+pi/edge-ai/state/
+
+# Locally compiled Arduino firmware
+uno/build/

@@ -18,7 +18,7 @@ PORT     ?= 5555
 
 BIN      := tars_motor
 SRCS     := src/main.c src/gesture.c src/motor_stub.c src/motor_uno_serial.c \
-            src/motor_pico_uart.c src/obstacle.c
+            src/motor_pico_uart.c src/obstacle.c src/guard_gate.c
 CFLAGS   := -Wall -Wextra -O2 -std=gnu11
 
 QCC      := qcc -V gcc_ntoaarch64le
@@ -26,7 +26,7 @@ QNX_LIBS := -lsocket -lm
 
 REPO     := $(abspath ..)
 
-.PHONY: all host test deploy run compdb clean
+.PHONY: all host native test deploy run compdb clean
 
 all: build/$(BIN)
 
@@ -46,6 +46,10 @@ build:
 host: | build
 	cc $(CFLAGS) -o build/$(BIN)_host $(SRCS) -lpthread -lm
 	@echo ">> run: ./build/$(BIN)_host -b stub"
+
+# Build directly on the preloaded QNX Pi (clang is installed there).
+native: | build
+	clang $(CFLAGS) -pthread -o build/$(BIN) $(SRCS) $(QNX_LIBS)
 
 # Host build + protocol/watchdog/gesture/tip tests against -b stub, plus the
 # real uno backend talking to a fake Uno on a pseudo-terminal. stdlib only.
@@ -67,3 +71,7 @@ endif
 
 clean:
 	rm -rf build
+
+# Focus-free USB keyboard input on the QNX target.
+keyboard-native: | build
+	clang -Wall -Wextra -O2 -pthread src/keyboard_hid.c -lhiddi -o build/keyboard_hid

@@ -108,13 +108,20 @@ static int stub_poll(motor_event_t *ev)
     return 1;
 }
 
+static int arms_halted;
+
 static int stub_arm(int arm, float deg, float dps)
 {
+    arms_halted = 0;
     fprintf(stderr, "[stub] arm %d -> %.1f deg @ %.0f dps\n", arm, deg, dps);
     return 0;
 }
 
-static int stub_arm_halt(void) { fprintf(stderr, "[stub] arms halt\n"); return 0; }
+static int stub_arm_halt(void) {
+    if (!arms_halted) fprintf(stderr, "[stub] arms halt\n");
+    arms_halted = 1;
+    return 0;
+}
 static int stub_arm_zero(void) { fprintf(stderr, "[stub] arms zero\n"); return 0; }
 static int stub_level(void)    { fprintf(stderr, "[stub] level (upright recaptured)\n"); return 0; }
 

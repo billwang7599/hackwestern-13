@@ -33,7 +33,7 @@ static void uart_drain_input(void)
     /* The Pico may print debug/acks; discard so the RX buffer never fills.
      * TODO: parse lines like "R <cm>" here if the Pico reads a distance sensor. */
     char buf[128];
-    while (fd >= 0 && read(fd, buf, sizeof buf) > 0) {}
+    for (int batch=0; batch<8 && fd>=0 && read(fd,buf,sizeof buf)>0; batch++) {}
 }
 
 static int pico_init(const char *dev)

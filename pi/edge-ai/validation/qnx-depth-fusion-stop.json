@@ -1,0 +1,36 @@
+{
+  "synthetic_lidar": true,
+  "backend": "stub",
+  "observations": [
+    {
+      "cause": "inferred_obstacle",
+      "observed_stop_ms": 22.039,
+      "guard_reason": "guard_blocked"
+    },
+    {
+      "cause": "obstacle",
+      "observed_stop_ms": 54.978,
+      "guard_reason": "guard_blocked"
+    },
+    {
+      "cause": "silent",
+      "observed_stop_ms": 154.037,
+      "guard_reason": "guard_blocked"
+    },
+    {
+      "cause": "unknown",
+      "observed_stop_ms": 10.935,
+      "guard_reason": "guard_blocked"
+    },
+    {
+      "cause": "disconnect",
+      "observed_stop_ms": 32.981,
+      "guard_reason": "guard_blocked"
+    },
+    {
+      "cause": "guard_SIGSTOP",
+      "observed_stop_ms": 99.022,
+      "guard_reason": "guard_stale"
+    }
+  ]
+}

@@ -12,6 +12,8 @@ pseudo-terminal and checks the exact serial lines both ways.
 from __future__ import annotations
 
 import os
+import atexit
+import tempfile
 import re
 import select
 import signal
@@ -47,6 +49,7 @@ class Server:
         self.port = free_port()
         self.proc = subprocess.Popen([BIN, "-p", str(self.port), "-r", "1", *args],
                                      stderr=subprocess.PIPE, text=True)
+        atexit.register(self.stop)
         self.log: list[str] = []
         self._t = threading.Thread(target=self._read, daemon=True)
         self._t.start()
@@ -113,6 +116,13 @@ def drive_for(c: Client, l: float, r: float, seconds: float) -> list[str]:
         replies.append(c.cmd(f"D {l} {r}"))
         time.sleep(0.05)
     return replies
+
+
+def keepalive_for(c: Client, seconds: float) -> None:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        c.cmd("PING")
+        time.sleep(min(0.05, max(0, end - time.monotonic())))
 
 
 # ------------------------------------------------------------------ part 1: stub
@@ -332,10 +342,16 @@ class FakeUno:
     def __init__(self):
         self.master, self.slave = os.openpty()
         tty.setraw(self.slave)
-        self.path = os.ttyname(self.slave)
+        # Never give a reconnecting backend a recyclable /dev/ttys path directly.
+        # Removing this unique alias on cleanup prevents an orphan from opening
+        # a later SSH/terminal PTY that reuses the same device number.
+        self.directory = tempfile.mkdtemp(prefix="tars-fake-uno-")
+        self.path = os.path.join(self.directory, "serial")
+        os.symlink(os.ttyname(self.slave), self.path)
         self.buf = b""
         self.lines: list[str] = []
         self._run = True
+        atexit.register(self.close)
         self._t = threading.Thread(target=self._reader, daemon=True)
         self._t.start()
 
@@ -349,7 +365,7 @@ class FakeUno:
                 except OSError:
                     return
                 *done, self.buf = self.buf.split(b"\n")
-                self.lines += [d.decode() for d in done]
+                self.lines += [d.decode() for d in done if d]  # firmware ignores empty resync lines
 
     def pump(self, seconds: float = 0.0) -> None:
         time.sleep(seconds + 0.03)
@@ -358,6 +374,10 @@ class FakeUno:
         os.write(self.master, s.encode())
 
     def close(self) -> None:
+        if not self._run:
+            return
+        os.unlink(self.path)
+        os.rmdir(self.directory)
         self._run = False
         self._t.join(1)
         os.close(self.master)
@@ -442,6 +462,7 @@ def wait_move(c: Client, timeout: float) -> dict:
     end = time.monotonic() + timeout
     st = c.status()
     while st["move"] == "running" and time.monotonic() < end:
+        c.cmd("PING")  # exact moves now also require the native deadman lease
         time.sleep(0.02)
         st = c.status()
     return st
@@ -483,14 +504,14 @@ def test_stub_moves() -> None:
 
         print("stub: aborts")
         c.cmd("MOVE 200")
-        time.sleep(1.0)
+        keepalive_for(c, 1.0)
         check(c.cmd("S") == "OK", "S")
         time.sleep(0.1)
         st = c.status()
         check(st["move"] == "aborted" and st["move_why"] == "stop" and 0 < float(st["move_done"]) < 200,
               f"S aborts {st}")
         c.cmd("MOVE 200")
-        time.sleep(0.3)
+        keepalive_for(c, 0.3)
         for _ in range(3):
             c.cmd("D 0 0")                    # zero D = keepalive, doesn't abort
             time.sleep(0.05)
@@ -532,6 +553,12 @@ def test_stub_moves() -> None:
         time.sleep(0.2)
         st = c.status()
         check(st["move"] == "aborted" and st["move_why"] == "disconnect", f"disconnect aborts {st}")
+
+        print("stub: exact moves also expire without command keepalive")
+        c.cmd("MOVE 200")
+        time.sleep(0.45)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "watchdog", f"move deadman {st}")
 
         print("stub: MOVE/TURN usage + clamps")
         for bad in ("MOVE", "MOVE x", "MOVE 10 0", "MOVE 10 2", "MOVE nan", "TURN", "TURN 10 -1"):
@@ -678,7 +705,7 @@ def test_uno_moves() -> None:
         uno.lines.clear()
         r = c.cmd("TURN 1")                           # never answered -> timeout
         est = int(r.split()[2])
-        time.sleep((2 * est + 2000) / 1000 + 0.3)
+        keepalive_for(c, (2 * est + 2000) / 1000 + 0.3)
         st = c.status()
         check(st["move"] == "aborted" and st["move_why"] == "timeout", f"timeout {st}")
         check("S" in nd(), "timeout sends S")

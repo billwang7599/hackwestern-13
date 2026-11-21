@@ -1,0 +1,7 @@
+libimobiledevice	60bf03b4cac8ed5f52f803cdb031a404c0da3beb	https://github.com/libimobiledevice/libimobiledevice.git
+libimobiledevice-glue	420053a5fc536062014a121e14d847db914be999	https://github.com/libimobiledevice/libimobiledevice-glue.git
+libplist	b3f14c22dbb29056c0d3c37bb9b2401ffdb7bc8f	https://github.com/libimobiledevice/libplist.git
+libtatsu	b8d518a7d188c8c98dd9e6debb855bb2809699ee	https://github.com/libimobiledevice/libtatsu.git
+libusb	4a7f548b901470bd9bb602feeee02ace96c4f1b4	https://github.com/qnx-ports/libusb.git
+libusbmuxd	1498dee3aadf66dbae10e699d71c62b428a511a3	https://github.com/libimobiledevice/libusbmuxd.git
+usbmuxd	e0216f30e1d34812354ee0cd6e91711bbf704bbe	https://github.com/libimobiledevice/usbmuxd.git

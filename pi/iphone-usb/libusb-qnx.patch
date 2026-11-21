@@ -1,0 +1,61 @@
+diff --git a/libusb/os/nto_qnx_usbfs.c b/libusb/os/nto_qnx_usbfs.c
+index a08248c..9c2f9e2 100644
+--- a/libusb/os/nto_qnx_usbfs.c
++++ b/libusb/os/nto_qnx_usbfs.c
+@@ -407,6 +407,13 @@ static void device_removal_callback(struct usbd_connection * connection,
+         if ( busno == device->bus_number
+              && devno == device->device_address)
+         {
++            struct nto_qnx_device_priv *dpriv = __device_priv(device);
++            usbi_info(ctx, "USB removal event: config=%u interface=%u selected=%d", instance->config, instance->iface, dpriv->selected_configuration);
++            /* QNX also emits interface removal events during a configuration
++               change. These do not mean that the physical device is gone. */
++            if (instance->config != (uint32_t)USBD_CONNECT_WILDCARD &&
++                instance->config != (uint32_t)dpriv->selected_configuration)
++                continue;
+             usbi_dbg("Sending notification to libusb via pipe that this "
+                      "device has been disconnected from the io-usb stack");
+             hpriv = __device_handle_priv(handle);
+@@ -1414,7 +1421,7 @@ static int submit_bulk_transfer(struct usbi_transfer *itransfer, unsigned char u
+         usbd_free(usbd_buffer);
+         usbd_close_pipe(bulk_pipe);
+         /* TODO: Support this kind of error */
+-        usbi_err(ITRANSFER_CTX(itransfer), "bulk usbd_io failed, freeing urb, usbd_buffer, and pipe");
++        usbi_err(ITRANSFER_CTX(itransfer), "bulk usbd_io failed: status=%d (%s), endpoint=0x%02x length=%d timeout=%d", status, strerror(status), transfer->endpoint, size, timeout);
+         return qnx_err_to_libusb(status);
+     }
+ 
+@@ -1623,6 +1630,8 @@ static void qnx_handle_callback(struct usbi_transfer *itransfer)
+     }
+ 
+     status = usbd_urb_status(tpriv->urb, &ustatus, &usize);
++    if (transfer->type == LIBUSB_TRANSFER_TYPE_BULK)
++        usbi_info(ITRANSFER_CTX(itransfer), "bulk completion: status=%d ustatus=0x%x bytes=%u endpoint=0x%02x", status, ustatus, usize, transfer->endpoint);
+ 
+     /* Handle the fact that control transfers have the setup packet as
+        part of the buffer */
+@@ -1906,6 +1915,11 @@ static int op_claim_interface(struct libusb_device_handle *handle, int iface)
+     instance.path = handle->dev->bus_number;
+     instance.devno = handle->dev->device_address;
+     instance.iface = iface;
++    /* A wildcard configuration can reselect the first matching interface
++       (e.g. iPhone audio configuration 2) after SET_CONFIGURATION selected
++       the multiplexing configuration. Claim exactly the active interface. */
++    instance.config = dpriv->selected_configuration;
++    instance.alternate = 0;
+ 
+     /* Need to open a usbd_device instance for this interface to
+      * tell usbd that it is claimed. */
+@@ -2018,9 +2032,12 @@ static int op_set_configuration(struct libusb_device_handle *handle, int config)
+         return LIBUSB_ERROR_BUSY;
+     }
+ 
++    int previous_config = dpriv->selected_configuration;
++    dpriv->selected_configuration = config;
+     r = usbd_select_config(dpriv->usbd_device, config);
+     if (r != EOK)
+     {
++        dpriv->selected_configuration = previous_config;
+         return qnx_err_to_libusb(r);
+     }
+ 
