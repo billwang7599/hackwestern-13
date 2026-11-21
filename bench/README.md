@@ -193,11 +193,6 @@ Text or laptop-mic speech goes through the robot's **real** voice code on the la
   `GET /api/voicelab/batch_last`. Topic `voice` carries `{kind: result|batch|send}`.
 - Test: `python3 bench/tests/test_voice.py`.
 
-## Testing honesty
-
-Say exactly what ran: the sim, a recording, the real Uno on USB, the iPhone. The bench
-proving something in sim does not mean the car does it.
-
 ## Sim world + `run_sim.py` (`bench/world/`)
 
 `python3 bench/run_sim.py [--room NAME] [--free-ports] [--car auto|virtual|stub] [--relay]` starts
@@ -266,3 +261,31 @@ recording, or a ray-cast sim room. The sim room follows topic `world` live (room
 The sim takes its pose from topic `car`. `/api/phone/*` and topic `map3d` are documented in
 `plugins/phone.py`; details, frames and the live-phone checklist are in `phone/README.md`.
 Test: `python3 bench/tests/test_phone.py`.
+
+## Whole bench end to end (`tests/test_e2e.py`)
+
+`python3 bench/tests/test_e2e.py [--only scenarios,goto,route,stop,voice,box,collide,phone,moved,detour]`
+runs `run_sim.py --free-ports --no-build` (virtual SM11, real host tars_motor/goto/tars_voice, world sim,
+bench) and drives it only through the bench's HTTP API, like the browser. Build first:
+`make -C bench/car && make -C iter1-wasd/pi host && make -C iter2-autonomy/goto host` (+ voice host and
+model for the voice part). About 7.5 min. It runs scenarios in bring-up order (link, speedcal_* saved to the
+**virtual** Uno's EEPROM, then the rest), car scenarios in room `empty`, GOTO in `default` and
+`demo_moved_bin`, STOP mid-GOTO, voice lab send → GOTO, a box dropped mid-route, reversing into a dropped
+box, the 3D map following the room, and `demo_detour`.
+
+Glue notes (as merged):
+- Only the world sim binds 5590. It copies truth to `BENCH_CAR_TRUTH`, which the car plugin binds (no
+  `{"sub"}` then), so the stub car's truth reaches the bench too. Stub truth (`"stub": true`) and
+  `alive: false` frames are never used by scenarios as measurements.
+- Car faults from scenarios go through `plugins/car.py` `control(msg)`, so they follow `BENCH_CAR_CTL`.
+- `run_sim.py` also passes the phone part's ports (`TARS_BENCH_PHONE_ROOM_PORT`/`_SCENE_PORT`), so a
+  `--free-ports` stack never touches 5594/5595. Logs append (goto restarts on every room load).
+- STOP (S + CANCEL) makes an **idle** goto send its own S, which holds other clients' motion for 1.5 s.
+  Wait that out before a scripted MOVE/TURN after STOP (the robot voice path has the same issue).
+- Under heavy load the Python world sim can miss tars_motor's 100 ms guard TTL (`guard_stale`): moves
+  abort. That's the sim, not the robot; rerun.
+
+## Testing honesty
+
+Say exactly what ran: the sim, a recording, the real Uno on USB, the iPhone. The bench
+proving something in sim does not mean the car does it.

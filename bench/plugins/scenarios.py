@@ -140,9 +140,19 @@ class Ctx:
 
     def wait_move(self, move_id: int, timeout: float) -> dict:
         """until STATUS says our move is no longer running. The robot plugin keeps it alive (PING)."""
+        # The 10 Hz STATUS copy can still show the PREVIOUS move for up to ~100 ms after MOVE/TURN
+        # was accepted; "move_id != ours" must not count as finished until ours has been seen
+        # (else the scenario ends at once and its cleanup S aborts the real move).
         def done():
             st = self.robot.status()
-            if st and (st.get("move_id") != move_id or st.get("move") != "running"):
+            if not st:
+                return None
+            sid = st.get("move_id")
+            try:
+                newer = int(sid) > int(move_id)
+            except (TypeError, ValueError):
+                newer = False
+            if (sid == move_id and st.get("move") != "running") or newer:
                 return st
             return None
         st = self.wait(done, timeout, every=0.05)
@@ -214,16 +224,35 @@ def _wrap_deg(d: float) -> float:
 def _measure_move(c: Ctx, line: str, kind: str, asked: float) -> dict:
     """run a MOVE/TURN and measure it: truth on the sim car, the user's tape on the real one."""
     a = c.truth()
+    # heading unwrapped over the truth stream: a TURN 360 must not read as its ±180 wrap
+    spin = {"deg": 0.0, "prev": a["th"] if a else None, "run": True}
+
+    def sample():
+        while spin["run"]:
+            t = c.truth()
+            if t and spin["prev"] is not None:
+                spin["deg"] += _wrap_deg(math.degrees(t["th"] - spin["prev"]))
+                spin["prev"] = t["th"]
+            time.sleep(0.02)
+    th = threading.Thread(target=sample, daemon=True)
+    if c.where == "sim-car" and kind == "TURN":
+        th.start()
     mid, est = c.start_move(line)
     c.num("est_ms", est, "ms")
     t0 = time.monotonic()
-    st = c.wait_move(mid, est / 1000.0 * 2 + 5)
+    try:
+        st = c.wait_move(mid, est / 1000.0 * 2 + 5)
+    finally:
+        if not th.is_alive():
+            spin["run"] = False
     c.num("took_ms", round((time.monotonic() - t0) * 1000), "ms")
     c.expect(st.get("move") == "done", f"move ended: {st.get('move')} why={st.get('move_why')}")
     c.num("reported", st.get("move_done", float("nan")), "mm" if kind == "MOVE" else "deg")
     out = {"st": st}
     if c.where == "sim-car":
         time.sleep(0.3)  # let it coast to rest
+        spin["run"] = False
+        th.join(0.5) if th.is_alive() else None
         b = c.truth()
         if kind == "MOVE":
             true = _truth_dist(a, b) * (1 if asked >= 0 else -1)
@@ -232,7 +261,7 @@ def _measure_move(c: Ctx, line: str, kind: str, asked: float) -> dict:
             lat = (-math.sin(a["th"]) * dx + math.cos(a["th"]) * dy) * 1000
             c.num("lateral_mm", lat, "mm (+ = left)")
         else:
-            true = -_wrap_deg(math.degrees(b["th"] - a["th"]))  # TURN + = right = clockwise = -th
+            true = -spin["deg"]  # TURN + = right = clockwise = -th (unwrapped)
         out["true"] = true
     elif c.where == "real":
         out["true"] = c.ask(f"{line}: how far did it REALLY go? ({'mm, tape' if kind == 'MOVE' else 'deg'})", "number")
@@ -584,9 +613,10 @@ def setup(bench) -> None:
     _bench = bench
 
     def tap(topic, data):
-        if topic == "car" and isinstance(data, dict) and not data.get("_replay"):
+        if topic == "car" and isinstance(data, dict) and not data.get("_replay") and data.get("alive", True):
             d = data.get("truth", data) if isinstance(data.get("truth", data), dict) else None
-            if d and "x" in d and "th" in d:
+            # the stub car's "truth" is tars_motor's own dead reckoning: not something to measure against
+            if d and "x" in d and "th" in d and not d.get("stub"):
                 _truth["d"], _truth["t"] = d, time.monotonic()
     bench.tap(tap)
 

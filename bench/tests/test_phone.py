@@ -190,11 +190,11 @@ def test_endpoints(tmp):
         check(len(room["pose"]) == 4 and isinstance(room["points3d"], list) and room["frames"] >= 3,
               f"room JSON has pose, points3d, frames ({room['frames']}, {len(room['points3d'])} points)")
         def room_frames():
-        try:
-            return json.loads(get(room_port, "/map.json")[1] or b"{}").get("frames", 0)
-        except OSError:
-            return 0
-    wait(lambda: room_frames() >= 1, 5)
+            try:
+                return json.loads(get(room_port, "/map.json")[1] or b"{}").get("frames", 0)
+            except (OSError, ValueError):
+                return 0
+        wait(lambda: room_frames() >= 1, 5)
         st, body = get(room_port, "/")
         check(st == 200 and b"Room view" in body, "Andrew's room_view.html served on the room port")
         st, body = get(room_port, "/map.json")

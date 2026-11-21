@@ -24,6 +24,10 @@ import threading
 import time
 
 CTL_PORT = int(os.environ.get("BENCH_CAR_CTL", "5591"))
+# run_sim.py: the world sim (sole reader of 5590) copies every truth datagram to this port.
+# Bind it instead of subscribing: it works for the stub car too (no {"sub"} there) and
+# avoids getting each datagram twice.
+TRUTH_COPY = int(os.environ.get("BENCH_CAR_TRUTH", "0") or 0)
 PUBLISH_HZ = 20
 
 _stop = threading.Event()
@@ -61,7 +65,10 @@ def _rx(bench) -> None:
         now = time.time()
         if now - last_sub > 2.0:
             last_sub = now
-            if _ctl({"sub": port}) is not None and _state["params"] is None:
+            if TRUTH_COPY:
+                if _state["params"] is None:
+                    _refresh_params()
+            elif _ctl({"sub": port}) is not None and _state["params"] is None:
                 _refresh_params()
         try:
             data = _sock.recv(65536)
@@ -78,6 +85,15 @@ def _rx(bench) -> None:
         if now - last_pub >= 1.0 / PUBLISH_HZ:
             last_pub = now
             bench.publish("car", _snapshot())
+
+
+def control(msg: dict) -> dict | None:
+    """One car-control datagram (5591 format) and the car's reply, None if no car answered.
+    The scenarios plugin uses this for faults, so they follow BENCH_CAR_CTL."""
+    return _ctl(msg)
+
+
+CONTROL_PORT = CTL_PORT
 
 
 def _snapshot() -> dict:
@@ -106,7 +122,7 @@ def _send(msg: dict):
 def setup(bench) -> None:
     global _sock
     _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    _sock.bind(("127.0.0.1", 0))
+    _sock.bind(("127.0.0.1", TRUTH_COPY))
 
     def r_state(q, body):
         return 200, _snapshot()

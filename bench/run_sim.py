@@ -51,7 +51,7 @@ VOICE_MODEL = os.path.join(VOICE_DIR, "models", "ggml-tiny.en-q5_1.bin")
 
 REAL_PORTS = {"motor": 5555, "goto": 5570, "det": 5571, "nav": 5572, "voice": 5574, "relay": 5575,
               "guard": 5568, "truth": 5590, "car_ctl": 5591, "world_ctl": 5592, "world_state": 5593,
-              "bench": 8770, "relay_tee": 5576}
+              "bench": 8770, "relay_tee": 5576, "phone_room": 5594, "phone_scene": 5595}
 
 
 def free_ports(names) -> dict:
@@ -123,7 +123,7 @@ class Stack:
 
     # ------------------------------------------------------------ helpers
     def spawn(self, name: str, argv: list[str], **kw) -> subprocess.Popen:
-        log = open(os.path.join(self.run_dir, f"{name}.log"), "w")
+        log = open(os.path.join(self.run_dir, f"{name}.log"), "a")   # append: goto restarts on room loads
         p = subprocess.Popen(argv, stdout=kw.pop("stdout", log), stderr=log, start_new_session=True,
                              stdin=kw.pop("stdin", subprocess.DEVNULL), **kw)
         self.procs.append((name, p))
@@ -242,13 +242,15 @@ class Stack:
         if not self.a.no_bench:
             env = dict(os.environ, BENCH_WORLD_CTL=str(P["world_ctl"]), BENCH_WORLD_STATE=str(P["world_state"]),
                        BENCH_SUPERVISOR=str(self.ports["supervisor"]), BENCH_CAR_CTL=str(P["car_ctl"]),
-                       BENCH_CAR_TRUTH=str(truth_copy), BENCH_CAR_KIND=self.car_kind)
+                       BENCH_CAR_TRUTH=str(truth_copy), BENCH_CAR_KIND=self.car_kind,
+                       TARS_BENCH_PHONE_ROOM_PORT=str(P["phone_room"]), TARS_BENCH_PHONE_SCENE_PORT=str(P["phone_scene"]))
             argv = [sys.executable, os.path.join(HERE, "bench.py"), "--port", str(P["bench"]), "--target", "sim",
                     "--motor", f"127.0.0.1:{P['motor']}", "--goto", f"127.0.0.1:{P['goto']}",
                     "--voice", f"127.0.0.1:{P['voice']}"]
             self.spawn("bench", argv, env=env)
             self.must(wait_for(lambda: port_open(P["bench"]), 8), "bench didn't open its port", "bench")
             self.rows.append(("bench", f"http://127.0.0.1:{P['bench']}/", "target sim"))
+            self.rows.append(("iPhone 3D map (bench)", f"HTTP {P['phone_room']}", f"room view; scene source TCP {P['phone_scene']}"))
 
     def start_goto(self, mem_text: str | None):
         P = self.ports
