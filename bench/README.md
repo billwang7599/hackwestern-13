@@ -27,6 +27,9 @@ the whole simulated stack and then the bench.
 - `bench.publish(topic, data, sticky=True)`: server-sent event to every browser tab.
   Sticky topics are replayed to tabs that open later.
 - `bench.log(source, text)`: a line in the shared log strip.
+- `bench.tap(fn)`: `fn(topic, data)` on every publish, server side (the recorder uses it).
+  The robot plugin publishes every line it sends and the reply as a non-sticky `cmd` event,
+  so the recorder sees commands as well as telemetry.
 - `bench.target`: `{"name": "sim"|"usb"|"pi", "motor", "goto", "voice", "relay"}`.
 - `bench.plugins.get("robot")`: the robot link (owned by the `robot` plugin). It is the
   **only** thing that opens connections to tars_motor / goto / tars_voice (or the relay):
@@ -42,7 +45,11 @@ stopping never depends on a panel.
 
 **Event topics:** `status` (tars_motor STATUS, parsed), `goto` (goto STATUS + EVENTs),
 `car` (virtual car truth + params), `world` (sim room + sensors), `voice` (voice lab
-results), `map3d` (3D map data), `scenario` (scenario progress), `log`.
+results), `map3d` (3D map data), `scenario` (scenario progress), `cmd` (every line sent
+to the robot + reply), `log`.
+
+**Tests use free ports.** Several parts' tests run at once on one Mac, so a test never
+binds the robot's real port numbers or 5590–5599; every process takes its ports as flags.
 
 ### Ownership (one owner per file, so parts can be built in parallel)
 

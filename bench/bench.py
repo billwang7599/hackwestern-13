@@ -47,6 +47,7 @@ class Bench:
         self.plugins: dict[str, object] = {}
         self._routes: dict[tuple[str, str], object] = {}
         self._subs: list[queue.Queue] = []
+        self._taps: list = []
         self._lock = threading.Lock()
         self._last: dict[str, bytes] = {}  # last event per topic, replayed to new browser tabs
 
@@ -64,11 +65,23 @@ class Bench:
             if sticky:
                 self._last[topic] = msg
             subs = list(self._subs)
+            taps = list(self._taps)
+        for fn in taps:
+            try:
+                fn(topic, data)
+            except Exception:
+                traceback.print_exc()
         for q in subs:
             try:
                 q.put_nowait(msg)
             except queue.Full:
                 pass  # slow tab: drop, the next event carries fresh data
+
+    def tap(self, fn) -> None:
+        """Server-side listener: fn(topic, data) for every publish (the recorder uses it).
+        Called on the publisher's thread; keep it quick."""
+        with self._lock:
+            self._taps.append(fn)
 
     def log(self, source: str, text: str) -> None:
         """A line for the shared log panel (and the recorder)."""
