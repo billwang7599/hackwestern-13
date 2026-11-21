@@ -1162,6 +1162,7 @@ static void next_leg(goto_sm *s)
 /* no usable map/pose after all: the memory turn of the visual-only GOTO */
 static void map_fallback(goto_sm *s, const char *why)
 {
+    if (s->mem_fallback && why && !strcmp(why, "unmapped")) s->fallback_noroute = 1;
     map_event(s, why);
     s->map_mode = 0;
     int i = goto_mem_find_id(s->mem, target_name(s), s->mem_id);
@@ -1183,6 +1184,7 @@ static void search_fallback(goto_sm *s)
 
 static void next_candidate(goto_sm *s, const char *why)
 {
+    if (s->mem_fallback && why && !strcmp(why, "no_route")) s->fallback_noroute = 1;
     set_state(s, ST_NEXT_CANDIDATE);
     map_event(s, why);
     int dir = s->search_dir;
@@ -1423,11 +1425,11 @@ static int pick_vantage(goto_sm *s)
 {
     double x, z, yaw;
     if (!nav_pose(s, &x, &z, &yaw)) return 0;
-    double cx[72], cz[72], cd[72];
+    double cx[96], cz[96], cd[96];
     int n = 0;
-    static const double R[3] = {0.7, 1.0, 1.3};
+    static const double R[4] = {0.6, 0.7, 1.0, 1.3};
     mark_footprint_free(s, x, z);
-    for (int r = 0; r < 3; r++)
+    for (int r = 0; r < 4; r++)
         for (int k = 0; k < 24; k++) {
             double a = k * 2 * M_PI / 24, px = s->goal_x + R[r] * sin(a), pz = s->goal_z + R[r] * cos(a);
             if (nav_cell(s->nav, (float)px, (float)pz) != NAV_FREE) continue;
@@ -1539,6 +1541,25 @@ static void do_plan(goto_sm *s)
     }
     if (n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH || n == NAV_ERR_TOO_LONG) {
         if (s->vantage) { s->vantage = 0; check_others(s, 0); return; }   /* can't reach a better view */
+        /* No route to the approach ring: part of it is wall or inside a wall's inflation, the rest
+         * behind the wall is floor the phone has never seen (bench: a wall drawn between the start
+         * and a remembered bin -> no_route for every instance while the room was open round both
+         * ends of the wall). Before giving up: a reachable stand-off cell 0.6-1.3 m from the target
+         * with a clear line of sight and drive lane (then LOOK and approach), else hop toward the
+         * target to map more. Only then no_route. */
+        if (pick_vantage(s)) {
+            s->vantage = 1;
+            map_event(s, "standoff");
+            do_plan(s);
+            return;
+        }
+        if (s->explores < 4 && pick_explore(s)) {
+            s->explores++;
+            s->exploring = s->vantage = 1;
+            map_event(s, "explore");
+            do_plan(s);
+            return;
+        }
         next_candidate(s, "no_route");
         return;
     }
@@ -1734,10 +1755,81 @@ static void look_failed(goto_sm *s, double now)
     search_step(s, now);
 }
 
+/* nav-frame spot of memory entry i (map spot if it has one, else projected from the memory frame) */
+static void mem_goal(goto_sm *s, int i, double *gx, double *gz)
+{
+    const goto_mem_entry *e = &s->mem->e[i];
+    if (e->has_w) { *gx = e->wx; *gz = e->wz; return; }
+    double b, d, x, z, yaw;
+    nav_pose(s, &x, &z, &yaw);
+    goto_mem_relative(s->mem, i, &b, &d);
+    *gx = x + d / 1000.0 * sin(yaw - RAD(b));
+    *gz = z + d / 1000.0 * cos(yaw - RAD(b));
+}
+
+/* The search saw nothing. Before giving up: head for the remembered instance of the target with
+ * the SHORTEST ROUTE over the map (not straight-line), whatever its age or status and even if it
+ * was tried already this GOTO (a wall may hide it from every spot the robot looked from). Once
+ * per GOTO. Returns 1 if it started a route; else fails with why: no memory / no map / no route. */
+static int search_failed_memory(goto_sm *s, double now)
+{
+    goto_mem *m = s->mem;
+    const char *lab = s->target >= 0 ? s->objs->obj[s->target] : "";
+    int n_mem = 0;
+    for (int k = 0; m && k < m->n; k++) n_mem += !strcmp(m->e[k].label, lab);
+    if (s->mem_fallback || !n_mem) {
+        goto_sm_fail(s, now, !n_mem ? "not found no memory" : s->fallback_noroute ? "no route" : "not found");
+        return 0;
+    }
+    double x, z, yaw;
+    if (!s->nav || !nav_pose(s, &x, &z, &yaw) || nav_count(s->nav, NAV_FREE) == 0) {
+        goto_sm_fail(s, now, "not found no map");
+        return 0;
+    }
+    s->mem_fallback = 1;
+    mark_footprint_free(s, x, z);
+    int best = -1;
+    double best_len = 1e18, bgx = 0, bgz = 0;
+    for (int k = 0; k < m->n; k++) {
+        if (strcmp(m->e[k].label, lab)) continue;
+        double gx, gz;
+        mem_goal(s, k, &gx, &gz);
+        /* route length over the map; a spot the phone hasn't mapped a way to yet (behind the
+         * wall: unknown floor) ranks after every routable one, by straight line. do_plan then
+         * explores toward it (reveal / explore hops), as a normal memory GOTO does. */
+        int n = plan_from_robot(s, x, z, gx, gz, 1);
+        double len = 0, px = x, pz = z;
+        if (n >= 0)
+            for (int j = 0; j < n; j++) { len += hypot(s->path[j].x - px, s->path[j].z - pz); px = s->path[j].x; pz = s->path[j].z; }
+        else if (n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH || n == NAV_ERR_TOO_LONG)
+            len = 1e6 + hypot(gx - x, gz - z);
+        else continue;
+        if (len < best_len) { best_len = len; best = k; bgx = gx; bgz = gz; }
+    }
+    if (best < 0) { goto_sm_fail(s, now, "no route"); return 0; }
+    s->mem_id = m->e[best].id;
+    s->mem_phase = 1;
+    goto_mem_relative(m, best, &s->mem_bearing, &s->mem_dist);
+    s->search_dir = s->mem_bearing >= 0 ? 1 : -1;
+    s->goal_x = bgx;
+    s->goal_z = bgz;
+    s->map_mode = 1;
+    s->vantage = s->exploring = s->explores = 0;
+    s->detoured_id = 0;
+    s->replans = 0;
+    s->revealed_deg = 360;                     /* the search just turned a full circle here */
+    char t[96];
+    snprintf(t, sizeof t, "search_failed_memory %s #%d %.0f", lab, s->mem_id, best_len < 1e6 ? best_len * 1000 : -1.0);
+    emit(s, ACT_EVENT, 0, 0, t);
+    set_state(s, ST_RECALL);
+    do_plan(s);
+    return 1;
+}
+
 static void search_step(goto_sm *s, double now)
 {
     if (s->searched_deg + 1e-6 >= s->cfg.search_max_deg) {
-        goto_sm_fail(s, now, "not found");
+        search_failed_memory(s, now);
         return;
     }
     double step = s->cfg.search_step_deg;
@@ -1772,6 +1864,7 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->revealed_deg = 0;                       /* each GOTO may look around once more */
     s->reveal_have_yaw = 0;
     s->escapes = 0;
+    s->mem_fallback = s->fallback_noroute = 0;
     if (mem_try_next(s)) return;
     if (s->recall) { start_look(s, now); goto_sm_fail(s, now, "not remembered"); return; }
     start_look(s, now);                        /* look before turning: it may be in view */

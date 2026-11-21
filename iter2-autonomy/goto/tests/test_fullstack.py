@@ -584,6 +584,85 @@ def sc_dropbox():
         st.close()
 
 
+def sc_wallmem():
+    """user's bench case (open_bin room): the bin at (2.0, 0.3) is remembered; a 0.3 x 1.2 m wall
+    is then put between the robot and the bin (x 1.25-1.55, y -0.2..1.0), so the camera can't see
+    the bin from the start. GOTO must route round the wall to the remembered spot, look, dock."""
+    print("full-stack: WALLMEM: remembered bin, a wall put in between, GOTO routes round it")
+    w = World(size=5.0, x0=-1.0, y0=-2.0)
+    w.cans.append([2.0, 0.3])
+    w.walls.extend(box(1.4, 0.4, 0.15, 0.6))
+    st = Stack(w, mem_file([(2.0, 0.3)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(240)
+        st.dump("wallmem")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 2.0, y - 0.3)
+        nav = st.goto.cmd("NAV")
+        check(any(e.startswith("route trash can") for e in st.goto.events), f"routed over the map ({nav[:60]})")
+        inside = any(1.25 - 0.05 < p[0] < 1.55 + 0.05 and -0.2 - 0.05 < p[1] < 1.0 + 0.05 for p in st.sens.trace)
+        check(not inside, "never drove through the wall")
+        check(s["result"] == "arrived" and d < 0.95, f"routed round the wall and docked at the bin ({s['result']}, {d:.2f} m)")
+    finally:
+        st.close()
+
+
+def sc_wallmem_search():
+    """the same wall, but memory is stale (older than memory_max_age_s), so GOTO searches first:
+    a full search sees nothing (the wall hides the bin), then it must fall back to the remembered
+    spot by route over the map, not fail not_found"""
+    print("full-stack: WALLMEM_SEARCH: stale memory, wall in between: search fails, then route to memory")
+    w = World(size=5.0, x0=-1.0, y0=-2.0)
+    w.cans.append([2.0, 0.3])
+    w.walls.extend(box(1.4, 0.4, 0.15, 0.6))
+    old = mem_file([(2.0, 0.3)])
+    now = time.time()
+    old = re.sub(r"(inst 1 fresh .* 3 )([\d.]+)( trash can)", lambda m: f"{m.group(1)}{now - 30 * 86400:.1f}{m.group(3)}", old)
+    st = Stack(w, old)
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("wallmem_search")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 2.0, y - 0.3)
+        ev = st.goto.events
+        check(any(e.startswith("route trash can") for e in ev), "routed over the map to the remembered spot")
+        inside = any(1.25 - 0.05 < p[0] < 1.55 + 0.05 and -0.2 - 0.05 < p[1] < 1.0 + 0.05 for p in st.sens.trace)
+        check(not inside, "never drove through the wall")
+        check(s["result"] == "arrived" and d < 0.95, f"arrived at the bin ({s['result']}, {d:.2f} m)")
+    finally:
+        st.close()
+
+
+def rot_box(cx, cy, hl, hw, ang):
+    """a thin rotated rectangle (wall) as 4 segments: half length hl along ang, half width hw"""
+    ux, uy, vx, vy = math.cos(ang), math.sin(ang), -math.sin(ang), math.cos(ang)
+    p = [(cx + sl * hl * ux + sw * hw * vx, cy + sl * hl * uy + sw * hw * vy) for sl, sw in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    return [(p[i], p[(i + 1) % 4]) for i in range(4)]
+
+
+def sc_diagwall():
+    """user's live demo (bench open_bin + a wall drawn diagonally between the start and the bin):
+    the remembered bin sits ~0.5 m behind a 1.4 m diagonal wall. Main's goto reveal-spun, then
+    called no_route for every remembered instance while the room was open round both wall ends."""
+    print("full-stack: DIAGWALL: remembered bin behind a diagonal wall (bench open_bin + drawn wall)")
+    w = World(size=5.0, x0=-1.0, y0=-2.0)
+    w.cans.append([2.0, 0.3])
+    w.walls.extend(rot_box(1.45, 0.2, 0.7, 0.05, math.radians(65)))
+    st = Stack(w, mem_file([(2.0, 0.3)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("diagwall")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 2.0, y - 0.3)
+        check(not any(e.startswith("no_route") for e in st.goto.events), "no no_route while the room is open round the wall")
+        check(s["result"] == "arrived" and d < 0.95, f"routed round the diagonal wall and docked ({s['result']}, {d:.2f} m)")
+    finally:
+        st.close()
+
+
 def sc_moved():
     print("full-stack: MOVED OBJECT: memory says A, the bin is now at B")
     w = World()
@@ -744,7 +823,7 @@ def sc_voice():
 
 
 SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion,
-             "occlusion_close": lambda: sc_occlusion(ahead=0.39), "dropbox": sc_dropbox, "moved": sc_moved, "stop": sc_stop,
+             "occlusion_close": lambda: sc_occlusion(ahead=0.39), "dropbox": sc_dropbox, "wallmem": sc_wallmem, "wallmem_search": sc_wallmem_search, "diagwall": sc_diagwall, "moved": sc_moved, "stop": sc_stop,
              "visual": sc_visual_only, "voice": sc_voice}
 
 

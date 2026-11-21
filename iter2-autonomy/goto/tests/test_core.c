@@ -245,7 +245,7 @@ static void test_give_up(void)
         if (S.st == ST_SEARCH_TURN) { turns++; ack_turn(100 + step); advance(0.4); }
     }
     CHECK(S.st == ST_IDLE && turns == 12, "full circle (12 x 30) then give up (turns=%d)", turns);
-    CHECK(!strcmp(S.result, "failed:not_found") && count(ACT_STOP) >= 1 && find(ACT_BEEP) && find(ACT_BEEP)->a == 3,
+    CHECK(!strcmp(S.result, "failed:not_found_no_memory") && count(ACT_STOP) >= 1 && find(ACT_BEEP) && find(ACT_BEEP)->a == 3,
           "not found: S + BEEP 3 (%s)", S.result);
 }
 
@@ -273,7 +273,7 @@ static void test_turn_guard_hiccup(void)
         for (int i = 0; i < 8 && S.st == ST_LOOK; i++) { advance(0.12); frame(NULL, 0, 0, 0); }
         if (S.st == ST_SEARCH_TURN) { turns++; ack_turn(200 + step); advance(0.4); }
     }
-    CHECK(S.st == ST_IDLE && turns == 12 && !strcmp(S.result, "failed:not_found"), "then a full 12 x 30 search (%d, %s)", turns, S.result);
+    CHECK(S.st == ST_IDLE && turns == 12 && !strcmp(S.result, "failed:not_found_no_memory"), "then a full 12 x 30 search (%d, %s)", turns, S.result);
 
     /* refused at the start (guard stale right then): same */
     reset_sm();
@@ -597,7 +597,7 @@ static void test_memory_goto_miss(void)
     CHECK(S.st == ST_SEARCH_TURN && t && t->a == 30 && has_event("not_there") && S.mem_phase == 3,
           "not there -> normal search, starting toward the remembered side");
     int turns = count_turns_until_idle(NULL);   /* includes the queued first one */
-    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found") && turns == 12, "full circle then give up (%d turns)", turns);
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found_no_map") && turns == 12, "full circle then give up (%d turns)", turns);
     int i = goto_mem_find(&M, "backpack");
     CHECK(i >= 0 && M.e[i].status == MEM_STALE, "not there -> instance STALE");
     clear();
@@ -957,6 +957,25 @@ static int run_legs_ev(int max)
     return max;
 }
 static void look_empty(int n) { for (int i = 0; i < n; i++) { advance(0.12); frame(NULL, 0, 0, 0); } }
+/* run every TURN/MOVE (path legs, reveal, search) on the fake robot, camera sees nothing, until idle */
+static void drive_until_idle(int max)
+{
+    int id = 3000;
+    for (int k = 0; k < max && S.st != ST_IDLE; k++) {
+        grab_events();
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (a) PYAW -= a->a * M_PI / 180;
+        else if (m) {
+            double nx = PX + fmin(m->a, 1000.0) / 1000 * sin(PYAW), nz = PZ + fmin(m->a, 1000.0) / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            PX = nx; PZ = nz;
+        }
+        if (a || m) { clear(); goto_sm_move_started(&S, T, ++id, 0.5); advance(0.3); leg_done_phone_lags(id); }
+        else { advance(0.3); nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1); }
+        look_empty(3);
+    }
+    grab_events();
+}
 
 /* Regression (full-stack sim flake): when tars_motor says a leg is done, the phone's newest
  * ARKit pose is still from before the move. Planning the next leg from it turned the robot by a
@@ -1249,14 +1268,13 @@ static void test_map_no_route_fails(void)
     while (S.st == ST_FOLLOW_PATH && S.leg == 3 && spins < 20) { run_legs_ev(1); spins++; }
     grab_events();
     CHECK(spins == 12, "a full 360 of reveal turns, re-planning after each (%d)", spins);
-    CHECK(had_event("no_route trash can #1", EV), "still none: PLAN NO_GOAL/NO_PATH -> NEXT_CANDIDATE (%s)", EV);
-    CHECK(S.st == ST_SEARCH_TURN && !S.map_mode, "no other instance -> blind search (%s)", goto_state_name(S.st));
-    for (int k = 0; k < 4 && S.st != ST_IDLE; k++) {
-        if (S.st == ST_SEARCH_TURN) ack_turn(300 + k);
-        advance(0.4);
-        look_empty(4);
-    }
-    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found"), "then FAILED (%s)", S.result);
+    /* still none: stand-off cell (none: walled in), explore hops toward it, then NO_ROUTE ->
+     * blind search -> memory fallback (same walled-in spot, explores again) -> failed:no_route */
+    drive_until_idle(400);
+    grab_events();
+    CHECK(had_event("no_route trash can #1", EV), "gave up with no_route only after exploring (%s)", EV + (strlen(EV) > 200 ? strlen(EV) - 200 : 0));
+    CHECK(crossed_occ == 0, "never through the solid corner");
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:no_route"), "then FAILED (%s)", S.result);
     C = (goto_cfg){0};
     goto_cfg_defaults(&C);
 }
@@ -1421,6 +1439,103 @@ static void test_map_long_leg_in_pieces(void)
     }
     CHECK(big == 0, "no MOVE over tars_motor's 1000 mm limit (%d)", big);
     CHECK(S.st == ST_LOOK && fabs(PZ - 3.9) < 1.0 && PZ > 2.8, "LOOKs from the end of the route, not 1.5 m short (z=%.2f)", PZ);
+}
+
+/* run the blind search to its end (no camera hits) */
+static void search_to_end(int max_steps)
+{
+    for (int k = 0; k < max_steps && S.st != ST_IDLE && S.st != ST_FOLLOW_PATH && S.st != ST_RECALL; k++) {
+        const goto_act *a = find(ACT_TURN);
+        if (a) PYAW -= a->a * M_PI / 180;
+        if (S.st == ST_SEARCH_TURN) { clear(); goto_sm_move_started(&S, T, 400 + k, 0.5); leg_done_phone_lags(400 + k); }
+        advance(0.4);
+        nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
+        look_empty(4);
+    }
+}
+
+/* User's bench case: the bin was seen before (memory), then a wall was put between the robot and
+ * it. Memory is too old to try first, the 360 search sees nothing: instead of failed:not_found,
+ * route over the map to the remembered spot, around the wall, and look there. */
+static void test_map_search_fails_then_memory_route(void)
+{
+    map_setup();
+    set_free_rect(0, -1, 4, 4, NAV_FREE);
+    set_free_rect(1.2, 0.8, 2.8, 1.1, NAV_OCC);        /* the wall, between the robot and the bin */
+    put_robot(2.0, 0.0, 0);
+    int i = add_inst(2.0, 1.8, MEM_FRESH);             /* bin 0.7 m behind the wall */
+    MM.e[i].last_seen -= 10 * C.memory_max_age_s;       /* too old for the normal memory GOTO */
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(S.st == ST_LOOK && !had_event("remembered", EV), "old memory: search first (%s, %s)", goto_state_name(S.st), EV);
+    search_to_end(40);
+    grab_events();
+    CHECK(had_event("search_failed_memory trash can #1", EV) && S.map_mode, "search failed -> route to the remembered spot (%s)", EV);
+    run_legs_ev(60);
+    grab_events();
+    CHECK(crossed_occ == 0, "never through the wall");
+    CHECK(S.st == ST_LOOK && hypot(PX - 2.0, PZ - 1.8) < 1.0, "at the spot behind the wall, looking (%s, %.2f m)",
+          goto_state_name(S.st), hypot(PX - 2.0, PZ - 1.8));
+    /* the bin isn't there either: fail now (no second fallback loop) */
+    for (int k = 0; k < 80 && S.st != ST_IDLE; k++) {
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (a || m) run_legs_ev(1);
+        advance(0.4);
+        look_empty(4);
+    }
+    CHECK(S.st == ST_IDLE && !strncmp(S.result, "failed:", 7), "nothing there either: fails, no loop (%s)", S.result);
+
+    /* no memory at all: failed:not_found_no_memory */
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(2.0, 0.3, 0);
+    start("trash can");
+    search_to_end(40);
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found_no_memory"), "no memory -> %s", S.result);
+
+    /* remembered spot walled in: failed:no_route */
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(1.0, 1.0, 3.0, 3.0, NAV_OCC);
+    put_robot(0.5, 0.5, 0);
+    i = add_inst(2.0, 2.0, MEM_GONE);
+    start("trash can");
+    drive_until_idle(400);
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:no_route"), "remembered but unreachable -> %s", S.result);
+}
+
+/* Two remembered bins: A is nearer in a straight line but behind a long wall, B is further but in
+ * the open. The fallback picks the shorter ROUTE (B). Also: a bin 0.3 m from a wall (target cell
+ * inside the wall's inflation) still gets a route, to the approach ring on its open side. */
+static void test_map_memory_route_by_route_length(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 5, 5, NAV_FREE);
+    set_free_rect(0, 1.5, 4.4, 1.8, NAV_OCC);          /* long wall, gap only at the far right */
+    put_robot(0.5, 0.5, 0);
+    int a = add_inst(0.6, 2.6, MEM_GONE);               /* A: 2.1 m straight, ~8 m by route */
+    int b = add_inst(3.2, 0.6, MEM_GONE);               /* B: 2.7 m straight and by route */
+    EV[0] = 0;
+    start("trash can");
+    search_to_end(40);
+    grab_events();
+    char want[64];
+    snprintf(want, sizeof want, "search_failed_memory trash can #%d ", MM.e[b].id);
+    CHECK(had_event(want, EV), "picked B, the shorter route, not A (ids A=%d B=%d: %s)", MM.e[a].id, MM.e[b].id, EV);
+
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(1.25, 1.2, 1.55, 2.4, NAV_OCC);       /* wall; the bin 0.3 m past its face */
+    put_robot(0.5, 1.8, M_PI / 2);
+    add_inst(1.85, 1.8, MEM_GONE);
+    EV[0] = 0;
+    start("trash can");
+    search_to_end(40);
+    run_legs_ev(60);
+    grab_events();
+    CHECK(had_event("route trash can", EV) && crossed_occ == 0 && S.st == ST_LOOK,
+          "bin hugging the wall: routed round to its open side (%s, %s)", goto_state_name(S.st), EV);
 }
 
 static void test_map_stop_mid_path(void)
@@ -1745,6 +1860,8 @@ int main(void)
     test_map_reveal_measured();
     test_map_guard_escape();
     test_map_long_leg_in_pieces();
+    test_map_search_fails_then_memory_route();
+    test_map_memory_route_by_route_length();
     test_map_stop_mid_path();
     test_map_guard_and_replan();
     test_leased_approach();
