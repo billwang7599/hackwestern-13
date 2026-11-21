@@ -2,7 +2,8 @@
 // sliders and fault buttons. Talks to plugins/car.py (/api/car/...), topic `car`.
 'use strict';
 Bench.register({
-  id: 'car', title: 'Virtual car (SM11)', order: 30,
+  id: 'car', title: 'Virtual car (SM11)', order: 20, area: 'sim',
+  help: 'The simulated car’s true state, car faults (push, tip, brownout…) and its motor guesses (none measured yet).',
   mount(el, B) {
     const SLIDERS = [
       // key, label, min, max, step

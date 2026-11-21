@@ -8,14 +8,43 @@
 <script src="/shell.js"></script>
 </head>
 <body>
-<header>
-  <button id="stop" class="stop" title="S to tars_motor, then CANCEL to goto (Space)">STOP</button>
-  <h1>TARS bench</h1>
-  <span id="badge" class="badge" title="where the robot stack is (bench.py --target)">…</span>
-  <span id="target">target: …</span>
-  <span class="offline-note">event stream lost, retrying…</span>
+<header id="topbar">
+  <button id="stop" class="stop" title="Stop the robot now: S to tars_motor, then CANCEL to goto. Shortcut: Space">■ STOP <kbd>Space</kbd></button>
+  <h1>TARS</h1>
+  <span id="badge" class="badge" title="Where the robot stack is: SIM = everything simulated on this laptop; REAL = the actual robot">…</span>
+  <span id="lights" class="lights" aria-label="connections"></span>
+  <span id="activity" class="activity" title="What the robot is doing (goto controller)">connecting…</span>
+  <span class="offline-note">lost connection to the bench, retrying…</span>
+  <span class="spacer"></span>
+  <button id="help-btn" class="ghost" title="How to use this page">? Help</button>
 </header>
-<main id="panels"></main>
-<footer><div id="log" aria-label="log"></div></footer>
+<nav id="tabbar" aria-label="tools"><span class="tabbar-label">More tools:</span></nav>
+<div id="layout">
+  <aside id="side" aria-label="talk and drive"></aside>
+  <main id="center">
+    <div id="viewbar" role="tablist" aria-label="views"></div>
+    <div id="views"></div>
+  </main>
+  <section id="drawer" aria-label="tool drawer" hidden>
+    <div class="drawer-head"><div><b id="drawer-title"></b><div id="drawer-help" class="dim"></div></div>
+      <button id="drawer-close" class="ghost" title="Close (Esc)">✕</button></div>
+    <div id="drawer-body"></div>
+  </section>
+</div>
+<footer id="ticker" title="Latest log line: click to open the full log"><span id="ticker-text" class="mono dim">log: nothing yet</span></footer>
+<div id="help" class="overlay" hidden>
+  <div class="overlay-card" role="dialog" aria-labelledby="help-title">
+    <h2 id="help-title">How to use the TARS bench</h2>
+    <ol class="steps">
+      <li><b>Check the badge.</b> <span class="badge sim">SIM</span> means a simulated car on this laptop; <span class="badge real">REAL ROBOT</span> means the real one moves.</li>
+      <li><b>Talk to it</b> in the box on the left: type a command (or hold <kbd>T</kbd> / the 🎤 button and speak), or click a suggestion like <i>“go to the trash can”</i>. Keep <b>Send to robot</b> on, or it's only a dry run.</li>
+      <li><b>Watch the map.</b> The car, the route it plans and what it sees are drawn in the middle. The top bar says what it's doing.</li>
+      <li><b>Drive by hand</b> by holding <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys (click the map first so the page has focus).</li>
+      <li><b>Stop</b> any time: the red <b>STOP</b> button or <kbd>Space</kbd>.</li>
+    </ol>
+    <p class="dim">Everything else (robot status, the room editor and faults, map demos, the voice lab, tests, logs) is under <b>More tools</b> at the top. It opens beside the map.</p>
+    <div style="text-align:right"><button id="help-close" class="primary">Got it</button></div>
+  </div>
+</div>
 </body>
 </html>

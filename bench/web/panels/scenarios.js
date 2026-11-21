@@ -15,7 +15,8 @@
   const COL = {pass: 'ok', fail: 'bad', error: 'bad', aborted: 'bad', skip: 'warn', running: 'dim'};
 
   Bench.register({
-    id: 'scenarios', title: 'Scenarios', order: 30,
+    id: 'scenarios', title: 'Scenarios (bring-up checks)', order: 10, area: 'tests',
+    help: 'One-click scripted checks with pass/fail and measured numbers. STOP aborts a run.',
     async mount(el) {
       el.innerHTML = `<div class="dim where" style="font-size:12px;margin-bottom:4px"></div><div class="sc-list"></div>
         <div class="sc-run" style="display:none"><div><b class="name"></b> <span class="state"></span> <span class="dim wh"></span>

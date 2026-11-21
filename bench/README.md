@@ -43,10 +43,26 @@ the whole simulated stack and then the bench.
   (pi) or `V <json>` tars_voice events (sim/usb); `listen("cam", fn)` gets relay CAM frames (pi).
 
 **Panels** (browser side): `bench/web/panels/<name>.js` calls
-`Bench.register({id, title, order, wide, mount(el, Bench)})`.
-In a panel: `Bench.on(topic, fn)`, `await Bench.api("<plugin>/<what>", body?)`, `Bench.log(src, text)`.
+`Bench.register({id, title, order, area, help, view, mount(el, Bench)})`.
+In a panel: `Bench.on(topic, fn)`, `await Bench.api("<plugin>/<what>", body?)`, `Bench.log(src, text)`,
+`Bench.emit(topic, data)` (local event to this tab's `Bench.on` handlers), `Bench.openTab(id)`,
+`Bench.showView(id)`, `Bench.setBadgeDetail(text)`, and `Bench.mic.start()` / `await Bench.mic.stop()`
+(the one laptop-mic capture: a 16 kHz mono WAV, `mic` local event while recording).
 **STOP** and **Space** live in the shell (`web/shell.js` → `POST /api/robot/stop`), so
-stopping never depends on a panel.
+stopping never depends on a panel. The STOP button is in the top bar, which is on every view.
+
+**Page layout** (`area` says where a panel goes; one line of `help` is shown under its title):
+
+| Area | Where | Panels now |
+|---|---|---|
+| `header` | top bar: STOP, SIM/REAL badge, connection lights, what the robot is doing in plain words | `topbar` |
+| `side` | left column, always visible | `command` (Talk to TARS: text, 🎤, Send to robot switch, suggestions, recent heard → intent → sent), `drive` (WASD pad, speed, exact MOVE/TURN) |
+| `view` | the big centre view; several = a switch above it (`view` = its label) | `world2d` (sim room), `mc-map` (goto's own map), `map3d` (iPhone 3D) |
+| a tab id | the **More tools** drawer, opened beside the map | `robot` (mc-goto, mc-memory, mc-safety, status), `pi` (mc-camera, mc-voice, mc-pi), `sim` (world-tools, car), `maps`, `voice`, `tests` (scenarios, recorder), `debug` (drive-debug, the log) |
+
+No `area` → a "more" tab. Tab names and their one-line explanations are `TABS` in `shell.js`; an unknown
+tab id makes a new tab. The open tab, the chosen view and "help seen" are remembered in `localStorage`;
+`?nohelp` skips the first-run help (screenshots). The last log line is in the footer (click: the full log).
 
 **Event topics:** `status` (tars_motor STATUS, parsed), `goto` (goto STATUS + EVENTs),
 `mission` / `mission_grid` / `mission_phone` / `journal` (mission control, below),
@@ -61,7 +77,7 @@ binds the robot's real port numbers or 5590–5599; every process takes its port
 
 | Part | Files |
 |---|---|
-| shell | `bench.py`, `web/index.html`, `web/shell.js`, `web/bench.css` |
+| shell | `bench.py`, `web/index.html`, `web/shell.js`, `web/bench.css`, `web/panels/{topbar,command}.js` |
 | robot link + drive | `plugins/robot.py`, `plugins/scenarios.py`, `plugins/recorder.py`, `web/panels/{drive,status,scenarios,recorder}.js` |
 | virtual car | `car/`, `plugins/car.py`, `web/panels/car.js` |
 | sim world | `world/`, `run_sim.py`, `plugins/world.py`, `web/panels/world2d.js` |
@@ -254,7 +270,9 @@ goto + `POSE RESET` when a room loads), `BENCH_CAR_CTL` (5591), `BENCH_CAR_TRUTH
 stream, for the car plugin with the stub car), `BENCH_CAR_KIND` (`virtual` | `stub`).
 
 The 2D panel (`world2d`) is a course editor: place boxes, walls, people and goto objects, drag,
-rotate (`[` `]`), delete, save/load layouts. A fixed **SIM** badge is always on the page. Room
+rotate (`[` `]`), delete, save/load layouts (behind **✏ Edit room**; outside edit mode a click only focuses
+the map for WASD). Faults, sensor noise and the sensor readout are the `world-tools` panel in the
+**Sim room & car** tab. The header badge always says **SIM** (plus the car kind) on the sim target. Room
 format, world control (5592) and world state (5593): `bench/world/README.md`.
 
 ## Robot link, drive, status, scenarios, recorder
@@ -279,7 +297,8 @@ Tests: `python3 bench/tests/test_ui.py` (needs the host builds above + `make -C 
   Keepalive: STATUS doesn't feed tars_motor's watchdog, so while a MOVE/TURN **we** started runs,
   the poller sends PING. Manual MOVE/TURN: CANCEL goto first **only if goto is busy** (goto answers
   CANCEL with S, which would abort the move), then wait for that S to land.
-- **Drive**: hold W A S D / arrows → `POST /api/robot/keys` (teleop.py's `HoldDrive` on the
+- **Drive** (left column; the chart and console are `drive-debug` in the Debug tab): hold W A S D / arrows,
+  or press the on-screen pad → `POST /api/robot/keys` (teleop.py's `HoldDrive` on the
   server, D at 20 Hz, S on release; the tab refreshes held keys every 100 ms and the server sends
   S if it stops for 0.35 s). Tab hidden/blurred → release. Chart: commanded l/r, tars_motor
   out_l/out_r, and the virtual car's `wl`/`wr` (topic `car`, m/s ÷ `dc_mm_s`) when present.
@@ -335,7 +354,7 @@ it, and the bench **imports** it:
 | goto table, GOTO/RECALL/FORGET/FORGET all/SCAN/CANCEL/MEMORY SAY, event log | Go-to panel, `POST /api/mission/goto`, `memory_say` |
 | object memory, phone table | Object memory + phone panel |
 | map (NAV GRID / phone grid, route, pose, objects) | Map (goto) panel |
-| voice: 🎤 hold / T, text box, voice log | Robot voice panel: 🎤 hold / **V** (T is the Voice lab's mic), `text`, `audio` |
+| voice: 🎤 hold / T, text box, voice log | **Talk to TARS** box (left column, via the voice lab + Send to robot; 🎤 / **T**), and the Robot voice log panel (Pi tab: 🎤 hold / **V**, `text`, `audio`) |
 | link pills, Pi service pills (relay R) | Pi panel |
 | `actions.command` (journals over SSH) | Pi panel "follow journals", `GET/POST /api/mission/journal`, topic `journal` |
 | `room-view.command` (SSH tunnel to 5580) | Pi panel "room view tunnel" + link / iframe, `GET/POST /api/mission/roomview` |

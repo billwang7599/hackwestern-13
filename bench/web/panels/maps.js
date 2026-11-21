@@ -15,7 +15,8 @@
   }
 
   Bench.register({
-    id: 'maps', title: 'Map demos (SIM)', order: 6, wide: true,
+    id: 'maps', title: 'Map demos (SIM)', order: 6, wide: true, area: 'maps',
+    help: 'A: start knowing nothing, explore, then find the target. B: load a saved map, drop the car anywhere, GOTO. Watch the map view while it runs.',
     mount(el, B) {
       let grid = null, cells = null, mode = {}, showGrid = true, world = null;
       const row = (...k) => h('div', {style: {display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', margin: '4px 0'}}, ...k);

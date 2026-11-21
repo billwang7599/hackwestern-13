@@ -47,7 +47,8 @@
 
   // ------------------------------------------------------------------ camera
   Bench.register({
-    id: 'mc-camera', title: 'Camera (phone, via the Pi)', order: 12,
+    id: 'mc-camera', title: 'Camera (phone, via the Pi)', order: 12, area: 'pi',
+    help: 'The robot’s camera with detection boxes. Real robot only: there is no camera in the sim.',
     mount(el) {
       el.innerHTML = `<div class="mc-cam"><img alt=""><canvas></canvas><div class="none">no frames</div></div>
         <div class="mc-note"><span class="age"></span> · green = YOLOX on this frame (phone tee) · orange = goto's YOLO-World detections (<code>detect</code>'s own camera: lines up only if it's the same camera)</div>`;
@@ -83,7 +84,8 @@
 
   // ------------------------------------------------------------------ safety
   Bench.register({
-    id: 'mc-safety', title: 'Safety (guard)', order: 13,
+    id: 'mc-safety', title: 'Safety (obstacle guard)', order: 13, area: 'robot',
+    help: 'The LiDAR obstacle check that can veto driving forward, and the tip-over reset.',
     mount(el) {
       el.innerHTML = `<div class="mc-row"><span class="mc-verdict">?</span> <span class="why mc-note"></span></div>
         <table class="mc-t"></table>
@@ -112,7 +114,8 @@
 
   // ------------------------------------------------------------------ goto
   Bench.register({
-    id: 'mc-goto', title: 'Go-to', order: 14,
+    id: 'mc-goto', title: 'Go-to controller', order: 11, area: 'robot',
+    help: 'Send GOTO / SCAN / FORGET directly, and see goto’s state and event log.',
     mount(el) {
       el.innerHTML = `<table class="mc-t"></table>
         <div class="mc-row"><select class="obj"></select>
@@ -145,7 +148,8 @@
 
   // ------------------------------------------------------------------ memory + phone
   Bench.register({
-    id: 'mc-memory', title: 'Object memory + phone', order: 15,
+    id: 'mc-memory', title: 'What it remembers + phone', order: 12, area: 'robot',
+    help: 'Objects goto has seen and where (it drives back to them), plus the phone’s link state.',
     mount(el) {
       el.innerHTML = `<div class="mc-note mage"></div><table class="mc-t mem"></table>
         <h2 style="margin-top:8px">phone <span class="page mc-note"></span></h2><table class="mc-t ph"></table>`;
@@ -167,7 +171,8 @@
 
   // ------------------------------------------------------------------ map (goto NAV GRID, else the phone's grid)
   Bench.register({
-    id: 'mc-map', title: 'Map (goto)', order: 16,
+    id: 'mc-map', title: 'Map (goto)', view: '🧭 Robot’s map', order: 16, area: 'view',
+    help: 'The map goto has built itself (NAV GRID), its route and remembered objects: what the robot believes.',
     mount(el) {
       el.innerHTML = `<div class="mc-row"><button class="zi">+</button><button class="zo">−</button><span class="src mc-note"></span></div>
         <canvas class="mc-map" width="560" height="560"></canvas>
@@ -225,7 +230,8 @@
 
   // ------------------------------------------------------------------ robot voice (the robot's own classifier)
   Bench.register({
-    id: 'mc-voice', title: 'Robot voice', order: 17,
+    id: 'mc-voice', title: 'Robot voice log', order: 17, area: 'pi',
+    help: 'What the robot’s own tars_voice heard and did (hold V to talk to it directly).',
     mount(el) {
       el.innerHTML = `<div class="mc-note mode"></div>
         <div class="mc-row"><button class="mc-ptt" title="hold (or hold V)">🎤 hold to talk</button>
@@ -286,7 +292,8 @@
 
   // ------------------------------------------------------------------ Pi: services, journals, room view
   Bench.register({
-    id: 'mc-pi', title: 'Pi: services · action journals · room view', order: 18, wide: true,
+    id: 'mc-pi', title: 'Pi: services · action journals · room view', order: 18, wide: true, area: 'pi',
+    help: 'Which services run on the Pi, their journals over SSH, and Andrew’s room view tunnel.',
     mount(el) {
       el.innerHTML = `<div class="mc-row"><span class="ups"></span></div>
         <div class="mc-row"><label>ssh <input class="host" style="width:220px" placeholder="qnxuser@…"></label>
