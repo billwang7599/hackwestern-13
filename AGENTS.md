@@ -35,7 +35,7 @@ One folder per iteration (README "Iterations"; old → new paths in `docs/MOVED.
 | `iter2-autonomy/edge-ai/`, `dashboard/`, `iphone-usb/` | Andrew's stack: QNX edge AI + `lidar_guard`, Pi dashboard / `service.py`, iPhone-over-USB for QNX | C++ / Python / sh |
 | **`iter3-pet/`** | **Iteration 3: MediaPipe pet** | |
 | `iter3-pet/vision/` | MediaPipe gestures, follow mode, teach-a-gesture, pet mode (`GESTURES.md`) | Python + C++ ports (parity-tested) |
-| `bench/` | laptop digital test bench (never on the robot): browser UI on 8770, virtual SM11 car (real firmware + physics), sim room, voice lab, iPhone 3D map; each part sim or real (`bench/README.md`, `python3 bench/tests/test_shell.py`) | Python stdlib / HTML+JS / C++ (host) |
+| `bench/` | laptop digital test bench (never on the robot): browser UI on 8770, virtual SM11 car (real firmware + physics), sim room, voice lab, iPhone 3D map, and mission control for the real robot (`bench/mission.command`, `--target pi`); each part sim or real (`bench/README.md`, `python3 bench/tests/test_shell.py`) | Python stdlib / HTML+JS / C++ (host) |
 | `archive/` | parked: `goalie/`, `pico/` (legacy firmware; the `-b pico` backend still lives in `tars_motor`), `JOYCON.md` | |
 | `hardware/` | 3D-printable stepper wheel | |
 | `docker/` | QNX SDP 8.0 cross-compile container (`docker/run.sh`) | |

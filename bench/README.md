@@ -31,13 +31,16 @@ the whole simulated stack and then the bench.
   The robot plugin publishes every line it sends and the reply as a non-sticky `cmd` event,
   so the recorder sees commands as well as telemetry.
 - `bench.target`: `{"name": "sim"|"usb"|"pi", "motor", "goto", "voice", "relay"}`.
+  The header shows a **SIM** or **REAL ROBOT** badge from it. On `usb`/`pi`, `/panels.json` leaves
+  out the sim-only panels (`SIM_ONLY_PANELS` in bench.py: car, world2d) unless `--all-panels`.
 - `bench.plugins.get("robot")`: the robot link (owned by the `robot` plugin). It is the
   **only** thing that opens connections to tars_motor / goto / tars_voice (or the relay):
   `send(dest, line, data=b"") -> reply` with dest `"motor"|"goto"|"voice"` (`data`: raw
   bytes written right after the line, for tars_voice's `AUDIO <n>` + clip; the reply is the
   next line), and `stop()` (`S` to
   tars_motor, then `CANCEL` to goto). Other plugins call it; if it isn't loaded, they
-  disable their send buttons and say so.
+  disable their send buttons and say so. `listen("watch", fn)` gets mission_relay's WATCH lines
+  (pi) or `V <json>` tars_voice events (sim/usb); `listen("cam", fn)` gets relay CAM frames (pi).
 
 **Panels** (browser side): `bench/web/panels/<name>.js` calls
 `Bench.register({id, title, order, wide, mount(el, Bench)})`.
@@ -46,6 +49,7 @@ In a panel: `Bench.on(topic, fn)`, `await Bench.api("<plugin>/<what>", body?)`, 
 stopping never depends on a panel.
 
 **Event topics:** `status` (tars_motor STATUS, parsed), `goto` (goto STATUS + EVENTs),
+`mission` / `mission_grid` / `mission_phone` / `journal` (mission control, below),
 `car` (virtual car truth + params), `world` (sim room + sensors), `voice` (voice lab
 results), `map3d` (3D map data), `scenario` (scenario progress), `cmd` (every line sent
 to the robot + reply), `log`.
@@ -63,6 +67,7 @@ binds the robot's real port numbers or 5590–5599; every process takes its port
 | sim world | `world/`, `run_sim.py`, `plugins/world.py`, `web/panels/world2d.js` |
 | voice lab | `plugins/voicelab.py`, `web/panels/voice.js` |
 | iPhone 3D map | `phone/`, `plugins/phone.py`, `web/panels/map3d.js` |
+| mission control | `plugins/mission.py`, `web/panels/mission.js`, `mission.command` (imports `iter2-autonomy/mission/laptop/`, which Andrew owns) |
 
 Tests go in `bench/tests/test_<part>*.py`.
 
@@ -266,3 +271,46 @@ recording, or a ray-cast sim room. The sim room follows topic `world` live (room
 The sim takes its pose from topic `car`. `/api/phone/*` and topic `map3d` are documented in
 `plugins/phone.py`; details, frames and the live-phone checklist are in `phone/README.md`.
 Test: `python3 bench/tests/test_phone.py`.
+
+## Mission control (`plugins/mission.py`, `web/panels/mission.js`)
+
+The bench is the one laptop UI. For the real robot:
+```sh
+MISSION_KEY=<key> python3 bench/bench.py --target pi --relay <pi-ip>   # or double-click bench/mission.command
+```
+The key is required (as in mission.py). The flags match mission.py's: `--speed`, `--laptop-stt`
+(`--stt-cli`, `--model`). `$TARS_HOST` is the default relay, then `tars.local`.
+`mission.command` takes the key from `$MISSION_KEY` or `~/.tars_mission_key`, or asks for it.
+
+`iter2-autonomy/mission/laptop/mission.py` still works unchanged; it is not retired yet. Andrew owns
+it, and the bench **imports** it:
+- `mission.State` parses the WATCH/CAM streams.
+- `Mission.goto_cmd/memory_say/hear/audio` run unchanged with an adapter that sends through the
+  robot plugin.
+- `follow_actions.py` and the `.command` ssh lines run as written.
+
+| mission.py (8765) | bench (8770) |
+|---|---|
+| STOP / Space (S then CANCEL) | shell header STOP / Space → `robot/stop` |
+| hold WASD, speed, CANCEL-if-busy, quiet-tab stop | Drive panel → `robot/keys` |
+| `/state` 5 Hz SSE | topics `mission` (5 Hz), `mission_grid`, `mission_phone`, plus `status`, `goto` |
+| `/cam.mjpg` + YOLOX/detect boxes | Camera panel, `GET /api/mission/cam.jpg` (polled per new frame id) |
+| safety verdict, gate, RESET tip | Safety panel, `POST /api/mission/reset` |
+| goto table, GOTO/RECALL/FORGET/FORGET all/SCAN/CANCEL/MEMORY SAY, event log | Go-to panel, `POST /api/mission/goto`, `memory_say` |
+| object memory, phone table | Object memory + phone panel |
+| map (NAV GRID / phone grid, route, pose, objects) | Map (goto) panel |
+| voice: 🎤 hold / T, text box, voice log | Robot voice panel: 🎤 hold / **V** (T is the Voice lab's mic), `text`, `audio` |
+| link pills, Pi service pills (relay R) | Pi panel |
+| `actions.command` (journals over SSH) | Pi panel "follow journals", `GET/POST /api/mission/journal`, topic `journal` |
+| `room-view.command` (SSH tunnel to 5580) | Pi panel "room view tunnel" + link / iframe, `GET/POST /api/mission/roomview` |
+
+On sim/usb the same panels work. The bench polls goto at the relay's rates (DETS 5 Hz; MEMORY, NAV,
+NAV ROUTE, NAV GRID 1 Hz), and tars_voice events come from a WATCH connection. There is no camera
+in sim/usb. SSH runs with `BatchMode=yes` (it needs an ssh key and never prompts); `BENCH_SSH`
+replaces the ssh binary (tests). The default `user@host` is read from Andrew's `actions.command`
+(`$TARS_SSH` overrides it). Port 5580 on the laptop is Andrew's room-view tunnel, not a bench port.
+
+Test: `python3 bench/tests/test_mission.py` runs mission's fake Pi (`demo_stack.py` pieces: real
+tars_motor stub, goto, tars_voice, mission_relay with a key, fake camera, phone tee, detections) and a
+fake ssh, then checks every row above through the bench's HTTP API, the sim and usb targets, and
+kill -9 while driving. **Not run:** the real Pi, the relay over Wi-Fi, the robot's camera, real ssh.
