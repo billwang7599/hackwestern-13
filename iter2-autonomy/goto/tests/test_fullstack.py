@@ -4,7 +4,7 @@
   real  iter1-wasd/pi/build/tars_motor_host -b stub   motion + pose + guard gate (-g, GAT1 UDP)
   real  iter2-autonomy/goto/build/goto_host               control 5570-style port, dets 5571-style, nav 5572-style
   real  iter2-autonomy/voice/build/tars_voice_host        (voice scenarios: wav in, whisper, intent, routing)
-  fake  lidar_guard   GAT1 to tars_motor: BLOCKED when anything is < GUARD_M ahead (forward only)
+  fake  lidar_guard   GAT1 to tars_motor: lidar_guard.cpp's zone (60 deg cone, <= 0.6 m ahead, |side| < 0.45 m)
   fake  phone         LDR1 packets (pose + raycast LiDAR, 60 deg FOV) to goto's nav port, 20 Hz
   fake  YOLO          detection JSON lines to goto's det port, 8 Hz, occlusion-aware
   fake  phone speech  TCP listener for voice's "SAY <text>" (5573-style)
@@ -47,8 +47,15 @@ VOICE = os.path.join(REPO, "iter2-autonomy", "voice", "build", "tars_voice_host"
 VMODEL = os.path.join(REPO, "iter2-autonomy", "voice", "models", "ggml-tiny.en-q5_1.bin")
 BUILD = os.path.join(GOTO_DIR, "build")
 
-GUARD_M = 0.55            # fake lidar_guard: stop zone from the robot centre, forward corridor
-GUARD_HALF_W = 0.18
+# fake lidar_guard = lidar_guard.cpp parse(): a LiDAR point with |side| < 0.45 m and
+# 0 < forward <= 0.6 m (robot = phone pose) is BLOCKED. The phone only sees its 60 deg cone,
+# so at 0.6 m the zone is +-0.35 m wide (tan 30 deg x 0.6); the 0.45 m half-width matters
+# only further out. (This used to be 3 parallel rays at +-0.18 m to 0.55 m: much narrower
+# than the real guard, so detours that pass 0.2-0.35 m from a box looked fine here.)
+GUARD_M = 0.6
+GUARD_HALF_W = 0.45
+GUARD_HFOV = math.radians(60)
+GUARD_RAYS = 31           # every 2 deg across the cone
 CAN_R, CAN_H = 0.15, 0.40
 FX = 320 / math.tan(math.radians(30))   # 640 px, 60 deg hfov, square pixels
 CAM_H = 0.12
@@ -251,10 +258,12 @@ class Sensors:
             last = t
             x, y, h = self.pose
             blocked = False
-            for off in (-GUARD_HALF_W, 0.0, GUARD_HALF_W):
-                ox, oy = x - off * math.sin(h), y + off * math.cos(h)
-                t, hit = self.w.ray(ox, oy, h, GUARD_M)
-                blocked |= hit
+            for k in range(GUARD_RAYS):
+                a = -GUARD_HFOV / 2 + GUARD_HFOV * k / (GUARD_RAYS - 1)
+                t, hit = self.w.ray(x, y, h + a, GUARD_M / math.cos(a) + 1e-6)
+                if hit and t * math.cos(a) <= GUARD_M and abs(t * math.sin(a)) < GUARD_HALF_W:
+                    blocked = True
+                    break
             permit = 0 if blocked else 1
             if blocked:
                 self.guard_denials += 1
@@ -528,6 +537,53 @@ def sc_occlusion(ahead: float | None = None):
         st.close()
 
 
+def sc_dropbox():
+    """bench demo_detour: a 0.35 x 0.9 m box lands across the route 0.95 m ahead of the robot
+    while it drives to a bin 3.2 m down a wide hall. The guard stops it about 0.6 m from the box
+    with the box filling its cone; goto has to get round it, and every forward MOVE that would
+    keep the box in the guard's zone is refused by tars_motor."""
+    print("full-stack: DROPBOX: a box dropped across the route mid-GOTO (bench demo_detour)")
+    w = World(size=5.6, x0=-1.0, y0=-2.8)
+    w.cans.append([3.2, 0.0])
+    st = Stack(w, mem_file([(3.2, 0.0)]))
+    placed = []
+
+    def dropper():
+        # tars_motor's stub backend only updates pose= when an exact MOVE is DONE (it jumps a
+        # metre at the end), so a box dropped mid-MOVE is never seen by the fake guard/phone
+        # in time. Recreate where the bench's guard stop leaves the robot instead: the moment
+        # goto has its first route, put the box across the line to the bin with its face 0.5 m
+        # ahead (inside the guard's 0.6 m zone, filling the cone). Every straight-ish MOVE from
+        # here is refused; goto must turn clear of the guard's zone first.
+        end = time.monotonic() + 60
+        while not placed and time.monotonic() < end:
+            if any(e.startswith("route trash can") for e in st.goto.events):
+                x, y, _ = st.sens.pose
+                a = math.atan2(0.0 - y, 3.2 - x)
+                cx, cy = x + 0.675 * math.cos(a), y + 0.675 * math.sin(a)
+                with w.lock:
+                    w.walls.extend(box(cx, cy, 0.175, 0.45))
+                placed.append((cx, cy, x))
+            time.sleep(0.01)
+    try:
+        st.goto.cmd("GOTO trash can")
+        threading.Thread(target=dropper, daemon=True).start()
+        s = st.goto.wait_idle(200)
+        st.dump("dropbox")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 3.2, y)
+        check(bool(placed), f"box dropped on the route at ({placed[0][0]:.2f}, {placed[0][1]:.2f}), robot at x={placed[0][2]:.2f}"
+              if placed else "box dropped")
+        inside = placed and any(abs(p[0] - placed[0][0]) < 0.175 + 0.1 and abs(p[1] - placed[0][1]) < 0.45 + 0.1
+                                for p in st.sens.trace)
+        check(not inside, "never drove into the box (centre stays > 0.1 m outside it)")
+        check(st.sens.guard_denials > 0, f"the guard saw the box ({st.sens.guard_denials} denials)")
+        check(s["result"] == "arrived" and d < 0.95,
+              f"got round the box and docked at the bin ({s['result']}, {d:.2f} m, replans={s.get('replans')})")
+    finally:
+        st.close()
+
+
 def sc_moved():
     print("full-stack: MOVED OBJECT: memory says A, the bin is now at B")
     w = World()
@@ -688,7 +744,7 @@ def sc_voice():
 
 
 SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion,
-             "occlusion_close": lambda: sc_occlusion(ahead=0.39), "moved": sc_moved, "stop": sc_stop,
+             "occlusion_close": lambda: sc_occlusion(ahead=0.39), "dropbox": sc_dropbox, "moved": sc_moved, "stop": sc_stop,
              "visual": sc_visual_only, "voice": sc_voice}
 
 
