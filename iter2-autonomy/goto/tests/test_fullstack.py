@@ -209,6 +209,7 @@ class Sensors:
         self.pose = (0.0, 0.0, 0.0)
         self.trace: list[tuple[float, float]] = []
         self.guard_denials = 0
+        self.guard_gaps: list[float] = []      # seconds between GAT1 sends (tars_motor's TTL is 100 ms)
         self.seq = 0
         self.t0 = time.monotonic()
         self.phone_on = nav_port is not None
@@ -239,7 +240,12 @@ class Sensors:
             time.sleep(0.02)
 
     def _guard_loop(self):
+        last = None
         while self.run:
+            t = time.monotonic()
+            if last is not None:
+                self.guard_gaps.append(t - last)
+            last = t
             x, y, h = self.pose
             blocked = False
             for off in (-GUARD_HALF_W, 0.0, GUARD_HALF_W):
@@ -440,6 +446,9 @@ class Stack:
     def dump(self, name):
         if VERBOSE or True:
             print(f"    [{name}] events: {' | '.join(self.goto.events)[:900]}")
+            g = self.sens.guard_gaps
+            if g:
+                print(f"    [{name}] fake guard: max gap {1000 * max(g):.0f} ms, {sum(x >= 0.1 for x in g)} gaps >= 100 ms (tars_motor TTL)")
 
 
 # ------------------------------------------------------------------ scenarios
