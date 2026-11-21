@@ -4,8 +4,9 @@
  *   Pi -> Uno   "D <l> <r>"  every tick (also feeds the Uno's 200 ms watchdog)
  *               "S"  "A <arm> <deg> <dps>"  "X" (halt arms)  "Z"  "U"
  *               "M <mm> <speed>"  "R <deg> <speed>"  "K <diam> <track>"
- *               "V [mm_s deg_s]" (DC speed cal / query)  "L <pattern>"  "B <n>" (beeps)
- *   Uno -> Pi   "READY"  "WHEELS DC <mm_s> <deg_s>"  "T <deg>"  "B <mg>"  "DONE M|R <amt>"
+ *               "V [mm_s deg_s [deg_s_slow]]" (DC speed cal / query)  "L <pattern>"  "B <n>" (beeps)
+ *   Uno -> Pi   "READY"  "WHEELS DC <mm_s> <deg_s>"  "WHEELS DCSLOW <deg_s_slow>"
+ *               "T <deg>"  "B <mg>"  "DONE M|R <amt>"
  *               "ABORT M|R <amt> <why>"  "BTN TEACH|FORGET"
  *               "# ..." (diagnostics, logged only)
  *
@@ -113,6 +114,9 @@ static void parse_line(char *s)
                && amt >= 20 && amt <= 2000 && amt2 >= 20 && amt2 <= 2000) {
         motor_event_t *e = ev_push(MOTOR_EV_WHEELS, 0);
         if (e) { e->what = 'D'; e->amount = amt; e->amount2 = amt2; }
+    } else if (sscanf(s, "WHEELS DCSLOW %f%n", &amt, &n) == 1 && !s[n] && amt >= 20 && amt <= 2000) {
+        motor_event_t *e = ev_push(MOTOR_EV_WHEELS, 0);   /* slow-turn rate, after WHEELS DC */
+        if (e) { e->what = 'S'; e->amount = amt; }
     } else if (!strcmp(s, "BTN TEACH")) {
         ev_push(MOTOR_EV_BTN, MOTOR_BTN_TEACH);
     } else if (!strcmp(s, "BTN FORGET")) {
@@ -245,11 +249,12 @@ static int uno_wheel_cal(float d, float t)
     return send_line(line);
 }
 
-static int uno_speed_cal(float mm_s, float deg_s)
+static int uno_speed_cal(float mm_s, float deg_s, float deg_s_slow)
 {
-    char line[48];
+    char line[64];
     if (mm_s <= 0 || deg_s <= 0) return send_line("V\n");
-    snprintf(line, sizeof line, "V %.1f %.1f\n", mm_s, deg_s);
+    if (deg_s_slow > 0) snprintf(line, sizeof line, "V %.1f %.1f %.1f\n", mm_s, deg_s, deg_s_slow);
+    else snprintf(line, sizeof line, "V %.1f %.1f\n", mm_s, deg_s);
     return send_line(line);
 }
 

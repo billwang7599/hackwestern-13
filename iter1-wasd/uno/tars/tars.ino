@@ -35,7 +35,9 @@
  *                          |mm| / mm_s (see V); speed is accepted but ignored.
  *     R <deg> [speed]      spin in place <deg>, + = clockwise seen from above
  *                          (turn RIGHT), - = left. Clamped +-TURN_MAX_DEG.
- *                          -> "DONE R <deg>". DC: timed, |deg| / deg_s.
+ *                          -> "DONE R <deg>". DC: timed, |deg| / deg_s; with
+ *                          speed < 0.99 a SLOW turn: DC_SLOW_TURN_DUTY (after the
+ *                          kick), timed |deg| / deg_s_slow (tars_motor's slow pivot).
  *                          During M/R: "D 0 0" lines are keepalives (ignored);
  *                          a non-zero D, S, a new M/R, tip-over, or (if the Pi was
  *                          streaming D when the move began) 500 ms of serial
@@ -44,9 +46,10 @@
  *                          what the floor did: the Pi re-plans from the iPhone pose.
  *     K [diam_mm track_mm] stepper only: set + save (EEPROM) wheel diameter and
  *                          track width; no args = print them.
- *     V [mm_s deg_s]       DC only: set + save (EEPROM) the speeds measured at D 1
- *                          (straight mm/s, spin deg/s); no args = print them.
- *                          Answered with a WHEELS line. Stepper builds ignore it.
+ *     V [mm_s deg_s [deg_s_slow]]  DC only: set + save (EEPROM) the speeds measured
+ *                          at D 1 (straight mm/s, spin deg/s) and the slow-turn spin
+ *                          deg/s (omitted = keep it); no args = print them.
+ *                          Answered with the WHEELS lines. Stepper builds ignore it.
  *     S                    stop wheels NOW, abort any M/R, halt arms
  *     A <arm> <deg> [dps]  arm 0|1 to absolute angle (only arms < ARM_COUNT)
  *     H / Z / X            arms home / zero here / halt
@@ -58,6 +61,9 @@
  *     WHEELS DC <mm_s> <deg_s>   DC builds: at boot (before READY) and after V.
  *                          tars_motor uses it for pose + move estimates. Stepper
  *                          builds never send it (the Pi assumes steppers).
+ *     WHEELS DCSLOW <deg_s_slow> right after every WHEELS DC: the slow-turn rate
+ *                          (a separate line so older Pi code, which ignores it,
+ *                          still parses WHEELS DC).
  *     READY                once after boot (mid-run = the Uno rebooted)
  *     T <deg>              tipped (repeated every TIP_REPEAT_MS while tipped)
  *     B <mg>               bump (at most one per 250 ms)
@@ -236,6 +242,12 @@ const uint16_t MOVE_LINK_MS     = 500;     // Pi went silent mid-move -> abort
 //     break static friction, then its real duty. S / watchdog / tip end a kick at once.
 // DC_*_GAIN: trim a side that runs faster (the SM11's two EN pins have different PWM
 //   frequencies, 490 vs 980 Hz). < 1 slows that side. Check with "M 1000" on the floor.
+// DC_SLOW_TURN_DUTY: "R <deg> <speed>" with speed < DC_SLOW_BELOW spins at this duty
+//   (after the usual kick) instead of D 1, timed by deg_s_slow. That's the slow pivot
+//   tars_motor asks for (TURN speed 0.40: goto's turns, and any TURN allowed while the
+//   iPhone guard says BLOCKED). A literal 40 % of the cap would stall TT motors, and an
+//   in-place skid-steer turn needs more torque than rolling straight, so it's a fixed
+//   duty between DC_MIN_DUTY and the cap. If "R 90 0.4" stalls on the floor, raise it.
 #if CAR == CAR_SM11
 const bool  LEFT_INVERT   = false;   // flip if "D 0.5 0.5" turns that wheel backwards
 const bool  RIGHT_INVERT  = false;
@@ -243,6 +255,7 @@ const float DC_MIN_DUTY   = 0.30f;
 const float DC_MAX_DUTY   = 0.45f;
 const float DC_KICK_DUTY  = 0.80f;
 const uint16_t DC_KICK_MS = 40;
+const float DC_SLOW_TURN_DUTY = 0.36f;   // GUESS: check with wheel_cal.py dc-spin --slow
 #else
 const bool  LEFT_INVERT   = false;
 const bool  RIGHT_INVERT  = false;
@@ -250,12 +263,19 @@ const float DC_MIN_DUTY   = 0.0f;    // custom DC builds: the old linear 0..1 ma
 const float DC_MAX_DUTY   = 1.0f;
 const float DC_KICK_DUTY  = 0.0f;
 const uint16_t DC_KICK_MS = 0;
+const float DC_SLOW_TURN_DUTY = 0.40f;
 #endif
 const float DC_LEFT_GAIN  = 1.0f;
 const float DC_RIGHT_GAIN = 1.0f;
-// DC M/R timing: speeds at D 1 until "V <mm_s> <deg_s>" saves measured ones.
+const float DC_SLOW_BELOW = 0.99f;   // R speed below this = slow turn (DC builds)
+// DC M/R timing: speeds at D 1 (and the slow-turn rate) until "V" saves measured ones.
 const float DC_MM_S_DEFAULT  = 150.0f;
 const float DC_DEG_S_DEFAULT = 120.0f;
+#if CAR == CAR_SM11
+const float DC_DEG_S_SLOW_DEFAULT = 60.0f;   // GUESS (duty 0.36 vs the 0.45 cap): measure it
+#else
+const float DC_DEG_S_SLOW_DEFAULT = 48.0f;   // 0.40 x 120 on the linear custom map: a guess
+#endif
 const float DRIVE_DEADBAND = 0.03f;  // |d| below this -> off (both wheel types)
 const bool  BRAKE_ON_STOP  = true;
 const uint16_t DRIVE_WATCHDOG_MS = 200;
@@ -500,17 +520,26 @@ static uint32_t moveDurMs = 0;
 static bool     moveLinkGuard = false;
 static float    dcMmS = DC_MM_S_DEFAULT;
 static float    dcDegS = DC_DEG_S_DEFAULT;
+static float    dcDegSSlow = DC_DEG_S_SLOW_DEFAULT;
 
-struct DcCal { uint16_t magic; float mmS, degS; };
-const uint16_t DC_CAL_MAGIC = 0x7DC1;     // != the stepper's WHEEL_CAL magic
+// EEPROM: v1 (0x7DC1) had mmS, degS; v2 (0x7DC2) appends degSSlow. A v1 record still
+// loads (slow rate = default), so reflashing doesn't lose a calibration.
+struct DcCal { uint16_t magic; float mmS, degS, degSSlow; };
+const uint16_t DC_CAL_MAGIC_V1 = 0x7DC1;  // != the stepper's WHEEL_CAL magic
+const uint16_t DC_CAL_MAGIC    = 0x7DC2;
 const int      DC_CAL_ADDR  = 0;
-static bool dcCalOk(float mmS, float degS) { return mmS >= 20 && mmS <= 2000 && degS >= 20 && degS <= 2000; }
+static bool dcRateOk(float v) { return v >= 20 && v <= 2000; }
+static bool dcCalOk(float mmS, float degS) { return dcRateOk(mmS) && dcRateOk(degS); }
 
+// Two lines: "WHEELS DC <mm_s> <deg_s>" (the Pi's parser rejects extra fields, so it
+// stays as it was) then "WHEELS DCSLOW <deg_s_slow>" (older Pi code ignores it).
 static void dcCalPrint() {
   Serial.print(F("WHEELS DC "));
   Serial.print(dcMmS, 1);
   Serial.print(F(" "));
   Serial.println(dcDegS, 1);
+  Serial.print(F("WHEELS DCSLOW "));
+  Serial.println(dcDegSSlow, 1);
 }
 
 // Amount "done" so far, by time, signed like the request.
@@ -541,12 +570,22 @@ static void moveFinish(bool ok, const char *why) {
 
 static void moveAbort(const char *why) { moveFinish(false, why); }
 
+// Spin at a fixed duty (not the D map): +1 = clockwise. Invert/gain like shape().
+static void dcSpinDuty(float duty, float dir) {
+  float l = dir * duty * DC_LEFT_GAIN, r = -dir * duty * DC_RIGHT_GAIN;
+  l = clampf(l, -1, 1); r = clampf(r, -1, 1);
+  dcApply(0, LEFT_INVERT ? -l : l);
+  dcApply(1, RIGHT_INVERT ? -r : r);
+}
+
 static void moveStart(char kind, float amount, float speed) {
-  (void)speed;                            // DC: one speed (D 1), the one V calibrated
+  // DC: M always runs at D 1. R runs at D 1, or slow (DC_SLOW_TURN_DUTY, timed by
+  // deg_s_slow) when speed < DC_SLOW_BELOW: tars_motor's slow pivot.
+  bool slow = kind == 'R' && speed > 0 && speed < DC_SLOW_BELOW;
   if (moveKind) moveFinish(false, "replaced");
   if (kind == 'M') amount = clampf(amount, -MOVE_MAX_MM, MOVE_MAX_MM);
   else amount = clampf(amount, -TURN_MAX_DEG, TURN_MAX_DEG);
-  float rate = kind == 'M' ? dcMmS : dcDegS;
+  float rate = kind == 'M' ? dcMmS : slow ? dcDegSSlow : dcDegS;
   float mag = amount < 0 ? -amount : amount;
   driveActive = false;
   moveKind = kind;
@@ -557,6 +596,7 @@ static void moveStart(char kind, float amount, float speed) {
   if (moveDurMs == 0) { moveFinish(true, ""); return; }
   float s = amount < 0 ? -1.0f : 1.0f;
   if (kind == 'M') dcSet(s, s);
+  else if (slow) dcSpinDuty(DC_SLOW_TURN_DUTY, s);
   else dcSet(s, -s);                      // R +: left fwd, right back = clockwise
 }
 
@@ -589,8 +629,12 @@ static void wheelsPoll() {
 static void dcCalLoad() {
   DcCal c;
   EEPROM.get(DC_CAL_ADDR, c);
-  if (c.magic == DC_CAL_MAGIC && dcCalOk(c.mmS, c.degS)) { dcMmS = c.mmS; dcDegS = c.degS; }
-  else { dcMmS = DC_MM_S_DEFAULT; dcDegS = DC_DEG_S_DEFAULT; }
+  dcMmS = DC_MM_S_DEFAULT; dcDegS = DC_DEG_S_DEFAULT; dcDegSSlow = DC_DEG_S_SLOW_DEFAULT;
+  if ((c.magic == DC_CAL_MAGIC || c.magic == DC_CAL_MAGIC_V1) && dcCalOk(c.mmS, c.degS)) {
+    dcMmS = c.mmS;
+    dcDegS = c.degS;
+    if (c.magic == DC_CAL_MAGIC && dcRateOk(c.degSSlow)) dcDegSSlow = c.degSSlow;
+  }
 }
 
 static void wheelsSetup() {
@@ -1031,11 +1075,12 @@ void handleLine(char *line) {
       break;
     case 'V':
 #if WHEEL_TYPE == WHEELS_DC
-      if (n == 2) {
-        if (!dcCalOk(v[0], v[1])) return;
+      if (n == 2 || n == 3) {                    // V mm_s deg_s keeps the slow rate
+        if (!dcCalOk(v[0], v[1]) || (n == 3 && !dcRateOk(v[2]))) return;
         dcMmS = v[0];
         dcDegS = v[1];
-        DcCal c = {DC_CAL_MAGIC, dcMmS, dcDegS};
+        if (n == 3) dcDegSSlow = v[2];
+        DcCal c = {DC_CAL_MAGIC, dcMmS, dcDegS, dcDegSSlow};
         EEPROM.put(DC_CAL_ADDR, c);
       } else if (n != 0) {
         return;

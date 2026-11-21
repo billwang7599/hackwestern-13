@@ -1029,6 +1029,78 @@ def test_guard_gate() -> None:
         srv.stop()
 
 
+def test_uno_dc_slow_turn() -> None:
+    """DC slow pivot: TURN speed < 0.99 is the Uno's slow turn, timed by WHEELS DCSLOW."""
+    print("uno dc: slow turn (WHEELS DCSLOW, TURN 0.40, the guard_blocked pivot)")
+    uno = FakeUno()
+    gport = free_port()
+    g = GuardSender(gport)
+    srv = Server("-b", "uno", "-d", uno.path, "-w", "300", "-g", str(gport))
+    c = Client(srv.port)
+    nd = lambda: [l for l in uno.lines if not l.startswith("D ")]
+    try:
+        uno.pump(0.3)
+        uno.send("WHEELS DC 160.0 100.0\r\nREADY\r\n")
+        check(srv.wait_log(r"co-processor READY"), "READY")
+        st = c.status()
+        check(st.get("dc_deg_s_slow") == "0.0", f"no DCSLOW yet: slow rate unknown ({st.get('dc_deg_s_slow')})")
+        r = c.cmd("TURN 90 0.4")
+        check(r.endswith(" 900"), f"old Uno (no DCSLOW) ignores TURN speed: est at 100 deg/s ({r})")
+        c.cmd("S")
+        uno.send("WHEELS DCSLOW 50.0\r\n")
+        check(srv.wait_log(r"DC slow turn: 50\.0 deg/s"), "WHEELS DCSLOW logged")
+        st = c.status()
+        check(st.get("dc_deg_s_slow") == "50.0" and st["dc_deg_s"] == "100.0", f"STATUS dc_deg_s_slow ({st.get('dc_deg_s_slow')})")
+        check(c.cmd("SPEEDCAL") == "OK dc 160.0 100.0 50.0", "SPEEDCAL query shows the slow rate")
+        uno.lines.clear()
+        r = c.cmd("TURN 90 0.4")
+        check(r.endswith(" 1800"), f"TURN 90 0.4 -> slow: 90 / 50 deg/s = 1800 ms ({r})")
+        uno.pump(0.1)
+        check("R 90.0 0.40" in nd(), f"speed reaches the Uno's R {nd()}")
+        c.cmd("S")
+        check(c.cmd("TURN 90").endswith(" 900"), "TURN at speed 1 stays fast")
+        c.cmd("S")
+        check(c.cmd("MOVE 160 0.4").endswith(" 1000"), "MOVE ignores speed on DC (always D 1)")
+        c.cmd("S")
+        for bad in ("WHEELS DCSLOW 5", "WHEELS DCSLOW x", "WHEELS DCSLOW 50 1"):
+            uno.send(bad + "\r\n")
+        uno.pump(0.1)
+        check(c.status()["dc_deg_s_slow"] == "50.0", "malformed / out-of-range DCSLOW ignored")
+
+        print("uno dc: the guard_blocked pivot runs slow on DC")
+        uno.lines.clear()
+        g.permit = 0
+        time.sleep(0.15)
+        check(c.status()["guard_reason"] == "guard_blocked", "guard BLOCKED")
+        r = c.cmd("TURN 90")                          # voice: speed 1 -> clamped to 0.40
+        check(r.startswith("OK") and r.endswith(" 1800"), f"BLOCKED pivot estimated at the slow rate ({r})")
+        uno.pump(0.1)
+        check("R 90.0 0.40" in nd(), f"clamped speed on the wire -> the Uno's slow turn {nd()}")
+        c.cmd("S")
+        g.permit = 1
+        time.sleep(0.15)
+
+        print("uno dc: SPEEDCAL with the slow rate")
+        uno.lines.clear()
+        check(c.cmd("SPEEDCAL 200 90 45") == "OK sent 200.0 90.0 45.0", "SPEEDCAL set with slow")
+        uno.pump(0.1)                                 # one V per control tick (latest wins)
+        check(c.cmd("SPEEDCAL 200 90") == "OK sent 200.0 90.0", "SPEEDCAL set without slow")
+        uno.pump(0.1)
+        check("V 200.0 90.0 45.0" in nd() and "V 200.0 90.0" in nd(), f"V on the wire {nd()}")
+        for bad in ("SPEEDCAL 200 90 5", "SPEEDCAL 200 90 45 1", "SPEEDCAL 200 90 x"):
+            check(c.cmd(bad).startswith("ERR usage"), f"{bad!r} rejected")
+        uno.send("WHEELS DC 200.0 90.0\r\n")          # an Uno without DCSLOW: forget the slow rate
+        time.sleep(0.1)
+        check(c.cmd("SPEEDCAL") == "OK dc 200.0 90.0", "a WHEELS DC alone resets the slow rate")
+        check(c.cmd("TURN 90 0.4").endswith(" 1000"), "then TURN speed is ignored again")
+        c.cmd("S")
+    finally:
+        g.stop()
+        c.close()
+        srv.stop()
+        uno.close()
+
+
 def test_uno_dc() -> None:
     print("uno: DC wheels (Kuman SM11 firmware: WHEELS DC, timed MOVE/TURN, SPEEDCAL, pose)")
     uno = FakeUno()
@@ -1106,6 +1178,7 @@ def test_uno_dc() -> None:
         c.close()
     srv.stop()
     uno.close()
+    test_uno_dc_slow_turn()
     srv = Server("-b", "stub")
     c = Client(srv.port)
     try:

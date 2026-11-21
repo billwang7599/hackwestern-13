@@ -787,7 +787,7 @@ static void test_dc_moves() {
   t = runUntil("DONE", 2000);
   CHECK(contains("DONE R 90.0\r\n") && t + SETTLE >= 749 && t + SETTLE <= 752);
   Serial.out.clear();
-  send("r -45 0.5\n");                                       // speed accepted, DC runs at D 1 anyway
+  send("r -45 1.00\n");                                      // speed 1 (what tars_motor sends) = D 1
   settle();
   CHECK(motorL() == pwmOf(-1) && motorR() == pwmOf(1) && moveDurMs == 375);
   runUntil("DONE", 2000);
@@ -816,6 +816,62 @@ static void test_dc_moves() {
   const char *bad[] = {"M\n", "M 1 2 3\n", "M x\n", "R\n", "MX 10\n", "M 10 abc\n"};
   for (const char *b : bad) { send(b); CHECK(moveKind == 0); }
   CHECK(Serial.out.empty());
+}
+
+// The slow pivot: R with speed < 0.99 spins at DC_SLOW_TURN_DUTY, timed by deg_s_slow.
+static void test_dc_slow_turn() {
+  puts("dc: slow R (speed < 1): own duty, own rate, kick, stop wins");
+  static const int SLOW = (int)(DC_SLOW_TURN_DUTY * 255.0f + 0.5f);
+  CHECK(DC_SLOW_TURN_DUTY > DC_MIN_DUTY && DC_SLOW_TURN_DUTY <= DC_MAX_DUTY);   // turns, under the cap
+  CHECK(DC_DEG_S_SLOW_DEFAULT < DC_DEG_S_DEFAULT);
+  boot(false);
+  char want[48];
+  snprintf(want, sizeof want, "WHEELS DCSLOW %.1f\r\n", DC_DEG_S_SLOW_DEFAULT);
+  CHECK(contains(want));
+  // WHEELS DC stays exactly two numbers (the Pi rejects extra fields), DCSLOW follows, both before READY
+  CHECK(contains("WHEELS DC 150.0 120.0\r\nWHEELS DCSLOW "));
+  CHECK(Serial.out.find("WHEELS DCSLOW") < Serial.out.find("READY"));
+  Serial.out.clear();
+  send("R 90 0.40\n");
+  uint32_t want_ms = (uint32_t)(90.0f / DC_DEG_S_SLOW_DEFAULT * 1000.0f + 0.5f);
+  CHECK(moveKind == 'R' && moveDurMs == want_ms);
+  CHECK(motorL() == (DC_KICK_MS ? KICK : SLOW) && motorR() == -(DC_KICK_MS ? KICK : SLOW));   // kick from rest
+  settle();
+  CHECK(motorL() == SLOW && motorR() == -SLOW);              // + = clockwise, at the slow duty
+  CHECK(SLOW < pwmOf(1));                                    // slower than the D 1 turn
+  long t = runUntil("DONE", 5000);
+  CHECK(contains("DONE R 90.0\r\n") && t + SETTLE >= (long)want_ms - 1 && t + SETTLE <= (long)want_ms + 2);
+  CHECK(braked(0) && braked(1));
+  // left turn
+  Serial.out.clear();
+  send("R -30 0.4\n");
+  settle();
+  CHECK(motorL() == -SLOW && motorR() == SLOW);
+  runUntil("DONE", 3000);
+  CHECK(contains("DONE R -30.0\r\n"));
+  // S mid slow turn: braked at once, reports by time
+  Serial.out.clear();
+  send("R 120 0.4\n");
+  run(500);
+  send("S\n");
+  CHECK(braked(0) && braked(1) && moveKind == 0 && contains("ABORT R ") && contains(" stop\r\n"));
+  float a = lastAmount("ABORT R ");
+  CHECK(a > 0.5f * DC_DEG_S_SLOW_DEFAULT - 1 && a < 0.5f * DC_DEG_S_SLOW_DEFAULT + 1);
+  // watchdog-style: a non-zero D takes over
+  Serial.out.clear();
+  send("R 90 0.4\n");
+  run(100);
+  send("D 0.5 0.5\n");
+  CHECK(contains(" drive\r\n") && moveKind == 0);
+  send("S\n");
+  // M ignores the speed (always D 1); R at speed 1 / no speed stays fast
+  send("M 150 0.4\n");
+  CHECK(moveDurMs == 1000);
+  send("R 90 1\n");
+  CHECK(moveDurMs == 750);
+  send("R 90\n");
+  CHECK(moveDurMs == 750);
+  send("S\n");
 }
 
 static void test_dc_aborts() {
@@ -898,12 +954,24 @@ static void test_dc_cal() {
   CHECK(dcMmS == DC_MM_S_DEFAULT && dcDegS == DC_DEG_S_DEFAULT);
   Serial.out.clear();
   send("V\n");
-  CHECK(Serial.out == "WHEELS DC 150.0 120.0\r\n");
-  send("V 200 90\n");
+  CHECK(Serial.out.find("WHEELS DC 150.0 120.0\r\nWHEELS DCSLOW ") == 0);
+  send("V 200 90\n");                                        // two values: slow rate kept
   CHECK(contains("WHEELS DC 200.0 90.0\r\n") && dcMmS == 200.0f && dcDegS == 90.0f);
+  CHECK(dcDegSSlow == DC_DEG_S_SLOW_DEFAULT);
   Serial.out.clear();
-  send("V 5 90\n"); send("V 200\n"); send("V 200 90 1\n"); send("V 200 3000\n");
+  send("V 5 90\n"); send("V 200\n"); send("V 200 90 1\n"); send("V 200 3000\n"); send("V 200 90 40 5\n");
   CHECK(Serial.out.empty() && dcMmS == 200.0f && dcDegS == 90.0f);   // bad values ignored
+  CHECK(dcDegSSlow == DC_DEG_S_SLOW_DEFAULT);
+  send("V 200 90 45\n");
+  CHECK(contains("WHEELS DC 200.0 90.0\r\nWHEELS DCSLOW 45.0\r\n") && dcDegSSlow == 45.0f);
+  send("V 200 90\n");
+  CHECK(dcDegSSlow == 45.0f);
+  boot(false, -1, true);
+  CHECK(dcDegSSlow == 45.0f && contains("WHEELS DCSLOW 45.0"));
+  send("R 90 0.4\n");
+  CHECK(moveDurMs == 2000);
+  send("S\n");
+  Serial.out.clear();
   send("K 70 120\n"); send("K\n");
   CHECK(Serial.out.empty());                                 // K is stepper-only
   boot(false, -1, true);                                     // reboot keeps EEPROM
@@ -921,6 +989,12 @@ static void test_dc_cal() {
   EEPROM.put(0, k);
   boot(false, -1, true);
   CHECK(dcMmS == 150.0f && dcDegS == 120.0f);
+  // a v1 record (before the slow rate existed) still loads; slow rate = default
+  struct { uint16_t magic; float mm, deg; } v1 = {0x7DC1, 180.0f, 100.0f};
+  boot(false);
+  EEPROM.put(0, v1);
+  boot(false, -1, true);
+  CHECK(dcMmS == 180.0f && dcDegS == 100.0f && dcDegSSlow == DC_DEG_S_SLOW_DEFAULT);
 }
 #endif
 
@@ -1057,6 +1131,7 @@ int main() {
 #else
   test_dc_speed();
   test_dc_moves();
+  test_dc_slow_turn();
   test_dc_cal();
   g_sensor = 0;
   test_dc_aborts();

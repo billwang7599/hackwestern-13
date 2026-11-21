@@ -163,21 +163,32 @@ class Tars:
         r = self.send("WHEELCAL" + (f" {diam_mm:.1f} {track_mm:.1f}" if diam_mm else "")).split()
         return float(r[0]), float(r[1])
 
-    def speed_cal(self, mm_s: float | None = None, deg_s: float | None = None) -> tuple[float, float] | None:
-        """DC wheels: read, or set (saved in the Uno's EEPROM), the speeds at D 1.
+    def speed_cal(self, mm_s: float | None = None, deg_s: float | None = None,
+                  deg_s_slow: float | None = None) -> tuple[float, float] | None:
+        """DC wheels: read, or set (saved in the Uno's EEPROM), the speeds at D 1 and,
+        optionally, the slow-turn rate (TURN speed < 1; None = the Uno keeps its own).
         Returns (mm_s, deg_s), or None for stepper wheels. A set is applied once the Uno
         confirms (WHEELS DC); this waits up to 1 s for that."""
         if mm_s is None:
             r = self.send("SPEEDCAL").split()
             return (float(r[1]), float(r[2])) if r[0] == "dc" else None
-        self.send(f"SPEEDCAL {mm_s:.1f} {deg_s:.1f}")
+        slow = f" {deg_s_slow:.1f}" if deg_s_slow else ""
+        self.send(f"SPEEDCAL {mm_s:.1f} {deg_s:.1f}{slow}")
         end = time.monotonic() + 1.0
         while time.monotonic() < end:
             cur = self.speed_cal()
-            if cur and abs(cur[0] - mm_s) < 0.05 and abs(cur[1] - deg_s) < 0.05:
+            sl = self.dc_slow_rate()
+            if (cur and abs(cur[0] - mm_s) < 0.05 and abs(cur[1] - deg_s) < 0.05
+                    and (not deg_s_slow or (sl is not None and abs(sl - deg_s_slow) < 0.05))):
                 return cur
             time.sleep(0.05)
         raise TarsError("the Uno didn't confirm the new speeds (DC firmware flashed? Bluetooth unplugged?)")
+
+    def dc_slow_rate(self) -> float | None:
+        """DC wheels: the slow-turn rate in deg/s (TURN speed < 1, e.g. goto's 0.40 and the
+        guard_blocked pivot), or None (stepper wheels, or an Uno too old to report it)."""
+        r = self.send("SPEEDCAL").split()
+        return float(r[3]) if r[0] == "dc" and len(r) > 3 else None
 
     # -- on-robot UI ----------------------------------------------------------
     def led(self, pattern: int) -> None:

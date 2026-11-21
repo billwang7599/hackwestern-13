@@ -249,8 +249,16 @@ After `wheel_cal.py dc-move`, if the measured speed isn't 100–200 mm/s, change
 re-flash and calibrate again. `DC_MIN_DUTY` (0.30) is the slowest a rolling wheel keeps turning;
 `DC_KICK_DUTY`/`DC_KICK_MS` (0.8 for 40 ms) get a wheel going from rest.
 
+**Slow turn (the guard_blocked pivot, and all of goto's turns).** `tars_motor` sends `TURN` at
+speed 0.40 when goto turns and when it allows a pivot while the iPhone guard says BLOCKED. On
+the DC car any `R` with speed < 0.99 runs at `DC_SLOW_TURN_DUTY` (0.36, after the usual kick)
+and is timed at `deg_s_slow` (default 60°/s). **Both are guesses.** 40% of the cap would be
+0.18 duty, under `DC_MIN_DUTY`, and an in-place skid-steer turn needs more torque than rolling
+straight, so it's a fixed duty between the two. If it stalls or creeps, raise
+`DC_SLOW_TURN_DUTY` (≤ `DC_MAX_DUTY`), re-flash, and calibrate with `dc-spin --slow`.
+
 **First flash (wheels in the air, then on the floor).** Serial Monitor at 115200, "Newline":
-1. Reset. Expect `WHEELS DC 150.0 120.0`, then `READY`. Nothing garbled (garbled = Bluetooth
+1. Reset. Expect `WHEELS DC 150.0 120.0`, `WHEELS DCSLOW 60.0`, then `READY`. Nothing garbled (garbled = Bluetooth
    still plugged in).
 2. `D 0.5 0.5` (it only runs 200 ms: the watchdog; type it again or use teleop): **both wheels
    forward.** A wheel backwards → flip `LEFT_INVERT` / `RIGHT_INVERT` in the SM11 block. `D 0.5 0`
@@ -260,6 +268,9 @@ re-flash and calibrate again. `DC_MIN_DUTY` (0.30) is the slowest a rolling whee
 4. On the floor: `M 300` → ~2 s forward, then `DONE M 300.0`. `R 90` → spins **right**
    (clockwise from above) ~0.75 s, then `DONE R 90.0`. `R -90` spins left. `S` mid-move →
    `ABORT M <done> stop` and it stops dead.
+   **Slow turn:** `R 90 0.4` → spins right, visibly slower, ~1.5 s, then `DONE R 90.0`. It
+   must actually turn on the floor (both wheels, no buzzing in place): if it stalls, raise
+   `DC_SLOW_TURN_DUTY`. `S` mid-turn → `ABORT R <done> stop`, stops dead.
 5. It curves on `M 1000` → the faster side's `DC_LEFT_GAIN` / `DC_RIGHT_GAIN` below 1 (the two
    EN pins have different PWM frequencies, 490 vs 980 Hz, so some pull is normal).
 6. On the Pi: `tars_motor` logs `co-processor has DC wheels: 150.0 mm/s, 120.0 deg/s` and
@@ -388,7 +399,10 @@ Use a hard, flat floor and a tape measure. Run these from `iter1-wasd/laptop/`.
    100–200 mm/s → change `DC_MAX_DUTY` (§2b).
 2. Put tape along the nose, `python wheel_cal.py dc-spin` → `TURN 360`. Type how far it really
    turned (e.g. 300). Repeat until it's within ~15° (goto's search needs < ~15% error).
-3. `python wheel_cal.py show`. (Bench alternative: `V <mm_s> <deg_s>` in the Serial Monitor.)
+3. `python wheel_cal.py dc-spin --slow` → `TURN 180` at speed 0.40 (the slow pivot). Type how far it
+   really turned; it saves `deg_s_slow`. Type 0 if it stalled (then raise `DC_SLOW_TURN_DUTY`).
+4. `python wheel_cal.py show`. (Bench alternative: `V <mm_s> <deg_s> [<deg_s_slow>]` in the
+   Serial Monitor.)
 
 **Stepper rover:**
 

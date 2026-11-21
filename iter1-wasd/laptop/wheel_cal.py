@@ -5,8 +5,12 @@ calibrate the speeds. Put the car on the real floor, with the battery you'll dem
     python wheel_cal.py show                  speeds (DC) or diameter / track (steppers)
     python wheel_cal.py dc-move [1000]        MOVE 1000: tape it, type what it really did
     python wheel_cal.py dc-spin [360]         TURN 360: type how far it really turned
-    python wheel_cal.py dc-set <mm_s> <deg_s> save speeds directly (Uno EEPROM)
-  dc-move: new mm_s = old mm_s * measured_mm / asked_mm (same for dc-spin and deg_s).
+    python wheel_cal.py dc-spin --slow [180]  TURN 180 at speed 0.40: the SLOW turn (goto's
+                                              turns, the guard_blocked pivot). Must turn!
+    python wheel_cal.py dc-set <mm_s> <deg_s> [deg_s_slow]  save speeds directly (Uno EEPROM)
+  dc-move: new mm_s = old mm_s * measured_mm / asked_mm (same for dc-spin and deg_s,
+  and dc-spin --slow and deg_s_slow). If the slow turn stalls or barely moves,
+  raise DC_SLOW_TURN_DUTY in tars.ino (it must stay <= DC_MAX_DUTY).
   Repeat each once more; it should land within ~5%. The speed cap is ~150 mm/s
   (docs/PI_TEST.md "Kuman SM11"): if dc-move ends far outside 100-200 mm/s, change
   DC_MAX_DUTY in tars.ino instead of living with it. Drifting to one side over 1 m:
@@ -58,13 +62,18 @@ def main() -> None:
     s = sub.add_parser("set"); s.add_argument("diam", type=float); s.add_argument("track", type=float)
     dm = sub.add_parser("dc-move"); dm.add_argument("mm", type=float, nargs="?", default=1000.0)
     ds = sub.add_parser("dc-spin"); ds.add_argument("deg", type=float, nargs="?", default=360.0)
+    ds.add_argument("--slow", action="store_true", help="calibrate the slow turn (TURN speed 0.40, default 180 deg)")
     dset = sub.add_parser("dc-set"); dset.add_argument("mm_s", type=float); dset.add_argument("deg_s", type=float)
+    dset.add_argument("deg_s_slow", type=float, nargs="?", default=None)
     a = ap.parse_args()
     with Tars(a.host) as tars:
         if a.cmd == "show":
             dc = tars.speed_cal()
             if dc:
                 print("DC wheels: %.1f mm/s straight, %.1f deg/s spinning, at D 1 (timed MOVE/TURN)" % dc)
+                sl = tars.dc_slow_rate()
+                print(f"  slow turn (TURN speed < 1): {sl:.1f} deg/s" if sl else
+                      "  slow turn: not reported (Uno firmware too old: TURN speed ignored)")
             else:
                 print("stepper wheels: diam %.1f mm, track %.1f mm" % tars.wheel_cal())
         elif a.cmd == "set":
@@ -85,27 +94,46 @@ def main() -> None:
             if cur is None:
                 raise SystemExit("tars_motor says stepper wheels: flash the SM11 (DC) firmware, or use move/turns/set")
             mm_s, deg_s = cur
+            slow = a.cmd == "dc-spin" and a.slow
+            deg_s_slow = None
+            if slow:
+                deg_s_slow = tars.dc_slow_rate()
+                if deg_s_slow is None:
+                    raise SystemExit("the Uno doesn't report a slow-turn rate: flash the current tars.ino")
             if a.cmd == "dc-set":
-                mm_s, deg_s = a.mm_s, a.deg_s
+                mm_s, deg_s, deg_s_slow = a.mm_s, a.deg_s, a.deg_s_slow
             else:
                 kind = "MOVE" if a.cmd == "dc-move" else "TURN"
                 asked = a.mm if kind == "MOVE" else a.deg
-                print(f"{kind} {asked:.0f} at {mm_s if kind == 'MOVE' else deg_s:.1f} "
+                if slow and a.deg == 360.0:
+                    asked = 180.0                     # a slow 360 takes long; 180 is the pivot cap anyway
+                rate = mm_s if kind == "MOVE" else deg_s_slow if slow else deg_s
+                print(f"{kind} {asked:.0f}{' at speed 0.40 (slow turn)' if slow else ''} at {rate:.1f} "
                       f"{'mm/s' if kind == 'MOVE' else 'deg/s'}: stand clear...")
-                r = (tars.move_mm if kind == "MOVE" else tars.turn_deg)(asked)
+                if kind == "MOVE":
+                    r = tars.move_mm(asked)
+                else:
+                    r = tars.turn_deg(asked, 0.40 if slow else None)
                 if r["move"] != "done":
                     raise SystemExit(f"{kind} {r['move']} ({r.get('why')}): nothing saved")
                 unit = "mm" if kind == "MOVE" else "deg"
-                got = ask(f"how far did it REALLY go ({unit}, asked {asked:.0f})? ", a.measured)
+                got = ask(f"how far did it REALLY go ({unit}, asked {asked:.0f})? "
+                          f"{'(0 = it stalled) ' if slow else ''}", a.measured)
+                if slow and got <= 0:
+                    raise SystemExit("the slow turn stalled: raise DC_SLOW_TURN_DUTY in tars.ino, reflash, retry")
                 if kind == "MOVE":
                     mm_s = scaled(mm_s, asked, got)
+                elif slow:
+                    deg_s_slow = scaled(deg_s_slow, asked, got)
                 else:
                     deg_s = scaled(deg_s, asked, got)
-            print(f"new: {mm_s:.1f} mm/s, {deg_s:.1f} deg/s")
+            print(f"new: {mm_s:.1f} mm/s, {deg_s:.1f} deg/s"
+                  + (f", slow turn {deg_s_slow:.1f} deg/s" if deg_s_slow else ""))
             if mm_s > 200 or mm_s < 100:
                 print("  note: outside 100-200 mm/s: adjust DC_MAX_DUTY in tars.ino (cap ~150 mm/s)")
             if not a.no_save:
-                print("saved: %.1f mm/s, %.1f deg/s" % tars.speed_cal(mm_s, deg_s))
+                print("saved: %.1f mm/s, %.1f deg/s" % tars.speed_cal(mm_s, deg_s, deg_s_slow)
+                      + (f", slow turn {deg_s_slow:.1f} deg/s" if deg_s_slow else ""))
 
 
 if __name__ == "__main__":

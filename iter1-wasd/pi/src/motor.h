@@ -15,7 +15,8 @@ typedef enum {
     MOTOR_EV_MOVE_DONE,   /* exact move finished: what = 'M'|'R', amount = mm|deg moved */
     MOTOR_EV_MOVE_ABORT,  /* exact move aborted: same + why */
     MOTOR_EV_BTN,         /* on-robot button: value = MOTOR_BTN_TEACH | MOTOR_BTN_FORGET */
-    MOTOR_EV_WHEELS,      /* DC wheels (no encoders): amount = mm/s and amount2 = deg/s at D 1 */
+    MOTOR_EV_WHEELS,      /* DC wheels (no encoders): what = 'D': amount = mm/s and amount2 = deg/s
+                           * at D 1; what = 'S' (WHEELS DCSLOW): amount = slow-turn deg/s */
 } motor_event_kind_t;
 
 #define MOTOR_BTN_TEACH  1
@@ -58,9 +59,10 @@ typedef struct motor_backend {
     int  (*move)(char kind, float amount, float speed);
     int  (*move_abort)(void);                      /* answered by MOVE_ABORT */
     int  (*wheel_cal)(float diam_mm, float track_mm);
-    /* DC wheels: save the speeds measured at D 1 (0, 0 = just ask). The device
-     * answers with a WHEELS event; stepper firmware ignores it. NULL if unsupported. */
-    int  (*speed_cal)(float mm_s, float deg_s);
+    /* DC wheels: save the speeds measured at D 1 (0, 0 = just ask) and the slow-turn
+     * rate (<= 0 = keep the device's). The device answers with WHEELS events;
+     * stepper firmware ignores it. NULL if unsupported. */
+    int  (*speed_cal)(float mm_s, float deg_s, float deg_s_slow);
 
     /* ---- on-robot UI. NULL if unsupported. ---- */
     int  (*led)(int pattern);   /* 0 off, 1 on, 2 slow blink, 3 fast blink */
