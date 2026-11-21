@@ -17,6 +17,7 @@ struct MotionUSBApp: App {
     @State private var stereoMode = false
     @StateObject private var camera = CameraServer()
     @StateObject private var pi = PiStatusServer()
+    @StateObject private var speech = SpeechLink()
     @State private var inspectionExpanded = false
     @State private var activeTab = isInspectionFixture && ProcessInfo.processInfo.arguments.contains("--map") ? "map" : "camera"
 
@@ -65,6 +66,11 @@ struct MotionUSBApp: App {
             }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
                 .background(appearance.color.opacity(0.13), in: RoundedRectangle(cornerRadius: 10))
                 .accessibilityElement(children: .combine)
+        }
+        if !speech.lastSpoken.isEmpty {
+            Label("TARS: \(speech.lastSpoken)", systemImage: "speaker.wave.2.fill").font(.caption)
+                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
         }
         }.padding(.bottom, 8)
     }
@@ -138,6 +144,7 @@ struct MotionUSBApp: App {
                 }.padding().background(Color.black).foregroundStyle(.white)
             }
             .onAppear {
+                speech.start()
                 #if DEBUG
                 if isInspectionFixture { camera.loadInspectionFixture(); pi.loadTelemetryFixture(); return }
                 #endif
@@ -148,10 +155,10 @@ struct MotionUSBApp: App {
                 if let result = value["ai"] as? [String: Any], result["live"] as? Bool == true { if stereoMode { stereo.result(result) } else { camera.applyQNXResult(result) } }
                 if let result = value["depth"] as? [String: Any], result["live"] as? Bool == true { camera.applyQNXDepthResult(result) }
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in if !isInspectionFixture { pi.start() } }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in speech.start(); if !isInspectionFixture { pi.start() } }
             .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in if !isInspectionFixture { pi.checkFreshness() } }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
-                server.stop(); camera.stop(); stereo.stop(); pi.stop()
+                server.stop(); camera.stop(); stereo.stop(); pi.stop(); speech.stop()
             }
         }
     }
