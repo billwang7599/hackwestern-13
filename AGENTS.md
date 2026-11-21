@@ -7,7 +7,7 @@ The sensor-fusion design, state machine and port map are in [docs/ARCHITECTURE.m
 
 - **QNX native is the selling point.** Everything that runs on the robot is C/C++ built with `qcc` for QNX 8.0 (aarch64le): `tars_motor`, voice, the intent classifier, go-to and the detector. Python is only for laptop tools, model export/training and Mac test harnesses. No Python fallbacks on the robot: if the native path breaks, fix it.
 - **Hackathon, 30 h.** Prefer the smallest change that works on the real robot. No refactors for their own sake.
-- **Fully local at runtime.** Nothing on the robot may need the laptop or the internet once it's booted. The laptop is only for building, deploying and WASD teleop.
+- **Fully local at runtime.** Nothing on the robot may need the laptop or the internet once it's booted. The laptop is only for building, deploying, WASD teleop and the optional mission control (`iter2-autonomy/mission/`: shows what the Pi computed, sends commands, does no robot processing).
 - **Pi decides, Uno moves.** Pi code never drives motor pins. The Uno never decides where to go.
 - **All motion goes through `tars_motor`** (TCP 5555). Vision, voice and YOLO are each a client. Don't open the Uno serial port from anything else.
 - **Stop always wins.** `S` from any client, ✋, the spoken word "stop", tip-over and watchdog timeouts must stop the wheels. No learned pose, classifier or mode may block a stop.
@@ -31,6 +31,7 @@ One folder per iteration (README "Iterations"; old → new paths in `docs/MOVED.
 | `iter2-autonomy/voice/` | speech-to-text (whisper.cpp) + intent classifier | C/C++ (+ Python training) |
 | `iter2-autonomy/goto/` | "go to the trash can": `goto` controller (C) + `detect` YOLO via ONNX Runtime (C++), `nav.c` A*, object memory, `objects.txt` aliases, `DETECTIONS.md` (`make -C iter2-autonomy/goto host && make -C iter2-autonomy/goto test`) | C / C++ (+ Python export & sim) |
 | `iter2-autonomy/iphone/` | MotionUSB iOS app: ARKit pose, LiDAR, speech link (5573) | Swift |
+| `iter2-autonomy/mission/` | laptop mission control: `mission_relay` (Pi, one Wi-Fi port 5575) + `laptop/mission.py` browser UI (`make -C iter2-autonomy/mission test`) | C / Python (laptop) |
 | `iter2-autonomy/edge-ai/`, `dashboard/`, `iphone-usb/` | Andrew's stack: QNX edge AI + `lidar_guard`, Pi dashboard / `service.py`, iPhone-over-USB for QNX | C++ / Python / sh |
 | **`iter3-pet/`** | **Iteration 3: MediaPipe pet** | |
 | `iter3-pet/vision/` | MediaPipe gestures, follow mode, teach-a-gesture, pet mode (`GESTURES.md`) | Python + C++ ports (parity-tested) |
@@ -57,13 +58,16 @@ Several clients at once: `S` from any client stops everything and holds other cl
 **SM11: the kit's Bluetooth module must be unplugged** (it's on D0/D1, the Pi link).
 The full spec is in the header comment of `iter1-wasd/uno/tars/tars.ino`.
 
-**Clients → `goto` (TCP 5570):** `GOTO <object words>` · `RECALL <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `MEMORY SAY` · `NAV` · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.
+**Clients → `goto` (TCP 5570):** `GOTO <object words>` · `RECALL <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `MEMORY SAY` · `NAV` · `NAV ROUTE` (`OK route=x,z;… i=<next>`) · `NAV GRID` (RLE of the planner grid) · `DETS` (`OK age=<s> <last detection JSON>`) · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.
 Object memory (`iter2-autonomy/goto/README.md`) stores instances (`trash can#1`, `#2`) with status fresh/stale/gone in `memory.txt` next to `goto.conf`.
 **Phone / Mac fake → `goto` nav feed (TCP or UDP 127.0.0.1:5572):** `LDR1` packets, the same format as lidar_guard's 5562 (`iter2-autonomy/edge-ai/README.md`), with or without the 4-byte length prefix (TCP: with). Builds goto's occupancy grid + ARKit pose (`iter2-autonomy/goto/README.md` "Map-guided GOTO").
 **voice → phone speech (TCP 127.0.0.1:5573, Andrew's SpeechLink via iproxy):** `SAY <text>` (≤ 300 chars) → `OK say`; urgent JSON `{"type":"say","text":"Stopping.","priority":"urgent"}` only *after* `S` + `CANCEL`. Best effort: never delays a stop. `say_port = 0` in `voice.conf` turns it off.
 **Guard (Andrew's `lidar_guard` → `tars_motor` UDP 5568):** a denial zeroes `D`/`DL`, aborts `MOVE`, bumps `guard_epoch` (a leased `DL <epoch> l r` from before the denial is refused). An in-place `TURN` is still allowed while the reason is a fresh `guard_blocked` (forward-only guard; lets the robot pivot away), never when stale/missing/invalid, and only up to speed 0.40 (clamped; on DC that's the Uno's slow turn) and |deg| 180 (else `ERR guard_blocked pivot>180`); a faster/longer TURN already running aborts. *Pending Andrew's sign-off.* Exact `MOVE`/`TURN` also need a keepalive (`PING`/`D`) within the 500 ms deadman.
 
-**Ports.** Andrew's stack owns 5555 and 5557–5569 (`iter2-autonomy/edge-ai/README.md`). Ours: `goto` control **5570** (was 5557), detections **5571** (was 5558), nav feed **5572** (new); **5573** is TARS speech → phone (Andrew's SpeechLink; voice is a client). *5570–5572 pending Andrew's sign-off.* Never bind 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
+**Laptop / mission relay → `tars_voice` (TCP 127.0.0.1:5574, `net_port` in `voice.conf`, 0 = off):** `HEAR <text>` (same classifier + stop-first path as the mic, no wake word) · `AUDIO <bytes>` + 16 kHz mono s16le or WAV (≤ 15 s; whisper on the Pi) · `WATCH` (JSON events: `heard`/`sent`/`memory`/`say`) · `PING`.
+**Laptop → `mission_relay` (TCP 5575, all interfaces, optional key):** first line `HELLO <MOTOR|GOTO|VOICE|WATCH|CAM> [key]`; MOTOR/GOTO/VOICE are byte pipes to 5555/5570/5574 (one service connection per laptop connection); WATCH = tagged status lines; CAM = phone frames from 5566 ≤ 5 fps. **Phone status tee → relay (TCP 127.0.0.1:5576):** JSON lines from `headless.py` when `TARS_MISSION_TEE_PORT` is set. Details: `iter2-autonomy/mission/README.md`.
+
+**Ports.** Andrew's stack owns 5555 and 5557–5569 (`iter2-autonomy/edge-ai/README.md`). Ours: `goto` control **5570** (was 5557), detections **5571** (was 5558), nav feed **5572** (new); **5573** is TARS speech → phone (Andrew's SpeechLink; voice is a client); voice net input **5574**, mission relay **5575**, phone tee **5576**. *5570–5572 and 5574–5576 pending Andrew's sign-off.* Never bind 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
 **Detectors → `goto` (UDP/TCP 127.0.0.1:5571):** one JSON line per frame, `{"w","h","dets":[{"label","conf","box":[x1,y1,x2,y2]}]}`. See `iter2-autonomy/goto/DETECTIONS.md`. `iter2-autonomy/goto/detect` (YOLO-World) is the only detector that feeds `goto`.
 
 ## Before you commit
@@ -75,6 +79,7 @@ make -C iter1-wasd/pi host && make -C iter1-wasd/pi test
 python3 iter1-wasd/laptop/test_teleop.py
 make -C iter2-autonomy/goto test test-nav-asan test-nav-parity test-fullstack
 make -C iter2-autonomy/voice host && make -C iter2-autonomy/voice test
+make -C iter2-autonomy/mission test
 (cd iter3-pet/vision/tests && for t in test_pet test_gesture test_learn test_parity; do python3 $t.py; done)
 ```
 Don't commit models (`*.task`, `*.bin`, `*.onnx`), `build/`, `.venv/` or `__pycache__/`. Use a `get_model.sh` script instead.

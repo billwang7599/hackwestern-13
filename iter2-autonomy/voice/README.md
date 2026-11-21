@@ -37,6 +37,13 @@ Python is only used off the robot: training (`intent/train.py`), `intent/try.py`
 command, so a small thread in `tars_voice` PINGs (on its own connection) while a voice move runs.
 **Speech link:** `say_host`/`say_port`/`say_ms` in `voice.conf` (127.0.0.1:5573, 150 ms connect
 timeout, `say_port = 0` = off). Failures are ignored.
+**Network input (laptop mission control, `iter2-autonomy/mission/`):** `net_host`/`net_port`
+(127.0.0.1:5574, `net_port = 0` = off). `HEAR <text>` and `AUDIO <bytes>` + 16 kHz mono PCM/WAV
+(≤ 15 s) go through the same `intent_decide()` and stop-first path as the mic, no wake word
+(push-to-talk). Clips are transcribed on their own thread, so a typed stop never waits for whisper.
+`WATCH` gives JSON events (`heard` with src/text/intent/prob, `sent`, `memory`, `say`). The mic keeps
+working at the same time. Tests: `make test-net` (25 checks). `build/stt_cli MODEL FILE.wav` (host only)
+prints just the transcript, for the laptop's `--laptop-stt`.
 
 Defaults: 30° and 300 mm. A manual move (`MOVE`/`TURN`) first sends `CANCEL` to the go-to
 controller, so its steering doesn't fight the move. A recognised command gets `BEEP 1`.

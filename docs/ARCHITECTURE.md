@@ -234,6 +234,11 @@ The phone-to-robot extrinsics (mount offset, forward axis) are uncalibrated. Unt
 | 5571 | 5558 | detector → `goto` detection JSON lines (`iter2-autonomy/goto/DETECTIONS.md`) |
 | 5572 | new | **as built: phone → `goto`**, LDR1 packets (the 5562 format, TCP length-prefixed or UDP); `goto` listens. A display feed back to the phone isn't built. |
 | 5573 | (Andrew) | TARS speech → phone (SpeechLink via iproxy): `SAY <text>` → `OK say`, urgent JSON form, `HUSH`. `tars_voice` is a client. |
+| 5574 | new | laptop (via the relay) → `tars_voice` on 127.0.0.1: `HEAR <text>`, `AUDIO <bytes>`, `WATCH` events. Same classifier + stop-first path as the mic. |
+| 5575 | new | `mission_relay`, the laptop's only port (all interfaces): `HELLO MOTOR\|GOTO\|VOICE\|WATCH\|CAM`. Optional; normal priority. |
+| 5576 | new | phone status tee → relay (127.0.0.1), from `headless.py` only when `TARS_MISSION_TEE_PORT` is set. |
+
+*5574–5576 pending Andrew's sign-off too.* Mission control (`iter2-autonomy/mission/README.md`) is display + commands only; the robot never needs it.
 
 **Processes and priority**
 
@@ -242,7 +247,8 @@ The phone-to-robot extrinsics (mount offset, forward axis) are uncalibrated. Unt
 | `tars_motor` | C | SCHED_RR 30 | 50 Hz loop, safety floor |
 | `lidar_guard` | C++ | SCHED_RR 20, CPU 3 | 100 Hz, independent of all ML |
 | `goto` (+ nav, memory) | C | SCHED_RR 20 | nearly idle; A* ~tens of ms per re-plan (Python version: 47 ms on the Pi) |
-| `tars_voice` | C/C++ | normal | whisper `threads=2`, only after VAD |
+| `tars_voice` | C/C++ | normal | whisper `threads=2`, only after VAD; net input thread for the laptop (5574) |
+| `mission_relay` | C | normal | optional; laptop ↔ localhost services, never blocks them |
 | `detect` (YOLO-World) | C++ | normal | ~5–10 fps est., `--fps 8` |
 | MiDaS (`ai_depth`) | C++ | normal | ~0.8 s/frame measured on the Pi |
 | YOLOX (`ai_detector`) | C++ | normal | dashboard only |
@@ -272,7 +278,10 @@ ML at normal priority means a stop can never be starved, whatever the fps.
 
 **Never run on the Pi/QNX/iPhone:** `goto`, `detect` (camapi never compiled), `tars_voice`, the object memory, `iter2-autonomy/goto/nav.c`, map-guided GOTO, the 5572 feed (no phone sends to it yet), the 5573 speech from voice. The blocker is still our `qcc` toolchain (Docker + SDP 8.0 in `~/qnx800`); Andrew builds with native QNX clang on the Pi, which may be the quicker route.
 
+**Mission control (Mac only):** relay 44/44, laptop app 32/32 (real tars_motor + goto stubs), voice net input 25/25. Not run on the Pi, over real Wi-Fi or with a real iPhone.
+
 **Open items**
+- Andrew's sign-off on ports 5574–5576. (The opt-in `MissionTee` in `headless.py`, off unless `TARS_MISSION_TEE_PORT` is set, is approved; Andrew will be told.)
 - Andrew's sign-off on the port move (§5).
 - Who sends LDR1 to 5572 on the robot (the phone directly, or Andrew's service teeing 5562).
 - The pivot-while-BLOCKED change in `tars_motor` (§3.4), now limited to 0.40 speed / 180°: agree it with Andrew, and measure the SM11 + phone-mount swing radius against the 0.35 m inflation.

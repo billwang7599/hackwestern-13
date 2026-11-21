@@ -47,6 +47,11 @@ RESOLVE <words> -> OK trash can | ERR unknown object
 RECALL <words>  -> OK recall trash can | ERR not remembered: ...   ("go back to where the X was": any remembered
                    instance, even stale/gone/old, routed over the map; YOLO still confirms; no blind start)
 NAV             -> OK pose=arkit|dr|stale|none,x,z,yaw_deg free=.. occ=.. version=.. packets=.. bad=.. feed_age=..
+NAV ROUTE       -> OK route=x,z;x,z;... i=<next waypoint>  (or route=- i=0; nav/ARKit frame, metres)
+NAV GRID        -> OK grid v=<version> size=200 res=0.10 origin=-10.00,-10.00 box=ix0,iz0,w,h rle=<cell>x<n>,...
+                   (0 unknown, 1 free, 2 occupied; box rows z-major; box=- rle=- when empty)
+DETS            -> OK age=<s> <last accepted detection JSON line>   (age=-1.00 {} before any)
+                   NAV ROUTE / NAV GRID / DETS are read-only views for the laptop mission control (iter2-autonomy/mission/)
 SCAN            -> OK scan; 12 x TURN 30, then "EVENT scanned trash can,chair" (or "scanned nothing")
 MEMORY          -> OK n=2 pose=x,y,hdg; trash can#1 fresh x=.. y=.. rel_bearing=.. rel_dist=.. est_dist=.. age=.. seen=.. conf=.. map=x,z; ...
 MEMORY SAY      -> OK n=2 I remember 2 things: a trash can about 1.2 m to my left, and a chair about 2.0 m behind me.

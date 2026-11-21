@@ -53,6 +53,14 @@ def free_port() -> int:
                 return p
 
 
+def port_open(port: int) -> bool:
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+        return True
+    except OSError:
+        return False
+
+
 def wait_for(pred, timeout: float, step: float = 0.02) -> bool:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -597,7 +605,7 @@ def main() -> int:
     motor = subprocess.Popen([MOTOR_BIN, "-b", "stub", "-p", str(mport), "-r", "0"], stderr=subprocess.DEVNULL)
     goto, voice, broker = FakeGoto(grid_bytes=300000), FakeVoice(), FakeBroker()
     try:
-        assert wait_for(lambda: socket.create_connection(("127.0.0.1", mport)).close() is None, 3)
+        assert wait_for(lambda: port_open(mport), 3), "tars_motor didn't start"
         env = (goto.port, voice.port, broker.port)
         test_motor_pipe(exe, mport, env)
         test_watch(exe, mport, env, goto, voice)
