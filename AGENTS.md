@@ -40,16 +40,20 @@ The sensor-fusion design, state machine and port map are in [docs/ARCHITECTURE.m
 Unsupported → `ERR`, with no change to motor state.
 Several clients at once: `S` from any client stops everything and holds other clients' non-zero `D` for 1.5 s (`ERR held`); a disconnect only stops a drive or move that client started.
 
-**voice → go-to controller (TCP 5570, one line each, reply optional):** `GOTO <canonical object>` (e.g. `GOTO trash can`) · `CANCEL` (on every stop, and before any manual `MOVE`/`TURN`) · `SCAN` ("look around") · `FORGET [object]` ("forget everything" / "forget the bin").
+**voice → go-to controller (TCP 5570, one line each, reply optional):** `GOTO <canonical object>` (e.g. `GOTO trash can`) · `CANCEL` (on every stop, and before any manual `MOVE`/`TURN`) · `SCAN` ("look around") · `FORGET [object]` ("forget everything" / "forget the bin") · `MEMORY SAY` ("what do you remember": voice prints the sentence, `BEEP min(n,4)`, and sends it to the phone) · `RECALL <object>` ("go back to where the bin was").
 
 **`tars_motor` → Uno (USB serial 115200):** `D l r`, `M <mm>`, `R <deg>`, `S`, `K diam track`, `L <0-3>`, `B <n>`.
 **Uno → `tars_motor`:** `READY`, `DONE M|R <n>`, `ABORT …`, `T <deg>` tipped, `B <mg>` bump, `BTN TEACH`, `BTN FORGET`.
 The full spec is in the header comment of `uno/tars/tars.ino`.
 
-**Clients → `goto` (TCP 5570):** `GOTO <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.
+**Clients → `goto` (TCP 5570):** `GOTO <object words>` · `RECALL <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `MEMORY SAY` · `NAV` · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.
 Object memory (`goto/README.md`) stores instances (`trash can#1`, `#2`) with status fresh/stale/gone in `memory.txt` next to `goto.conf`.
-**Ports.** Andrew's stack owns 5555 and 5557–5569 (`pi/edge-ai/README.md`). Ours: `goto` control 5570 (was 5557), detections 5571 (was 5558). *Pending Andrew's sign-off.* Never bind 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
-**Detectors → `goto` (UDP/TCP 127.0.0.1:5571):** one JSON line per frame, `{"w","h","dets":[{"label","conf","box":[x1,y1,x2,y2]}]}`. See `goto/DETECTIONS.md`.
+**Phone / Mac fake → `goto` nav feed (TCP or UDP 127.0.0.1:5572):** `LDR1` packets, the same format as lidar_guard's 5562 (`pi/edge-ai/README.md`), with or without the 4-byte length prefix (TCP: with). Builds goto's occupancy grid + ARKit pose (`goto/README.md` "Map-guided GOTO").
+**voice → phone speech (TCP 127.0.0.1:5573, Andrew's SpeechLink via iproxy):** `SAY <text>` (≤ 300 chars) → `OK say`; urgent JSON `{"type":"say","text":"Stopping.","priority":"urgent"}` only *after* `S` + `CANCEL`. Best effort: never delays a stop. `say_port = 0` in `voice.conf` turns it off.
+**Guard (Andrew's `lidar_guard` → `tars_motor` UDP 5568):** a denial zeroes `D`/`DL`, aborts `MOVE`, bumps `guard_epoch` (a leased `DL <epoch> l r` from before the denial is refused). An in-place `TURN` is still allowed while the reason is a fresh `guard_blocked` (forward-only guard; lets the robot pivot away), never when stale/missing/invalid. Exact `MOVE`/`TURN` also need a keepalive (`PING`/`D`) within the 500 ms deadman.
+
+**Ports.** Andrew's stack owns 5555 and 5557–5569 (`pi/edge-ai/README.md`). Ours: `goto` control **5570** (was 5557), detections **5571** (was 5558), nav feed **5572** (new); **5573** is TARS speech → phone (Andrew's SpeechLink; voice is a client). *5570–5572 pending Andrew's sign-off.* Never bind 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
+**Detectors → `goto` (UDP/TCP 127.0.0.1:5571):** one JSON line per frame, `{"w","h","dets":[{"label","conf","box":[x1,y1,x2,y2]}]}`. See `goto/DETECTIONS.md`. `goto/detect` (YOLO-World) is the only detector that feeds `goto`.
 
 ## Before you commit
 

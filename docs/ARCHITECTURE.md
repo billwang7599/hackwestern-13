@@ -51,14 +51,14 @@ dist, conf, seen count, last_seen
 | | Feature | Status | Where |
 |---|---|---|---|
 | A | WASD teleop + voice manual drive (`MOVE`/`TURN`) | **built** | `laptop/teleop.py`, Pi keyboard (`pi/MOTOR_GUARD.md`), `voice/` |
-| B | Voice wake-word intent layer, stop-first | **built**. `scan`/`forget` built on object-memory. *Memory query* ("what do you remember") and *"go back to where the X was"* are **new** | `voice/` |
+| B | Voice wake-word intent layer, stop-first | **built**, incl. `scan`/`forget`, `memory` ("what do you remember" → `MEMORY SAY`, printed + `BEEP n` + `SAY` to the phone on 5573) and `recall` ("go back to where the X was" → `RECALL`) | `voice/` |
 | C | YOLO-World recognition, 10 canonical labels + aliases | **built** | `goto/detect`, `goto/objects.txt` |
 | D | Visual-servo GOTO: search / align / approach / arrive | **built** | `goto/src/goto_core.c` |
-| E | ARKit pose + LiDAR occupancy grid | Andrew: Python preview (`pi/dashboard/mapping.py`). **C port `goto/nav.c` in progress** | `goto/nav.[ch]` |
-| F | A* with robot-radius inflation + 0.6–0.85 m approach ring | Andrew: preview, no motor output. **C port in progress** | `goto/nav.[ch]` |
-| G | Persistent multi-instance object memory (fresh/stale/gone) | **built** on `kothar/object-memory` 929b492, not merged yet | `goto/memory.txt` |
-| H | **Map-guided GOTO**: route to the remembered spot, then YOLO-dock | **new** (the fusion) | `goto` state machine, §3 |
-| I | Obstacle avoidance: lidar_guard hard gate + occlusion/detour | guard **built** (Andrew); OCCLUDED/DETOUR **new** | `pi/edge-ai/`, `goto` |
+| E | ARKit pose + LiDAR occupancy grid | **built** in C (`goto/nav.c`, LDR1 feed on 5572); Andrew's Python stays the preview | `goto/nav.[ch]` |
+| F | A* with robot-radius inflation + 0.6–0.85 m approach ring | **built** in C, parity-identical to `mapping.py` (212/212) | `goto/nav.[ch]` |
+| G | Persistent multi-instance object memory (fresh/stale/gone) | **built**, now with map positions (`navw`) | `goto/memory.txt` |
+| H | **Map-guided GOTO**: route to the remembered spot, then YOLO-dock | **built** (Mac/sim only) | `goto` state machine, §3 |
+| I | Obstacle avoidance: lidar_guard hard gate + occlusion/detour | guard **built** (Andrew); OCCLUDED/DETOUR, re-plan on map change/guard **built** | `pi/edge-ai/`, `goto` |
 | J | SCAN: 12 × `TURN 30`, fill memory (and map) | **built** on object-memory | `goto` |
 | K | Safety floor: guard gate (5568), 500 ms watchdog, tip latch, bump hold, 0.6 m guard stop zone, `S` wins | **built** | `pi/src/main.c`, `pi/edge-ai/lidar_guard.cpp` |
 
@@ -176,16 +176,16 @@ The floor lives in `tars_motor`'s 50 Hz loop and pre-empts every `goto` state. `
 | Trigger | What `tars_motor` does | What `goto` does |
 |---|---|---|
 | `S` from any client (voice "stop", teleop, phone) | zero wheels, abort MOVE/TURN, hold others' `D` 1.5 s | sees `stops=` rise → IDLE |
-| guard deny (BLOCKED in 0.6 m corridor, UNKNOWN, STALE > 150 ms, gate heartbeat > 100 ms) | zero wheels, abort MOVE/TURN (`ABORT lidar_guard`), `guard_epoch++` | FOLLOW_PATH: re-plan once CLEAR. APPROACH: treat as lost. Old `DL` refused. |
+| guard deny (BLOCKED in 0.6 m corridor, UNKNOWN, STALE > 150 ms, gate heartbeat > 100 ms) | zero wheels, abort MOVE (`ABORT lidar_guard`), `guard_epoch++`. **As built:** an in-place `TURN` still runs/is accepted while the reason is a fresh `guard_blocked` (never when stale/missing/invalid) | FOLLOW_PATH: re-plan once CLEAR (or after 3× the wait while BLOCKED: the new route starts with a pivot). Face turn refused → LOOK. APPROACH: the leg ends; target centred and big → arrived, else LOOK again. Old `DL` refused. |
 | 500 ms watchdog | zero, abort exact move | `goto` keeps feeding it (`D` at 10 Hz, `PING` during exact moves) |
 | tip latch | zero, latched until `RESET` | FAILED, `BEEP 3` |
 | bump | zero, refuse drive 1 s | FAILED, `BEEP 3` |
 | `goto` dies / disconnects | stop whatever that client started | — |
 | Uno silent 200 ms | Uno stops on its own | — |
 
-**Leased drive.** For path following, `goto` should send `DL <guard_epoch> l r` (epoch read from `STATUS`) instead of plain `D`. A guard denial bumps the epoch, so any stale drive from before the obstacle stays refused even after the guard clears. That ends the leg; `goto` re-reads the epoch and re-plans. (Today `goto` sends plain `D`; switching APPROACH to `DL` is part of step 8.)
+**Leased drive (built).** APPROACH sends `DL <guard_epoch> l r` with the epoch read from `STATUS` and fixed for the leg. A guard denial bumps the epoch, so a stale drive from before the obstacle stays refused even after the guard clears. The leg ends, and a new one starts only after a fresh LOOK. Path legs are exact `TURN`/`MOVE` (aborted by the guard directly).
 
-The guard checks a **forward** corridor only. Pivots and reverse are not covered, so the map's inflation (35 cm robot radius) is what keeps `TURN` legs clear.
+The guard checks a **forward** corridor only. Pivots and reverse are not covered, so the map's inflation (35 cm robot radius, kept) is what keeps `TURN` legs clear, and `goto` never plans a reverse `MOVE`. Because the 0.35 m inflation is smaller than the ~0.6 m stop zone, legs can end facing something inside the zone. That's why pivots are allowed under a fresh BLOCKED (see `goto/README.md` assumption 7; **to agree with Andrew**).
 
 **Pure visual GOTO stays the fallback.** With no phone, no map, or no pose, `goto` behaves exactly as it does on `main` today: memory turn (if any), LOOK, SEARCH, ALIGN, APPROACH. The guard gate is then disabled only if `tars_motor` was started without `-g` (bench mode).
 
@@ -193,8 +193,10 @@ The guard checks a **forward** corridor only. Pivots and reverse are not covered
 
 One pose source at a time, in the ARKit world frame (x, z; y up; yaw along `(sin, cos)`):
 
-1. **ARKit pose** when the phone reports normal tracking (LDR1 flag 1) and the sample is < 150 ms old. `nav_set_pose(x, z, yaw, 1)`.
-2. **Dead reckoning** from `tars_motor` `STATUS pose=x,y,hdg` when tracking is limited/lost or the phone is absent. `goto` keeps a world↔motor offset, updated every time ARKit is good, and applies it to the dead-reckoned pose. `nav_set_pose(..., 0)`.
+1. **ARKit pose** when the phone reports normal tracking + heading (LDR1 flags 1|4) and the last such packet is < `nav_pose_fresh_s` old. **As built: 0.5 s**, not 150 ms (LDR1 is ~20 Hz over USB; tune on the robot).
+2. **Dead reckoning** from `tars_motor` `STATUS pose=x,y,hdg` when tracking is limited/lost or the phone is absent: `nav_note_dr(-y/1000, x/1000, -hdg)` every poll; `nav_get_pose()` carries the motion since the last tracked moment into the ARKit frame (the anchor = the world↔motor offset).
+
+As built, a DR → ARKit jump does not trigger a re-plan by itself; the next leg is computed from the new pose, and a changed grid re-plans via `nav_version`. The "one more leg, wait 2 s" rule isn't built.
 
 **Handover rule.** ARKit → dead reckoning: freeze the last good offset, continue on odometry. Dead reckoning → ARKit: take ARKit as truth, recompute the offset, and if the jump is > 0.3 m or > 15°, re-PLAN. While on dead reckoning, FOLLOW_PATH runs at most one more leg and then waits up to 2 s for tracking before falling back to LOOK at the current spot.
 
@@ -223,13 +225,14 @@ The phone-to-robot extrinsics (mount offset, forward axis) are uncalibrated. Unt
 | 5568 | native guard → native motor gate (`GAT1`) |
 | 5569 | mapping → native guard, inferred-obstacle veto (`FUS1`) |
 
-**Ours move** to avoid the clash (5557/5558 are taken). *Pending Andrew's sign-off; until then, `main` still says 5557/5558.*
+**Ours moved** to avoid the clash (5557/5558 are taken). *5570–5572 pending Andrew's sign-off.*
 
 | Port | Old | Purpose |
 |---|---|---|
-| 5570 | 5557 | clients → `goto` commands (`GOTO`, `CANCEL`, `SCAN`, `MEMORY`, `FORGET`, `STATUS`, `WATCH`, …) |
+| 5570 | 5557 | clients → `goto` commands (`GOTO`, `RECALL`, `CANCEL`, `SCAN`, `MEMORY [SAY]`, `FORGET`, `NAV`, `STATUS`, `WATCH`, …) |
 | 5571 | 5558 | detector → `goto` detection JSON lines (`goto/DETECTIONS.md`) |
-| 5572 | new | nav feed: grid + pose + object world coords, `goto` → phone/dashboard for display |
+| 5572 | new | **as built: phone → `goto`**, LDR1 packets (the 5562 format, TCP length-prefixed or UDP); `goto` listens. A display feed back to the phone isn't built. |
+| 5573 | (Andrew) | TARS speech → phone (SpeechLink via iproxy): `SAY <text>` → `OK say`, urgent JSON form, `HUSH`. `tars_voice` is a client. |
 
 **Processes and priority**
 
@@ -257,20 +260,21 @@ ML at normal priority means a stop can never be starved, whatever the fps.
 
 - **`goto/detect` (YOLO-World, ONNX Runtime) is the only object detector that feeds `goto`.** It's the one that knows "trash can"; COCO/YOLOX doesn't.
 - Andrew's **YOLOX** (5565) and **MiDaS** (5567) serve the phone dashboard, depth fusion and the guard's inferred-obstacle veto (5569) only. In GOTO mode they're off (§5).
-- `detect` should read frames from Andrew's latest-frame broker (5566), i.e. the phone's rear camera, so the same frames carry ARKit pose; the C270 via camapi is the no-phone fallback. Either way the output is the same JSON on 5571.
+- Proposed, **not agreed or built**: `detect` reading frames from Andrew's latest-frame broker (5566). As built, `detect` keeps its own camera source (C270 via camapi). Either way the output is the same JSON on 5571.
 - **`pi/dashboard/mapping.py` and the Python dashboard are visualization**, not robot runtime. The planner that moves the wheels is `goto/nav.c` (C, same grid, same A*, parity-tested against `mapping.py`).
 
 ## 7. Honest status (2026-11-21)
 
 **Run on the real Pi/QNX (Andrew's side, per `pi/edge-ai/README.md`):** YOLOX + MiDaS on QNX ONNX Runtime 1.24.4, `lidar_guard` with synthetic LiDAR, guard → `tars_motor` stub stop tests, live phone feeds to the Pi, a 1500-point mapping benchmark. **No physical drive** has been sent to the wheels.
 
-**Mac only (our side):** `tars_motor` host build (293/293 on object-memory), `goto` C state machine (185/185 incl. ASan/UBSan), goto 2D sim, voice classifier (stop recall 100%) and end-to-end with `say`, Uno host tests, teleop. `detect` with ONNX Runtime on macOS only.
+**Mac only (our side, iteration 2 as built):** `tars_motor` 313/313 (guard gate, DL epoch, pivot-while-BLOCKED, pose), `goto` C unit 239/239 incl. ASan/UBSan, `nav` 84/84 + 1M-packet fuzz under ASan/UBSan, parity vs `mapping.py` 212/212, goto 2D sim 52/52, **scripted full-stack sim 27/27** (real `tars_motor_host` + `goto` + `tars_voice`/whisper; fake phone LDR1, fake YOLO, fake lidar_guard, fake phone speech: obstacle, occlusion → detour, moved object, STOP mid-route, visual-only, voice memory + recall), voice 149/149 (stop recall 1131/1131) and e2e 52/52, Uno 237/259/216/213, teleop 36/36. `detect` with ONNX Runtime on macOS only.
 
-**Never run on the Pi/QNX/iPhone:** `goto`, `detect` (camapi never compiled), `tars_voice`, the object memory, `goto/nav.c`, map-guided GOTO. The blocker is still our `qcc` toolchain (Docker + SDP 8.0 in `~/qnx800`); Andrew builds with native QNX clang on the Pi, which may be the quicker route.
+**Never run on the Pi/QNX/iPhone:** `goto`, `detect` (camapi never compiled), `tars_voice`, the object memory, `goto/nav.c`, map-guided GOTO, the 5572 feed (no phone sends to it yet), the 5573 speech from voice. The blocker is still our `qcc` toolchain (Docker + SDP 8.0 in `~/qnx800`); Andrew builds with native QNX clang on the Pi, which may be the quicker route.
 
 **Open items**
 - Andrew's sign-off on the port move (§5).
-- Merge `kothar/object-memory` onto `main` (its `main.c` pose hunks next to the guard gate).
-- `goto/nav.c` + map-guided states (§3), voice memory query and "go back to where the X was".
+- Who sends LDR1 to 5572 on the robot (the phone directly, or Andrew's service teeing 5562).
+- The pivot-while-BLOCKED change in `tars_motor` (§3.4): agree it with Andrew.
+- Frame/yaw signs on the real phone mount (`NAV` shows the pose).
 - Phone-to-robot extrinsics, `arrive_h_frac` and `cam_height_mm` on the real mount.
 - Repo hygiene, to raise with Andrew, not blocking: ~90 MB of committed model blobs (`pi/edge-ai/models/*.onnx` 87 MB, `iphone/Models/YOLOv3TinyFP16.mlmodel`) and `.idea/` are in history.

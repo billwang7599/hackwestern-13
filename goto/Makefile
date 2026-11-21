@@ -9,6 +9,7 @@
 #                      (includes test_nav, the nav grid/A*/LDR1 tests)
 #   make test-nav-asan test_nav + 1M-packet LDR1 fuzz under ASan/UBSan
 #   make test-nav-parity  nav.c A* vs pi/dashboard/mapping.py on shared fixtures
+#   make test-fullstack   scripted full-stack sim (obstacle, occlusion, moved object, STOP, visual, voice)
 #   make deploy        scp goto (+ detect if built) and the config to the Pi
 #
 # Override: make deploy PI_HOST=qnxuser@192.168.1.42
@@ -30,7 +31,7 @@ QCC      := qcc -V gcc_ntoaarch64le
 QXX      := q++ -V gcc_ntoaarch64le_cxx
 REPO     := $(abspath ..)
 
-.PHONY: all detect host host-detect test test-nav-asan test-nav-parity deploy clean
+.PHONY: all detect host host-detect test test-nav-asan test-nav-parity test-fullstack deploy clean
 
 all: build/goto
 
@@ -84,6 +85,11 @@ SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-po
 test-nav-asan: | build
 	cc $(CFLAGS) $(SAN) -o build/test_nav_asan tests/test_nav.c $(NAV) -lm
 	./build/test_nav_asan 1000000
+
+# real tars_motor_host + goto + tars_voice, fake phone (LDR1) / YOLO / lidar_guard / phone speech
+test-fullstack: host
+	$(MAKE) -C ../pi host
+	python3 tests/test_fullstack.py
 
 test-nav-parity: host
 	python3 tests/nav_parity.py build/nav_cli --random 200

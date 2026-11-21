@@ -5,19 +5,24 @@ Object name in, wheels out. Everything that runs on the robot is **QNX native C/
 ```
 voice app ──"GOTO trash can"──► goto (C, SCHED_RR 20) ──D / S / TURN / BEEP / LED──► tars_motor (C, SCHED_RR 30) ──► Uno
                                    ▲  TCP 5570 control                         TCP 5555
-webcam ──► detect (C++, ONNX Runtime) ──JSON lines, UDP 127.0.0.1:5571──┘
-           (or the teammate's YOLO: same format, see DETECTIONS.md)
+webcam ──► detect (C++, ONNX Runtime) ──JSON lines, UDP 127.0.0.1:5571──┤
+iPhone LiDAR/ARKit ──LDR1 packets (pose + world points), TCP/UDP 127.0.0.1:5572──┘  (nav.c grid + A*)
 ```
+
+**One detector.** `goto/detect` (YOLO-World, ONNX Runtime) is the only object detector that feeds `goto`: it's the one that knows "trash can". Andrew's YOLOX/MiDaS (`pi/edge-ai`) serve the dashboard, depth fusion and the guard's veto only. Anything else that wants to feed `goto` must speak `DETECTIONS.md` on 5571, but run one detector at a time on the Pi.
+
+**Ports** (Andrew's stack owns 5555 and 5557–5569): `goto` control **5570**, detections **5571**, nav feed **5572**; voice → phone speech **5573** (Andrew's SpeechLink). `goto` never binds 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
 
 | File | What |
 |---|---|
-| `src/goto.c`, `src/goto_core.[ch]` | the controller: control port, detection input, state machine, `tars_motor` client |
+| `src/goto.c`, `src/goto_core.[ch]` | the controller: control port, detection input, nav feed, state machine, `tars_motor` client |
+| `src/nav.[ch]` | occupancy grid + A* (C port of `pi/dashboard/mapping.py`), LDR1 parser, pose rule |
 | `src/detect.cpp`, `src/camera.hpp`, `src/yolo_post.hpp` | the detector: QNX camera, YOLO via ONNX Runtime, JSON out |
 | `objects.txt` | object names + aliases (shared with `voice/`) |
 | `goto.conf` | every threshold, with comments |
 | `export_world.py`, `get_model.sh` | laptop: YOLO-World with our classes, exported to ONNX |
 | `DETECTIONS.md` | the detector → goto interface |
-| `tests/` | C unit tests, YOLO post-processing tests, Python 2D simulator + socket tests |
+| `tests/` | C unit tests, YOLO post-processing tests, Python 2D simulator + socket tests, `test_fullstack.py` (real tars_motor + goto + voice, fake phone/YOLO/guard) |
 
 ## How it behaves
 
@@ -39,10 +44,16 @@ CANCEL|STOP|S   -> OK                 (S goes to tars_motor first, even when idl
 STATUS          -> OK state=approach target=trash_can result=running seen=1 bearing=-3.2 h=0.31 searched=0 fps=7.9 ...
 OBJECTS         -> OK trash can,chair,person,...
 RESOLVE <words> -> OK trash can | ERR unknown object
+RECALL <words>  -> OK recall trash can | ERR not remembered: ...   ("go back to where the X was": any remembered
+                   instance, even stale/gone/old, routed over the map; YOLO still confirms; no blind start)
+NAV             -> OK pose=arkit|dr|stale|none,x,z,yaw_deg free=.. occ=.. version=.. packets=.. bad=.. feed_age=..
 SCAN            -> OK scan; 12 x TURN 30, then "EVENT scanned trash can,chair" (or "scanned nothing")
-MEMORY          -> OK n=2 pose=x,y,hdg; trash can#1 fresh x=.. y=.. rel_bearing=.. rel_dist=.. est_dist=.. age=.. seen=.. conf=..; ...
+MEMORY          -> OK n=2 pose=x,y,hdg; trash can#1 fresh x=.. y=.. rel_bearing=.. rel_dist=.. est_dist=.. age=.. seen=.. conf=.. map=x,z; ...
+MEMORY SAY      -> OK n=2 I remember 2 things: a trash can about 1.2 m to my left, and a chair about 2.0 m behind me.
 FORGET [obj[#n]]-> OK forgot N        (no argument = everything; "trash can" = all its instances; "trash can#2" = one)
 WATCH           -> OK, then async "EVENT searching|remembered <obj> #n|not_there <obj> #n|arrived|lost|cancelled|failed:<why>|scanning|scanned ..." lines
+                   map-guided: route <obj> #n <corners> | reveal | explore | unmapped | no_map | no_route | blocked:<why> |
+                   occluded | detour | next_candidate | guard_face | guard_stop <obj> <why>
 PING            -> OK PONG
 ```
 
@@ -60,6 +71,44 @@ PING            -> OK PONG
 - **Restarts.** The file keeps `tars_motor`'s `pose_epoch` and the world↔motor offset. If only `goto` restarted (same epoch), nothing changes. If `tars_motor` restarted (new epoch, pose back to 0), the memory re-bases: it assumes the robot is still where it last knew. **If you carried the robot somewhere else, run `FORGET`** ("TARS, forget everything"). `POSE RESET` on 5555 also triggers a re-base.
 - **Voice:** "TARS, look around" / "what do you see" → `SCAN`. "TARS, forget everything" → `FORGET`. "TARS, forget the bin" → `FORGET trash can`.
 - **Adding states** (e.g. a lidar OCCLUDED check, or DETOUR around a wall): what happens after a failed LOOK is decided in one place, `look_failed()` in `goto_core.c`, in order (drive closer → next instance → search). New exact-move states go in `goto_sm_wants_status()` and in the turn branch of `goto_sm_tick()`. A lidar can set `MEM_GONE` or feed `dist` through `goto_mem_sight()`.
+
+## Map-guided GOTO (iteration 2: voice + YOLO + iPhone LiDAR)
+
+The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. When a GOTO target is in memory **and** the pose is usable, `goto` drives over the map to the object's approach ring and lets YOLO confirm and dock. The design and transition table are in [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) §3. As built:
+
+- **RECALL**: pick the instance (fresh before stale, nearest; `RECALL` also takes stale/gone/old ones). Its map position is `map=x,z`, stored when it was seen with a good nav pose. Older instances are projected from the memory frame through the current pose.
+- **PLAN**: `nav_plan` from the fused pose to the 0.6–0.85 m ring. Before planning, the robot's own footprint is marked FREE (it's standing there; the phone can't see under itself). Outcomes:
+  - path → FOLLOW_PATH
+  - already on the ring → face the spot, LOOK
+  - NO_PATH / NO_GOAL → **reveal**: spin in `nav_reveal_deg` (30°) steps, re-planning after each, up to 360°. The phone sees a 60° cone, and unknown blocks like a wall.
+  - still NO_GOAL and the ring is mostly unmapped (LiDAR shadow) → up to 4 **explore** hops to a reachable mapped cell ≥ 0.4 m nearer the goal, each followed by another reveal, then re-plan.
+  - still nothing → **NEXT_CANDIDATE** (`no_route`: next instance, else blind search).
+  - no map at all / pose stale / unmapped after exploring → the **visual-only** memory turn.
+- **FOLLOW_PATH**: each waypoint is an exact `TURN` (if off by more than `nav_turn_min_deg`) then a forward `MOVE` (never reverse: the guard only watches ahead). The last leg is a `TURN` to face the spot, then **LOOK** (YOLO, 2 of 4 frames).
+  - `nav_version` change and an occupied cell now on the remaining route → `S`, re-plan.
+  - A leg aborted by the guard / obstacle / deadman, or refused by the guard → **PLAN wait** (guard CLEAR + `nav_guard_wait_s`, or 3× that if it stays BLOCKED, since the new route starts with a pivot), max `nav_max_replans` (6), then `failed:blocked`.
+  - A refused **face** turn → LOOK straight away: what's blocking is normally the target.
+- **LOOK failed at the spot**:
+  - `nav_line_clear == 0` (an occupied cell between us and the spot) → **OCCLUDED**, *not* downgraded → **DETOUR** once per instance to a vantage cell 0.7–1.3 m from the spot with a clear line of sight (planned with `nav_plan_ring`), LOOK again.
+  - Line clear (or no vantage) → **CHECK_OTHERS**: fresh → stale → gone, next same-label instance.
+  - None left → **NEXT_CANDIDATE** → 360° search.
+- **APPROACH** is the visual servo as before, but drives are **leased**: `DL <guard_epoch> l r` (epoch from `STATUS`, fixed per leg). A guard denial bumps the epoch, so the leg ends (`S`) and a new one starts only after a fresh LOOK. An old drive never resumes after the guard clears. If the guard stops us while the target is centred, tracked and at least half the arrive height, that's **arrived**: lidar_guard's ~0.6 m stop zone and our ~0.55 m docking distance overlap.
+- **Pose rule** (nav.h): ARKit while LDR1 packets say tracking + heading OK and the last one is < `nav_pose_fresh_s` (0.5 s) old. Otherwise dead reckoning: `tars_motor` STATUS `pose=` → `nav_note_dr(-y, x, -hdg)` in metres/radians, carried into the ARKit frame from the last tracked moment. Stale/none → no map driving.
+- **Stop wins**: `CANCEL`, or any `S` (the `stops=` counter), from any state including mid-leg and PLAN wait. Tip/bump/watchdog/guard live in `tars_motor` underneath all of it.
+
+### Assumptions (made without asking; change them here if wrong)
+
+1. **Ports**: ours move to 5570/5571/5572 to clear Andrew's 5557/5558 (phone motion, preview). *Needs Andrew's sign-off.* The LDR1 copy for `goto` comes on 5572 (TCP length-prefixed, or one UDP datagram ≤ ~9 KB on macOS). Who sends it (the phone directly, or Andrew's service teeing what it gets on 5562) isn't built yet; the sim plays the phone.
+2. **Frames**: ARKit x/z, y up, forward = (sin yaw, cos yaw), + yaw = left (nav.h). `tars_motor` is x forward, y right, hdg + = clockwise (mm, deg), so DR → nav is `x = -y/1000, z = x/1000, yaw = -hdg`. The phone is assumed at the robot's centre, facing forward (extrinsics unmeasured; the ring margin absorbs a few cm).
+3. **Pose freshness 0.5 s** (`nav_pose_fresh_s`), not the 150 ms in the design doc: LDR1 is ~20 Hz over USB/iproxy and 150 ms would flap. Tune on the robot.
+4. **Robot footprint is free**: before each plan, the 9×9 cells under the robot are marked FREE (never over OCC). Without it, A* could never start, because the phone doesn't see the floor under or beside itself.
+5. **Reveal + explore** (above) is our frontier-lite. Unknown stays blocked for A*, exactly as `mapping.py` (radius 0.35 m kept, per the lead).
+6. **Guard stop at the target = docked** (see APPROACH). The approach ring (0.6–0.85 m) sits at the edge of lidar_guard's stop zone, so a face TURN refused by the guard goes to LOOK.
+7. **tars_motor allows an in-place `TURN` while the guard reports a fresh `guard_blocked`** (not stale/missing/invalid). `D`/`DL`/`MOVE` stay refused. The guard watches a forward corridor only, so a pivot isn't what it guards. Without this, a robot facing a wall inside the zone could never turn away (found in the full-stack sim). **This changes the safety floor: raise it with Andrew.**
+8. **Exact moves need a keepalive** on Andrew's main (the 500 ms deadman aborts MOVE/TURN): `goto` PINGs at 10 Hz while it waits on a move, and `tars_voice` has a keepalive thread for voice moves.
+9. **MEMORY SAY** is one line, nearest first, at most 4 objects named ("and N more"), gone ones left out, directions relative to the current heading (ahead / ahead on my left / to my right / behind me …). Voice beeps `min(n, 4)` times (`LED no` for none) and sends `SAY <sentence>` (≤ 300 chars) to the phone on 5573. On a stop it sends the urgent JSON "Stopping." **after** `S` and `CANCEL`.
+10. Memory file gains `navw <id> <x> <z> <label>` lines (map position). Old files load unchanged; old loaders skip the new lines as bad lines.
+11. The full-stack sim speeds the stub up 4× (`WHEELCAL 260 400`): same turn rate, 4× linear speed. Not physical.
 
 ## Run order on the Pi
 
@@ -131,10 +180,10 @@ The camapi code is **written from the API docs and hasn't been compiled against 
 
 ## nav: room map + route planner (C, `src/nav.[ch]`)
 
-The map side of map-guided GOTO. It's a C99 port of the grid and A* in `pi/dashboard/mapping.py`, with no deps beyond libc/libm, no threads and no I/O, so it builds with `qcc` like the rest of `goto`. Andrew's Python stays the **desktop visualization**; this module is what will drive the robot. `goto` links it but doesn't call it yet (the GOTO state machine integration is separate work).
+The map side of map-guided GOTO. It's a C99 port of the grid and A* in `pi/dashboard/mapping.py`, with no deps beyond libc/libm, no threads and no I/O, so it builds with `qcc` like the rest of `goto`. Andrew's Python stays the **desktop visualization**; this module is what drives the robot (map-guided GOTO above).
 
 - **Grid:** 200×200 cells of 0.1 m covering ARKit world x,z in [-10, 10) m, each UNKNOWN/FREE/OCC. A point 0.06 m or less from the floor marks a cell FREE, but never clears an obstacle. A point 0.08–1.2 m above the floor marks it OCC. `nav_carve_ray` frees unknown cells along a ray. It's optional, and LDR1 ingest doesn't use it, the same as the Python.
-- **Feed:** `nav_ingest_ldr1()` parses one LDR1 packet (the phone's measured LiDAR, world-frame points + pose + floor_y, format in `pi/edge-ai/README.md`). The 4-byte length prefix is optional, and validation is the same as `lidar_guard`'s. It maps only when the tracking and floor flags are set. A floor jump over 0.1 m clears the grid. The JSON world-observation stream on 5561 is not parsed in C. Port 5562 is owned by `lidar_guard`, so the packets need to reach `goto` some other way (the nav feed in the plan).
+- **Feed:** `nav_ingest_ldr1()` parses one LDR1 packet (the phone's measured LiDAR, world-frame points + pose + floor_y, format in `pi/edge-ai/README.md`). The 4-byte length prefix is optional, and validation is the same as `lidar_guard`'s. It maps only when the tracking and floor flags are set. A floor jump over 0.1 m clears the grid. The JSON world-observation stream on 5561 is not parsed in C. Port 5562 is owned by `lidar_guard`; `goto` takes its own copy of the packets on 5572. `nav_plan_ring()` is `nav_plan` with a custom ring; DETOUR and explore use ring 0–0.11 m to reach one exact cell.
 - **Plan:** `nav_plan(sx,sz → tx,tz)`. The robot's footprint square (2·ceil(r/0.1)+1 cells, r = 0.35 m by default, `nav_set_robot_radius`) must be entirely *observed* free, so **unknown blocks the same as a wall**. A* is 8-connected and never cuts a diagonal corner. Goals are the clear cells on the 0.6–0.85 m ring around the target. Collinear cells are dropped, and the output is the corner waypoints (start excluded, last = approach point). Errors: `START_BLOCKED`, `TARGET_OUTSIDE`, `NO_GOAL`, `NO_PATH`, `NO_MAP`, `TOO_LONG`. About 1.5 ms for a worst-case serpentine across the whole map on an M-series Mac (Pi 5 not measured).
 - **Occluded vs gone:** `nav_line_clear()` returns 1 for a clear line, 0 if an OCC cell is in between (occluded) and -1 if some cells are unknown. It ignores cells within 0.3 m of the end, because the object itself is occupied.
 - **Pose rule:** while tracking is OK, the ARKit pose comes from `nav_set_pose(..., 1)` or each LDR1 packet. When tracking is lost, `nav_get_pose()` maps the dead-reckoned motion (`nav_note_dr()`, from `tars_motor` STATUS `pose=`) since the last tracked moment into the ARKit frame. Always re-check the target with YOLO before declaring arrival.
@@ -160,8 +209,10 @@ Results on the Mac (2026-11-21), host builds only:
 
 | Suite | Result |
 |---|---|
-| `test_core` with object memory (instances, fresh/stale/gone, next-instance retry, SCAN, file round-trip, corrupt/truncated files, epoch re-base) | 185/185, also under ASan/UBSan (object-memory branch). |
+| `test_core` with map-guided GOTO (route around a wall without crossing OCC or reversing, occluded vs gone + DETOUR, multi-instance CHECK_OTHERS, no route → reveal → FAILED, STOP/CANCEL mid-path, guard wait + re-plan + map change + re-plan limit, DL lease, visual fallbacks, RECALL, MEMORY SAY) on top of object memory | **239/239**, also under ASan/UBSan |
+| `test_fullstack.py`: real `tars_motor_host -b stub` (guard gate on, fake lidar_guard), real `goto`, real `tars_voice` + whisper; fake phone (LDR1 raycast, 60° cone, TCP 5572-style), fake YOLO (occlusion-aware), fake phone speech | **27/27**: obstacle (reveal → explore → route around the wall → docked, ≥ 0.45 m from walls), occlusion (board dropped at the spot → OCCLUDED → DETOUR → docked), moved object (not_there → search → docked at the new spot, old spot downgraded), STOP mid-route (S from another client: cancelled, wheels still), visual-only (no phone), voice (MEMORY SAY printed + BEEP + SAY on the phone port; "go back to where the bin was" → RECALL → docked). The voice RECALL drive timed out once in 7 runs while the Mac was busy. |
 | memory vs blind, 16 random scenes (SCAN, then a teleop TURN + MOVE 300, then GOTO; the fake motor's pose drifts like dead reckoning: ±3% turns, ±2% wheels) | memory 16/16 arrived, median **39 s / 1 turn**; blind 16/16, median 44 s / 3 turns. Driving at 4 cm/s dominates, so the gain is modest. |
+| `test_core` with object memory only | 185/185, also under ASan/UBSan. |
 | `test_core` before memory (C state machine, parser, aliases, config) | 92/92. It also passes under ASan/UBSan. The JSON parser was fuzzed with 300k mutated lines under ASan/UBSan, and one UB was found and fixed (huge `w`/`h`). |
 | `test_yolo` (pre/post-processing, JSON contract) | 25/25 |
 | `test_nav` (grid, A*, line of sight, pose rule, LDR1 parser + fuzz) | 84/84, also under ASan/UBSan with 1M fuzzed LDR1 packets |
@@ -174,6 +225,7 @@ Results on the Mac (2026-11-21), host builds only:
 To build `detect` with real inference on a Mac: get ONNX Runtime headers and a dylib, then `make host-detect ORT_HOST=<dir with include/ lib/>`. That produces `build/detect_host_ort`.
 
 **Not done yet:**
+- Nothing map-related has run with a real iPhone: no phone sends LDR1 to 5572 yet (Andrew's app sends it to lidar_guard on 5562). Frames, extrinsics and the 0.5 s pose freshness are assumptions (see above).
 - `goto` and `detect` haven't been cross-compiled with `qcc`/`q++`: there's no SDP or Docker on this Mac.
 - The camapi source has never been compiled.
 - ONNX Runtime for QNX hasn't been built.

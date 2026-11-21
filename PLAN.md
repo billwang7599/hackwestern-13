@@ -71,7 +71,8 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 | Teach-a-gesture on the spot | `main` | Mac tests pass. Back burner. |
 | Iteration 3: pet mode (`vision/common/pet.py` + `pet.hpp`) | `kothar/pet` | Mac only: 38/38 pet unit tests, Python vs C++ parity identical (pet sessions included). C++ app type-checked against stub headers. **Not built on QNX, not run on the Pi or with a real camera/hand.** |
 | Speech + intent classifier (`voice/`) | `main` | Mac tests pass (stop recall 100%, 107/109 realistic transcripts, 0 wrong moves; crowd chatter ~4/21). **Not built or run on QNX/Pi yet.** Next: `voice/qnx/mic_test` on the Pi. Use a close-talk mic or the Uno talk button on the demo floor. |
-| Object memory (`goto/` memory + `tars_motor` POSE + voice `scan`/`forget`) | `kothar/object-memory` (not pushed) | Mac: goto 185/185 C unit (also ASan/UBSan), 52/52 sim/socket checks; memory vs blind in the sim (16 scenes, teleop move between SCAN and GOTO): median 39 s / 1 turn vs 44 s / 3 turns, 16/16 arrived; tars_motor 293/293; voice 141/141 (stop recall 100%), e2e 52/52. **Pose drift on the real floor is unknown; nothing has run on the Pi.** |
+| **Iteration 2: map-guided GOTO** (voice + YOLO + iPhone LiDAR; `goto/nav.c`, RECALL/PLAN/FOLLOW_PATH/OCCLUDED/CHECK_OTHERS/DETOUR/NEXT_CANDIDATE, DL lease, nav feed 5572, voice `memory`/`recall` + speech to the phone 5573) | `kothar/fusion-linear` | Mac only: goto 239/239 C unit (also ASan/UBSan), test_nav 84/84 (+1M-packet LDR1 fuzz under ASan/UBSan), parity vs `mapping.py` 212/212, goto sim 52/52, **full-stack sim 27/27** (obstacle, occlusion → detour, moved object, STOP mid-route, visual-only, voice memory + recall); tars_motor 313/313; voice 149/149 (stop recall 1131/1131, 0 wrong motions), e2e 52/52. **No real iPhone feeds 5572 yet; nothing built with qcc or run on the Pi/QNX/iPhone.** Assumptions: `goto/README.md`. |
+| Object memory (`goto/` memory + `tars_motor` POSE + voice `scan`/`forget`) | in iteration 2 above | Mac: goto 185/185 C unit (also ASan/UBSan), 52/52 sim/socket checks; memory vs blind in the sim (16 scenes, teleop move between SCAN and GOTO): median 39 s / 1 turn vs 44 s / 3 turns, 16/16 arrived; tars_motor 293/293; voice 141/141 (stop recall 100%), e2e 52/52. **Pose drift on the real floor is unknown; nothing has run on the Pi.** |
 | YOLO go-to-object (`goto/`: C `goto` + C++ `detect`) | `main` | Mac: 92/92 C unit (also under ASan/UBSan, parser fuzzed), 25/25 YOLO post, 34/34 socket+sim checks; 2D sim 40/40 random starts arrived (median 46 s, stops 0.49–0.58 m away); real `tars_motor_host -b stub` end to end; C++ `detect` + ONNX Runtime on the Mac matches ultralytics boxes to 0.1 px. **Not cross-compiled with qcc, camapi code never compiled, nothing run on the Pi.** |
 | Goalie / balancer experiments | `goalie/`, `balancer/` | Parked. Don't touch. |
 
@@ -99,7 +100,13 @@ or by cycling ✌️ GESTURE → FOLLOW → PET. Rules + bounds: `vision/GESTURE
 5. On the Pi: `voice/qnx/mic_test` to record 3 s from the USB mic and play it back. **If this fails, voice is off.**
 6. Measure fps with YOLO + MediaPipe running together, then fill in the CPU table above with real numbers.
 
+## Ports (all localhost on the Pi)
+
+Andrew's stack: 5555 (`tars_motor`) and 5557–5569 (`pi/edge-ai/README.md`). Ours: **5570** `goto` control (was 5557), **5571** detections → `goto` (was 5558), **5572** LDR1 nav feed → `goto`, **5573** TARS speech → phone (Andrew's SpeechLink; `tars_voice` is a client). 5570–5572 are pending Andrew's sign-off.
+
 ## Next up
+
+- Iteration 2 on hardware: have the phone (or Andrew's service) send a copy of its LDR1 packets to `goto` on 5572, check the frame/yaw signs with `NAV`, and talk to Andrew about the pivot-while-BLOCKED rule in `tars_motor` (`goto/README.md` assumption 7).
 
 - Merge `voice-stt` once its tests pass, with the `goto <object>` intent added.
 - `goto/`: build ONNX Runtime for QNX (qnx-ports, Linux/Docker host), cross-compile `goto` + `detect`, test camapi with the C270 (`detect --nomodel`), then tune `arrive_h_frac` on the real camera mount.
