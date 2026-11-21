@@ -150,6 +150,12 @@ class EdgeFreshnessTests(unittest.TestCase):
         self.assertEqual(status['safety']['verdict'], 'STALE')
         self.assertIsNone(status['safety']['status_age_ms'])
 
+    def test_caution_preserves_native_permission(self):
+        edge = EdgeStatus()
+        for permit in (True, False):
+            edge.latest['safety'] = ({'verdict': 'CAUTION', 'permit': permit, 'connected': True}, time.monotonic())
+            self.assertIs(edge.snapshot()['safety']['permit'], permit)
+
     def test_guard_expires_independently_of_fresh_ai(self):
         edge = EdgeStatus()
         edge.latest = {'safety': ({'verdict': 'CLEAR', 'permit': True, 'connected': True}, 99.6),

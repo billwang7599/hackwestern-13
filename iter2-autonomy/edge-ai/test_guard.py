@@ -92,6 +92,7 @@ class GuardTests(GuardFixture):
         self.assertEqual(clear['floor_hits'], [5, 5, 5])
         stale = self.wait_status(lambda s: s['verdict'] == 'STALE' and s['frames'] == 1)
         self.assertFalse(stale['permit'])
+        self.assertEqual(stale['reason'], 'frame_late')
         self.assertGreaterEqual(stale['sample_age_ms'], 150)
         self.assertLess(stale['sample_age_ms'], 270)
         self.assertGreater(stale['ticks'], clear['ticks'])
@@ -104,12 +105,19 @@ class GuardTests(GuardFixture):
         self.assertAlmostEqual(result['nearest_m'], .35, places=3)
 
     def test_unknown_when_coverage_or_flags_missing(self):
-        for seq, (flags, points) in enumerate(((3, floor_points()), (7, [[0, 0, .4]] * 15),
-                                              (7, [])), start=1):
-            self.send_packet(packet(seq=seq, flags=flags, points=points))
+        for seq, (flags, reason) in enumerate(((0, 'tracking_limited'), (5, 'set_floor'),
+                                               (3, 'aim_forward'), (7, 'no_depth_points')), start=1):
+            self.send_packet(packet(seq=seq, flags=flags, points=[] if flags == 7 else floor_points()))
             result = self.wait_status(lambda s: s.get('frames') == seq)
             self.assertEqual(result['verdict'], 'UNKNOWN')
+            self.assertEqual(result['reason'], reason)
             self.assertFalse(result['permit'])
+
+    def test_partial_coverage_permitted(self):
+        self.send_packet(packet(points=[[0, 0, .4]]))
+        result = self.wait_status(lambda s: s.get('frames') == 1)
+        self.assertEqual(result['verdict'], 'CAUTION')
+        self.assertTrue(result['permit'])
 
     def test_missing_calibration_does_not_publish_obstacle_distance(self):
         self.send_packet(packet(flags=3, points=floor_points() + [[0, .2, .35]]))

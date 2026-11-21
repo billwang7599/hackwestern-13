@@ -89,9 +89,20 @@ struct ObstaclePresentation {
         let stopSource = guardState["stop_source"] as? String ?? "none"
         let inferred = stopSource == "inferred"
         let distance = nearest.map { String(format: inferred ? "Inferred forward obstacle %.2f m" : "Nearest forward obstacle %.2f m", $0) }
-        if !live || verdict == "STALE" || verdict == "DISCONNECTED" {
-            color = .red; title = "STOP · guard unavailable"; symbol = "exclamationmark.shield"
-            detail = connected ? "Waiting for fresh LiDAR guard status" : "Pi status disconnected or stale"
+        let reason = guardState["reason"] as? String
+        if !connected {
+            color = .red; title = "STOP · Pi disconnected"; symbol = "exclamationmark.shield"
+            detail = "Waiting for current Pi status"
+        } else if !live || verdict == "STALE" || verdict == "DISCONNECTED" {
+            color = .red; symbol = "exclamationmark.shield"
+            switch live ? reason : nil {
+            case "frame_late":
+                title = "STOP · frame late"; detail = "LiDAR updates are late or queued on the Pi."
+            case "lidar_disconnected", "waiting_for_frame":
+                title = "STOP · waiting for LiDAR"; detail = "Check the phone connection and start the sensor stream."
+            default:
+                title = "STOP · guard unavailable"; detail = "Waiting for fresh LiDAR guard status."
+            }
         } else if verdict == "BLOCKED" || nearest.map({ $0 <= stop }) == true {
             color = .red
             title = inferred ? "STOP · inferred obstacle" : (stopSource == "lidar" ? "STOP · LiDAR obstacle" : "STOP · obstacle proximity")
@@ -99,8 +110,21 @@ struct ObstaclePresentation {
             detail = (distance ?? (inferred ? "Calibrated RGB depth veto" : "Measured obstacle inside the stop zone"))
                 + (inferred ? " · conservative estimate" : "")
         } else if guardState["permit"] as? Bool != true {
-            color = .red; title = "STOP · clearance unknown"; symbol = "exclamationmark.triangle.fill"
-            detail = distance ?? "Calibrate floor and keep the forward corridor visible"
+            color = .red; symbol = "exclamationmark.triangle.fill"
+            switch reason {
+            case "tracking_limited":
+                title = "STOP · tracking limited"; detail = "Keep the camera steady with room features in view."
+            case "set_floor":
+                title = "STOP · set floor"; detail = "Aim at the floor and tap Set floor, then aim forward."
+            case "aim_forward":
+                title = "STOP · aim forward"; detail = "Point the rear camera along the robot’s direction of travel."
+            case "no_depth_points":
+                title = "STOP · no depth points"; detail = "The latest frame has no usable LiDAR returns."
+            case "snapshot_busy":
+                title = "STOP · guard updating"; detail = "Waiting for the next guard reading."
+            default:
+                title = "STOP · clearance unknown"; detail = "The Pi has not reported a specific cause."
+            }
         } else if verdict == "CAUTION" {
             color = .orange; title = "CAUTION · partial floor coverage"; symbol = "exclamationmark.triangle.fill"
             detail = "Drive permitted. Parts of the forward corridor are unobserved."

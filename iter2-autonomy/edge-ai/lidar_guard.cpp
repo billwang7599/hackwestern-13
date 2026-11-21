@@ -98,7 +98,7 @@ struct Sample {
     bool map_supported=false;
     Clock::time_point received{};
     Verdict verdict = Verdict::Unknown;
-    uint32_t seq = 0, points = 0;
+    uint32_t seq = 0, points = 0, flags = 0;
     uint64_t source_us = 0, frames = 0;
     double nearest = -1;
     double backlog_ms = 0;
@@ -146,7 +146,7 @@ static bool parse(const uint8_t* p, size_t size, Sample& out) {
     for (int i = 0; i < 4; ++i) if (!scalar(p + 24 + i * 4, pose[i])) return false;
     if (!scalar(p + 40, floor)) return false;
     out = Sample{};
-    out.seq = u32(p + 4); out.source_us = u64(p + 8); out.points = count;
+    out.flags = flags; out.seq = u32(p + 4); out.source_us = u64(p + 8); out.points = count;
     if (!out.source_us) return false;
     const double forward_x = std::sin(pose[3]), forward_z = std::cos(pose[3]);
     bool blocked = false;
@@ -367,6 +367,16 @@ int main(int argc, char** argv) {
         double combined_nearest = !stale && locked ? sample.nearest : -1;
         if (inferred_distance >= 0 && (combined_nearest < 0 || inferred_distance < combined_nearest))
             combined_nearest = inferred_distance;
+        const char* reason = "none";
+        if (!connected) reason = "lidar_disconnected";
+        else if (age < 0) reason = "waiting_for_frame";
+        else if (age >= STALE_MS || sample.backlog_ms > 100) reason = "frame_late";
+        else if (!locked) reason = "snapshot_busy";
+        else if (!(sample.flags & 1)) reason = "tracking_limited";
+        else if (!(sample.flags & 2)) reason = "set_floor";
+        else if (!(sample.flags & 4)) reason = "aim_forward";
+        else if (!sample.points) reason = "no_depth_points";
+        else if (!permit) reason = "obstacle";
         motor_gate(permit);
         if (now >= next_status || stopping) {
             next_status = now + milliseconds(50);
@@ -380,7 +390,7 @@ int main(int argc, char** argv) {
             else std::strcpy(age_text, "null");
             const int length = std::snprintf(message, sizeof message,
                 "{\"type\":\"guard\",\"version\":1,\"verdict\":\"%s\",\"permit\":%s,\"advisory_only\":%s,\"motor_gate_enabled\":%s,"
-                "\"lidar_verdict\":\"%s\",\"stop_source\":\"%s\",\"lidar_nearest_m\":%s,"
+                "\"reason\":\"%s\",\"lidar_verdict\":\"%s\",\"stop_source\":\"%s\",\"lidar_nearest_m\":%s,"
                 "\"inferred_live\":%s,\"inferred_nearest_m\":%s,\"inferred_packets\":%llu,\"inferred_invalid\":%llu,"
                 "\"fusion_enabled\":%s,\"sample_age_ms\":%s,\"nearest_m\":%s,\"nearest_obstacle_m\":%s,\"stop_distance_m\":0.6,\"warning_distance_m\":1.2,\"source_us\":%llu,\"seq\":%u,\"frames\":%llu,"
                 "\"map_supported\":%s,\"points\":%u,\"floor_hits\":[%u,%u,%u],\"backlog_ms\":%.3f,\"connected\":%s,"
@@ -389,7 +399,7 @@ int main(int argc, char** argv) {
                 "\"policy\":%d,\"priority\":%d,\"requested_priority\":20,\"requested_cpu\":%d,\"runmask\":%u,"
                 "\"schedule_error\":%d,\"affinity_error\":%d}\n",
                 verdict, permit ? "true" : "false", motor_port ? "false" : "true", motor_port ? "true" : "false",
-                lidar_verdict, stop_source, lidar_nearest, inferred_live ? "true" : "false", inferred_nearest,
+                reason, lidar_verdict, stop_source, lidar_nearest, inferred_live ? "true" : "false", inferred_nearest,
                 (unsigned long long)fusion.accepted, (unsigned long long)fusion.invalid, fusion_port ? "true" : "false",
                 age_text, nearest, nearest,
                 (unsigned long long)sample.source_us, sample.seq, (unsigned long long)sample.frames,

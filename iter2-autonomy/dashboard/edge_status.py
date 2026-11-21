@@ -71,10 +71,10 @@ class EdgeStatus:
                 value['status_age_ms'] = round((now - received) * 1000, 1) if received else None
                 if name == 'safety':
                     if not fresh:
-                        value.update(verdict='STALE', permit=False, lidar_verdict='STALE',
+                        value.update(reason='guard_unavailable', verdict='STALE', permit=False, lidar_verdict='STALE',
                                      stop_source='lidar', inferred_live=False, inferred_nearest_m=None,
                                      nearest_obstacle_m=None, nearest_m=None)
-                    if not value['live'] or value.get('connected') is not True or value.get('verdict') != 'CLEAR':
+                    if not value['live'] or value.get('connected') is not True or value.get('verdict') not in ('CLEAR', 'CAUTION'):
                         value['permit'] = False
                 result[name] = value
         return result
