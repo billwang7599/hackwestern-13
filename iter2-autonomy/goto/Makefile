@@ -10,6 +10,8 @@
 #   make test-nav-asan test_nav + 1M-packet LDR1 fuzz under ASan/UBSan
 #   make test-nav-parity  nav.c A* vs iter2-autonomy/dashboard/mapping.py on shared fixtures
 #   make test-fullstack   scripted full-stack sim (obstacle, occlusion, moved object, STOP, visual, voice)
+#   make test-fullstack-dc  the same with sloppy DC-car motion (+-25% MOVE/TURN, 15 deg/m drift)
+#   (make test also runs tests/test_dc_car.py: the 2D sim on the SM11 DC car, sloppy moves)
 #   make deploy        scp goto (+ detect if built) and the config to the Pi
 #
 # Override: make deploy PI_HOST=qnxuser@192.168.1.42
@@ -31,7 +33,7 @@ QCC      := qcc -V gcc_ntoaarch64le
 QXX      := q++ -V gcc_ntoaarch64le_cxx
 REPO     := $(abspath ../..)
 
-.PHONY: all detect host host-detect test test-nav-asan test-nav-parity test-fullstack deploy clean
+.PHONY: all detect host host-detect test test-nav-asan test-nav-parity test-fullstack test-fullstack-dc deploy clean
 
 all: build/goto
 
@@ -80,6 +82,7 @@ test: host
 	./build/test_nav
 	./build/test_yolo
 	python3 tests/test_goto_sim.py build/goto_host
+	python3 tests/test_dc_car.py build/goto_host
 
 SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g -O1
 test-nav-asan: | build
@@ -90,6 +93,10 @@ test-nav-asan: | build
 test-fullstack: host
 	$(MAKE) -C ../../iter1-wasd/pi host
 	python3 tests/test_fullstack.py
+
+test-fullstack-dc: host
+	$(MAKE) -C ../../iter1-wasd/pi host
+	python3 tests/test_fullstack_dc.py
 
 test-nav-parity: host
 	python3 tests/nav_parity.py build/nav_cli --random 200
