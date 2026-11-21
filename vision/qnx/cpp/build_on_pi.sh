@@ -36,7 +36,7 @@ APP="$MP_DIR/mediapipe/examples/qnx/tars_gesture"
 echo ">> installing our app into $APP"
 mkdir -p "$APP"
 cp "$HERE/BUILD" "$HERE/tars_gesture.cc" "$APP/"
-cp "$VISION/common/gesture.hpp" "$APP/"
+cp "$VISION/common/gesture.hpp" "$VISION/common/learn.hpp" "$APP/"
 
 # QNX's build_qnx_examples.sh creates the QNX Bazel toolchains, then asks y/n
 # for every example dir. Answer "y" only for ours (same glob order as the script).

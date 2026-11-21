@@ -11,6 +11,11 @@ localhost:5555. Headless; logs mode, fps and camera->command latency.
     python3 tars_gesture.py --unit 1 --save-every 30   # save annotated jpgs to check the view
 
 Same flags for tuning as the Mac prototype: --set key=value overrides gesture.conf.
+
+Runs fully on the robot: teach a new pose with the 🤙 TEACH sign (or the Uno
+button), learned poses persist in --learned (default vision/learned.json).
+At boot it's started by qnx/autostart/tars_autostart.sh. If stdin is a
+terminal (ssh), you can also type: teach | forget | list | stop.
 """
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", "common"))
 import cv2  # noqa: E402
 
 import gesture as g  # noqa: E402
-from app import DEFAULT_MODEL, GestureRuntime, now_ms  # noqa: E402
+from app import DEFAULT_LEARNED, DEFAULT_MODEL, GestureRuntime, now_ms  # noqa: E402
 from link import MotorLink  # noqa: E402
 
 
@@ -46,6 +51,10 @@ def main() -> int:
     ap.add_argument("--rgb4-order", choices=["bgrx", "rgbx"], default="bgrx")
     ap.add_argument("--save-every", type=int, default=0,
                     help="save the annotated MediaPipe input every N frames to ./gesture_view.jpg")
+    ap.add_argument("--learned", default=DEFAULT_LEARNED, help="learned poses JSON ('' = don't load/save)")
+    ap.add_argument("--no-buttons", action="store_true", help="don't poll tars_motor STATUS for the Uno button")
+    ap.add_argument("--console", choices=["auto", "on", "off"], default="auto",
+                    help="stdin commands (auto = only when stdin is a terminal)")
     ap.add_argument("--verbose", "-v", action="store_true")
     a = ap.parse_args()
 
@@ -68,7 +77,10 @@ def main() -> int:
     cfg = g.load_config(a.conf, over)
 
     link = MotorLink(None if a.dry_run else a.host, a.port, verbose=a.verbose)
-    rt = GestureRuntime(cfg, link, a.model)
+    rt = GestureRuntime(cfg, link, a.model, learned_path=a.learned or None,
+                        poll_buttons=not a.no_buttons)
+    if a.console == "on" or (a.console == "auto" and sys.stdin.isatty()):
+        rt.start_console()
     cam = GestureCamera(unit, a.packed_order, a.rgb4_order)
     cam.open()
     print(f"[start] camera unit {unit} (available {units}); mode={rt.ctl.mode}; "
@@ -90,7 +102,7 @@ def main() -> int:
                     H, W = img.shape[:2]
                     for x, y, _ in res.lm:
                         cv2.circle(img, (int(x * W), int(y * H)), 2, (0, 255, 0), -1)
-                cv2.putText(img, f"{rt.ctl.mode} {res.label}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX,
+                cv2.putText(img, f"{rt.ctl.mode} {res.label} {rt.brain.state}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX,
                             0.45, (0, 0, 255), 1)
                 cv2.imwrite("gesture_view.jpg", img)
             if a.frames and n >= a.frames:

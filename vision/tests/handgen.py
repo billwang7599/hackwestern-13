@@ -25,6 +25,12 @@ _POSES = {
     "peace": {"index", "middle"},
     "fist": set(),
     "thumb": set(),
+    # not built-in gestures (rules say "unknown" / "teach"): for teaching tests
+    "shaka": {"pinky"},                 # = TEACH
+    "rock": {"index", "pinky"},
+    "three": {"index", "middle", "ring"},
+    "ring_pinky": {"ring", "pinky"},
+    "middle": {"middle"},
 }
 
 
@@ -39,7 +45,7 @@ def _finger(mcp, length, extended):
 def _canonical(pose: str):
     ext = _POSES[pose]
     pts = [(0.0, 0.0)]                                    # 0 wrist
-    if pose == "thumb":                                   # thumb sticks out sideways (-x)
+    if pose in ("thumb", "shaka"):                        # thumb sticks out sideways (-x)
         pts += [(-0.25, -0.25), (-0.45, -0.45), (-0.85, -0.55), (-1.2, -0.6)]
     elif pose == "palm":                                  # thumb spread
         pts += [(-0.25, -0.25), (-0.5, -0.45), (-0.7, -0.65), (-0.85, -0.85)]
@@ -79,6 +85,8 @@ def make_hand(pose: str, direction: str = "up", cx: float = 0.5, cy: float = 0.5
     return out
 
 
+NOVEL = ["rock", "three", "ring_pinky", "middle"]   # rules -> "unknown"
+
 EXPECTED = {
     ("palm", "up"): "palm", ("palm", "left"): "palm", ("palm", "right"): "palm",
     ("fist", "up"): "fist", ("fist", "left"): "fist",
@@ -87,4 +95,5 @@ EXPECTED = {
     ("thumb", "left"): "fist", ("thumb", "right"): "fist",
     ("point", "up"): "point_up", ("point", "down"): "point_down",
     ("point", "left"): "point_left", ("point", "right"): "point_right",
+    ("shaka", "up"): "teach", ("shaka", "left"): "teach", ("shaka", "down"): "teach",
 }

@@ -10,8 +10,11 @@ cc_binary(
     name = "tars_gesture_cpu",  # *_cpu: the name build_qnx_examples.sh builds
     srcs = [
         "gesture.hpp",
+        "learn.hpp",
         "tars_gesture.cc",
     ],
+    # same float results as the Python apps (no fused multiply-add)
+    copts = ["-ffp-contract=off"],
     linkopts = [
         "-lcamapi",
         "-lsocket",

@@ -1,0 +1,4 @@
+.venv
+learned.json
+learned.json.tmp
+qnx/autostart/tars.env

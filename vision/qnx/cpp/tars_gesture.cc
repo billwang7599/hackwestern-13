@@ -2,8 +2,11 @@
 //
 // Camera (QNX libcamapi, via the qnx-ports MediaPipe example code qnx_defs.cc)
 //   -> flip + downscale -> MediaPipe Tasks HandLandmarker (VIDEO mode, 1 hand)
-//   -> tars::classify / tars::Controller (vision/common/gesture.hpp, the same
-//      rules as the Python apps, parity-tested) -> TCP 127.0.0.1:5555.
+//   -> tars::learn::Brain (vision/common/learn.hpp + gesture.hpp: built-in rules,
+//      learned poses, the hands-only teach flow, Controller; the same code as the
+//      Python apps, parity-tested) -> TCP 127.0.0.1:5555.
+// Teach: hold the shaka sign 2 s, or press the Uno button (polled from
+// tars_motor STATUS btn_teach= / btn_forget=). Learned poses: --learned JSON.
 // A 20 ms ticker thread does resends, move ends and the camera-stall STOP.
 //
 // Build: vision/qnx/cpp/build_on_pi.sh (on the Pi, in the qnx-ports/mediapipe
@@ -11,6 +14,7 @@
 //
 //   tars_gesture --model=hand_landmarker.task --conf=gesture.conf [--camera_unit=N]
 //                [--host=127.0.0.1] [--port=5555] [--dry_run] [--frames=N]
+//                [--learned=learned.json] [--buttons=true]
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -22,6 +26,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -32,6 +38,7 @@
 #include "absl/flags/parse.h"
 #include "mediapipe/examples/qnx/qnx_defs.h"
 #include "mediapipe/examples/qnx/tars_gesture/gesture.hpp"
+#include "mediapipe/examples/qnx/tars_gesture/learn.hpp"
 #include "mediapipe/framework/formats/image.h"
 #include "mediapipe/framework/formats/image_frame.h"
 #include "mediapipe/framework/formats/image_frame_opencv.h"
@@ -44,6 +51,8 @@ ABSL_FLAG(std::string, host, "127.0.0.1", "tars_motor host.");
 ABSL_FLAG(int, port, 5555, "tars_motor port.");
 ABSL_FLAG(bool, dry_run, false, "Print commands instead of sending them.");
 ABSL_FLAG(int, frames, 0, "Stop after N frames (0 = run forever).");
+ABSL_FLAG(std::string, learned, "learned.json", "Learned poses JSON (loaded at start, saved on change; '' = off).");
+ABSL_FLAG(bool, buttons, true, "Poll tars_motor STATUS for the Uno teach/forget button counters.");
 
 namespace {
 
@@ -136,14 +145,69 @@ private:
 
 // ---- runtime (same as vision/common/app.py) ------------------------------------
 struct Runtime {
-    tars::Controller ctl;
+    tars::learn::Brain brain;
+    tars::Controller &ctl;
     MotorLink &link;
     std::mutex ctl_m;
+    std::string learned_path;
+    bool poll_buttons = true;
+    long btn_teach = -1, btn_forget = -1;  // -1 = no baseline yet
+    double next_poll = 0;
     double fps = 0, infer_ms = 0, cam_to_cmd_ms = 0, stop_ms = -1;
     double last_frame = -1, next_log = 0;
     std::string last_label = tars::NO_HAND;
 
-    Runtime(tars::Config c, MotorLink &l) : ctl(std::move(c)), link(l) { next_log = now_ms() + 1000; }
+    Runtime(tars::Config c, MotorLink &l) : brain(std::move(c)), ctl(brain.ctl), link(l) {
+        next_log = now_ms() + 1000;
+    }
+
+    // drain teach events + persist learned poses (call with ctl_m held)
+    void after() {
+        for (auto &e : brain.events) std::printf("[teach] %s\n", e.c_str());
+        brain.events.clear();
+        if (brain.dirty && !learned_path.empty()) {
+            try {
+                brain.save(learned_path);
+                std::printf("[teach] saved %zu pose(s) -> %s\n", brain.learner.classes.size(), learned_path.c_str());
+            } catch (const std::exception &e) {
+                brain.dirty = false;
+                std::fprintf(stderr, "[teach] save failed: %s\n", e.what());
+            }
+        }
+        std::fflush(stdout);
+    }
+
+    void button(const std::string &kind) {
+        std::vector<tars::Cmd> cmds;
+        {
+            std::lock_guard<std::mutex> lk(ctl_m);
+            cmds = brain.button(now_ms(), kind);
+            after();
+        }
+        send(cmds, -1);
+    }
+
+    static long field(const std::string &s, const char *key) {
+        size_t p = s.find(key);
+        return p == std::string::npos ? -1 : std::atol(s.c_str() + p + std::strlen(key));
+    }
+
+    // Uno button via tars_motor: STATUS ... btn_teach=<n> btn_forget=<n> (counters)
+    void poll_btn() {
+        double t = now_ms();
+        if (!poll_buttons || link.dry() || t < next_poll) return;
+        next_poll = t + 200;
+        std::string r = link.send("STATUS");
+        if (r.rfind("OK", 0) != 0) return;
+        long bt = field(r, " btn_teach="), bf = field(r, " btn_forget=");
+        if (bt < 0 && bf < 0) return;
+        if (btn_teach >= 0 || btn_forget >= 0) {
+            if (bf > btn_forget) { std::printf("[teach] button: forget\n"); button("forget"); }
+            if (bt > btn_teach) { std::printf("[teach] button: teach\n"); button("teach"); }
+        }
+        btn_teach = bt;
+        btn_forget = bf;
+    }
 
     void send(const std::vector<tars::Cmd> &cmds, double t_cap) {
         for (auto &c : cmds) {
@@ -169,9 +233,17 @@ struct Runtime {
             std::snprintf(extra, sizeof extra, " wheels=%+.2f,%+.2f", ctl.f_cur_l, ctl.f_cur_r);
         else if (ctl.has_move)
             std::snprintf(extra, sizeof extra, " move=%s", ctl.move_intent.c_str());
+        std::string ex = extra;
+        if (brain.state != tars::learn::IDLE) ex += std::string(" teach=") + brain.state;
+        if (brain.has_match) {
+            char m[64];
+            std::snprintf(m, sizeof m, " match=%s:%.2f", brain.match.best.c_str(), brain.match.conf);
+            ex += m;
+        }
+        ex += " learned=" + std::to_string(brain.learner.classes.size());
         std::snprintf(b, sizeof b,
                       "mode=%s fps=%.1f infer=%.0fms cam->cmd=%.0fms palm->stop=%s see=%s%s link_rtt=%.1fms",
-                      ctl.mode.c_str(), fps, infer_ms, cam_to_cmd_ms, stop, last_label.c_str(), extra,
+                      ctl.mode.c_str(), fps, infer_ms, cam_to_cmd_ms, stop, last_label.c_str(), ex.c_str(),
                       link.rtt_ms);
         return b;
     }
@@ -189,7 +261,8 @@ struct Runtime {
         std::fflush(stdout);
         if (!link.dry()) {
             char v[128];
-            std::snprintf(v, sizeof v, "VIS %s %.1f %.0f %.0f %s", ctl.mode.c_str(), fps, cam_to_cmd_ms,
+            std::string mode = brain.state == tars::learn::IDLE ? ctl.mode : std::string("teach:") + brain.state;
+            std::snprintf(v, sizeof v, "VIS %s %.1f %.0f %.0f %s", mode.c_str(), fps, cam_to_cmd_ms,
                           stop_ms, last_label.c_str());
             link.send(v);
         }
@@ -206,6 +279,16 @@ int main(int argc, char **argv) {
     tars::Config cfg = tars::load_config(absl::GetFlag(FLAGS_conf));
     MotorLink link(absl::GetFlag(FLAGS_host), absl::GetFlag(FLAGS_port), absl::GetFlag(FLAGS_dry_run));
     Runtime rt(cfg, link);
+    rt.learned_path = absl::GetFlag(FLAGS_learned);
+    rt.poll_buttons = absl::GetFlag(FLAGS_buttons);
+    if (!rt.learned_path.empty()) {
+        try {
+            int nl = rt.brain.load(rt.learned_path);
+            std::printf("[teach] loaded %d learned pose(s) from %s\n", nl, rt.learned_path.c_str());
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "[teach] could not read %s (%s); starting empty\n", rt.learned_path.c_str(), e.what());
+        }
+    }
 
     namespace hl = mediapipe::tasks::vision::hand_landmarker;
     auto opts = std::make_unique<hl::HandLandmarkerOptions>();
@@ -242,9 +325,11 @@ int main(int argc, char **argv) {
             std::vector<tars::Cmd> cmds;
             {
                 std::lock_guard<std::mutex> lk(rt.ctl_m);
-                cmds = rt.ctl.tick(now_ms());
+                cmds = rt.brain.tick(now_ms());
+                rt.after();
             }
             if (!cmds.empty()) rt.send(cmds, -1);
+            rt.poll_btn();
             rt.maybe_log();
         }
     });
@@ -286,8 +371,9 @@ int main(int argc, char **argv) {
         std::string label;
         {
             std::lock_guard<std::mutex> lk(rt.ctl_m);
-            label = tars::classify(lp, aspect, rt.ctl.cfg());
-            cmds = rt.ctl.on_frame(now_ms(), label, tars::hand_features(lp, aspect));
+            cmds = rt.brain.on_frame(now_ms(), lp, aspect);
+            label = rt.brain.label;
+            rt.after();
         }
         rt.send(cmds, t_cap);
 

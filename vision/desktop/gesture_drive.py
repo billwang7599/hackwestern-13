@@ -11,8 +11,10 @@ Default is DRY RUN: commands are printed, nothing is sent.
     python gesture_drive.py --set follow_kp_turn=1.5 --set stable_frames=3
 
 Keys in the window: q/Esc quit · space STOP · m toggle GESTURE/FOLLOW · p pause
+                    t teach (same as the Uno button) · f forget all learned poses
 Gestures: open palm STOP · thumbs up / point up FORWARD · fist / point down /
-thumbs down BACK · point left/right TURN 30° · peace sign (hold) GESTURE<->FOLLOW
+thumbs down BACK · point left/right TURN 30° · peace sign (hold) GESTURE<->FOLLOW ·
+🤙 shaka (hold 2 s) TEACH a new pose (hold 5 s: forget all). GESTURES.md §7.
 """
 from __future__ import annotations
 
@@ -28,7 +30,8 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 import gesture as g  # noqa: E402
-from app import DEFAULT_MODEL, GestureRuntime, now_ms  # noqa: E402
+import learn as L  # noqa: E402
+from app import DEFAULT_LEARNED, DEFAULT_MODEL, GestureRuntime, now_ms  # noqa: E402
 from link import MotorLink  # noqa: E402
 
 HAND_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10),
@@ -49,6 +52,7 @@ def parse_args():
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VAL",
                     help="override a gesture.conf value (repeatable)")
     ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--learned", default=DEFAULT_LEARNED, help="learned poses JSON ('' = don't load/save)")
     ap.add_argument("--headless", action="store_true", help="no window")
     ap.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = forever)")
     ap.add_argument("--realtime", action="store_true",
@@ -102,6 +106,7 @@ def draw(frame_rgb, res, rt: GestureRuntime, scale: int = 2):
 
     cv2.rectangle(img, (0, 0), (W, 34), (0, 0, 0), -1)
     cv2.putText(img, f"{mode.upper()}  {res.label}", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2)
+    draw_learn(img, res, rt)
     st = rt.stats
     stop = f"{st.stop_ms:.0f}ms" if st.stop_ms >= 0 else "-"
     line2 = f"fps {st.fps:.1f}  infer {st.infer_ms:.0f}ms  cam->cmd {st.cam_to_cmd_ms:.0f}ms  palm->STOP {stop}"
@@ -110,6 +115,36 @@ def draw(frame_rgb, res, rt: GestureRuntime, scale: int = 2):
     if rt.link.dry:
         cv2.putText(img, "DRY RUN", (W - 110, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
     return img
+
+
+TEACH_HINT = {
+    L.COUNTDOWN: "TEACH: get ready... show your NEW pose when it beeps",
+    L.RECORD: "TEACH: recording - hold your new pose",
+    L.ASSIGN: "TEACH: pick action  > right  < left  thumb fwd  fist back  V spin  (5 s: wiggle)",
+    L.CONFIRM: "TEACH: ...",
+}
+
+
+def draw_learn(img, res, rt: GestureRuntime) -> None:
+    """Learned-pose match + confidence bar, and the teach state banner."""
+    H, W = img.shape[:2]
+    b = rt.brain
+    x0, y0, bw = 10, 44, 200
+    if res.match is not None:
+        best, conf, ok = res.match
+        cv2.rectangle(img, (x0, y0), (x0 + bw, y0 + 14), (80, 80, 80), 1)
+        cv2.rectangle(img, (x0, y0), (x0 + int(bw * conf), y0 + 14), (0, 220, 0) if ok else (0, 0, 220), -1)
+        cv2.line(img, (x0 + bw // 2, y0 - 2), (x0 + bw // 2, y0 + 16), (255, 255, 255), 1)   # accept = 0.5
+        txt = f"{best} {conf:.2f}" if ok else f"UNKNOWN (nearest {best} {conf:.2f})"
+        cv2.putText(img, txt, (x0 + bw + 8, y0 + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    learned = ", ".join(f"{c.name}:{c.action}" for c in b.learner.classes) or "none"
+    cv2.putText(img, f"learned: {learned}", (x0, y0 + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+    if b.state != L.IDLE:
+        cv2.rectangle(img, (0, H // 2 - 26), (W, H // 2 + 14), (0, 0, 0), -1)
+        hint = TEACH_HINT.get(b.state, "")
+        if b.state == L.RECORD:
+            hint += f"  {len(b.rec)}/{int(rt.cfg['learn_frames'])}"
+        cv2.putText(img, hint, (10, H // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
 
 
 def main() -> int:
@@ -134,7 +169,7 @@ def main() -> int:
     vid_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
     link = MotorLink(a.host, a.port, verbose=a.verbose)
-    rt = GestureRuntime(cfg, link, a.model)
+    rt = GestureRuntime(cfg, link, a.model, learned_path=a.learned or None)
     print(f"[start] mode={rt.ctl.mode} {'DRY RUN' if link.dry else f'-> {a.host}:{a.port}'}", flush=True)
     labels = {}
     n = 0
@@ -162,7 +197,7 @@ def main() -> int:
             labels[res.label] = labels.get(res.label, 0) + 1
             n += 1
             if not a.headless:
-                cv2.imshow("TARS gesture (q quit, space stop, m mode, p pause)", draw(res.image, res, rt))
+                cv2.imshow("TARS gesture (q quit, space stop, m mode, p pause, t teach, f forget)", draw(res.image, res, rt))
                 k = cv2.waitKey(1) & 0xFF
                 if k in (ord("q"), 27):
                     break
@@ -178,6 +213,10 @@ def main() -> int:
                     print(f"[mode] {rt.ctl.mode} (key)", flush=True)
                 if k == ord("p"):
                     paused = True
+                if k == ord("t"):
+                    rt.button("teach")
+                if k == ord("f"):
+                    rt.button("forget")
             if a.video and a.realtime:
                 time.sleep(max(0.0, 1.0 / vid_fps - (time.monotonic() - t_wall)))
             if a.frames and n >= a.frames:

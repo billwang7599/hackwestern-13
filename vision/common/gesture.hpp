@@ -20,7 +20,8 @@ namespace tars {
 inline const char *NO_HAND = "no_hand", *UNKNOWN = "unknown", *PALM = "palm", *FIST = "fist",
                   *THUMBS_UP = "thumbs_up", *THUMBS_DOWN = "thumbs_down",
                   *POINT_UP = "point_up", *POINT_DOWN = "point_down",
-                  *POINT_LEFT = "point_left", *POINT_RIGHT = "point_right", *PEACE = "peace";
+                  *POINT_LEFT = "point_left", *POINT_RIGHT = "point_right", *PEACE = "peace",
+                  *TEACH = "teach";
 inline const char *GESTURE_MODE = "gesture", *FOLLOW_MODE = "follow";
 inline const char *STOP = "stop", *FORWARD = "forward", *BACK = "back",
                   *TURN_LEFT = "turn_left", *TURN_RIGHT = "turn_right";
@@ -47,7 +48,14 @@ inline const std::vector<std::string> &conf_keys() {
         "follow_slew_per_s", "follow_send_ms", "follow_grace_frames", "follow_palm_frames",
         "follow_invert_turn",
         "flip", "infer_width",
-        "min_detection_confidence", "min_tracking_confidence"};
+        "min_detection_confidence", "min_tracking_confidence",
+        "spin_turns", "wiggle_ms", "arms_ms",
+        "teach_hold_ms", "teach_countdown_ms", "learn_gap_frames", "learn_cancel_frames",
+        "learn_frames", "learn_record_timeout_ms", "learn_assign_ms", "learn_assign_frames",
+        "learn_cooldown_ms", "learn_builtin_frac", "learn_similar_frac", "learn_max_classes",
+        "learn_k", "learn_augment", "learn_jitter", "learn_angle_weight",
+        "learn_thr_mult", "learn_thr_min", "learn_thr_max",
+        "feedback_speed", "feedback_ms", "nudge_ms", "feedback_led_beep"};
     return k;
 }
 
@@ -144,6 +152,7 @@ inline std::string classify(const Landmarks *lmp, double aspect, const Config &c
         if (d == "right") return POINT_RIGHT;
         return UNKNOWN;
     }
+    if (fold[0] && fold[1] && fold[2] && ext[3]) return TEACH;
     if (fold[0] && fold[1] && fold[2] && fold[3]) {
         bool thumb_out = dist(lm, THUMB_TIP, INDEX_MCP, aspect) / palm > cfg["thumb_out"];
         if (thumb_out) {
@@ -196,6 +205,16 @@ inline std::string fmt_d(double l, double r) {
     return b;
 }
 
+// A move is a list of segments: D drives (resent every resend_ms), X sends one
+// line (e.g. "G wave", "BEEP 1") and waits ms. Same as gesture.py.
+struct Seg {
+    bool d = true;
+    double l = 0, r = 0, ms = 0;
+    std::string text;
+};
+inline Seg segD(double l, double r, double ms) { return Seg{true, l, r, ms, ""}; }
+inline Seg segX(const std::string &text, double ms) { return Seg{false, 0, 0, ms, text}; }
+
 inline double toward(double cur, double tgt, double step) {
     double d = tgt - cur;
     return std::fabs(d) <= step ? tgt : cur + (d > 0 ? step : -step);
@@ -223,8 +242,53 @@ public:
     // follow
     bool f_active = false;
     double f_tgt_l = 0, f_tgt_r = 0, f_cur_l = 0, f_cur_r = 0;
+    // multi-segment moves + learned poses
+    std::vector<Seg> segs;   // still to run after the current one
+    bool move_d = true;
+    std::map<std::string, std::pair<std::string, std::vector<Seg>>> learned;  // label -> (action, custom)
 
     const Config &cfg() const { return c; }
+
+    std::string intent_of(const std::string &label) const {
+        std::string it = tars::intent_of(label);
+        if (it.empty()) {
+            auto f = learned.find(label);
+            if (f != learned.end()) it = f->second.first + "@" + label;
+        }
+        return it;
+    }
+
+    std::vector<Seg> action_segments(const std::string &action, const std::vector<Seg> &custom = {}) const {
+        double s = c["step_speed"], ts = c["turn_speed"];
+        if (action == FORWARD) return {segD(s, s, c["step_ms"])};
+        if (action == BACK) return {segD(-s, -s, c["step_ms"])};
+        if (action == TURN_LEFT || action == TURN_RIGHT) {
+            bool ccw = (action == TURN_LEFT) == (c["point_left_is_left"] >= 0.5);
+            if (ccw) return {segD(-ts, ts, c["turn_ms"])};
+            return {segD(ts, -ts, c["turn_ms"])};
+        }
+        if (action == "spin") return {segD(-ts, ts, c["turn_ms"] * c["spin_turns"])};
+        if (action == "wiggle") {
+            double w = c["wiggle_ms"];
+            return {segD(-ts, ts, w), segD(ts, -ts, 2 * w), segD(-ts, ts, 2 * w), segD(ts, -ts, 2 * w),
+                    segD(-ts, ts, w)};
+        }
+        if (action == "arms") return {segX("G wave", c["arms_ms"])};
+        if (action == "custom") return custom;
+        return {};
+    }
+
+    // Run a segment list now (cancels any move). Used for actions + teach feedback.
+    std::vector<Cmd> play(double t, const std::string &intent, const std::vector<Seg> &s) {
+        std::vector<Cmd> out;
+        if (has_move || need_stop || f_active) append(out, stop(t, "preempt"));
+        segs = s;
+        append(out, start_seg(t, intent));
+        return out;
+    }
+
+    // public so the teach layer (learn.hpp) can stop like gesture.py's _stop
+    std::vector<Cmd> stop_now(double t, const std::string &reason) { return stop(t, reason); }
 
     std::vector<Cmd> on_frame(double t, const std::string &label, std::optional<Feat> feat) {
         std::vector<Cmd> out;
@@ -276,12 +340,8 @@ public:
             return {Cmd{fmt_d(f_cur_l, f_cur_r), "follow"}};
         }
         if (!has_move) return {};
-        if (t >= move_end) {
-            auto out = stop(t, "done");
-            cooldown_until = t + c["cooldown_ms"];
-            return out;
-        }
-        if (t - last_send >= c["resend_ms"]) {
+        if (t >= move_end) return start_seg(t, move_intent);
+        if (move_d && t - last_send >= c["resend_ms"]) {
             last_send = t;
             return {Cmd{fmt_d(move_l, move_r), "resend"}};
         }
@@ -295,18 +355,42 @@ private:
         a.insert(a.end(), b.begin(), b.end());
     }
 
-    void wheels(const std::string &intent, double &l, double &r, double &dur) const {
-        double s = c["step_speed"], ts = c["turn_speed"];
-        if (intent == FORWARD) { l = s; r = s; dur = c["step_ms"]; return; }
-        if (intent == BACK) { l = -s; r = -s; dur = c["step_ms"]; return; }
-        bool ccw = (intent == TURN_LEFT) == (c["point_left_is_left"] >= 0.5);
-        if (ccw) { l = -ts; r = ts; } else { l = ts; r = -ts; }
-        dur = c["turn_ms"];
+    std::vector<Seg> segments_for(const std::string &intent) const {
+        size_t at = intent.find('@');
+        if (at != std::string::npos) {
+            std::string act = intent.substr(0, at), label = intent.substr(at + 1);
+            auto f = learned.find(label);
+            static const std::vector<Seg> none;
+            return action_segments(act, f != learned.end() ? f->second.second : none);
+        }
+        return action_segments(intent);
+    }
+
+    std::vector<Cmd> start_seg(double t, const std::string &intent) {
+        std::vector<Cmd> out;
+        while (!segs.empty()) {
+            Seg s = segs.front();
+            segs.erase(segs.begin());
+            has_move = true;
+            move_intent = intent;
+            move_l = s.d ? s.l : 0.0;
+            move_r = s.d ? s.r : 0.0;
+            move_end = t + s.ms;
+            move_d = s.d;
+            last_send = t;
+            need_stop = true;
+            out.push_back(Cmd{s.d ? fmt_d(s.l, s.r) : s.text, intent});
+            if (s.ms > 0) return out;
+        }
+        append(out, stop(t, "done"));
+        cooldown_until = t + c["cooldown_ms"];
+        return out;
     }
 
     std::vector<Cmd> stop(double t, const std::string &reason) {
         if (has_move) cooldown_until = t + c["cooldown_ms"];
         has_move = false;
+        segs.clear();
         need_stop = false;
         f_active = false;
         f_tgt_l = f_tgt_r = f_cur_l = f_cur_r = 0.0;
@@ -320,7 +404,7 @@ private:
             if (lost && (need_stop || has_move)) return stop(t, "lost");
             return {};
         }
-        std::string intent = intent_of(label);
+        std::string intent = this->intent_of(label);
         if (intent != fired_intent) armed = true;
         if (intent == STOP) {
             bool first = cand_count == (int)c["stop_frames"];
@@ -333,16 +417,10 @@ private:
             bool ready = cand_count >= c["stable_frames"] && !has_move && t >= cooldown_until &&
                          (armed || c["hold_repeat"] >= 0.5);
             if (ready) {
-                double l, r, dur;
-                wheels(intent, l, r, dur);
-                has_move = true;
-                move_intent = intent;
-                move_l = l; move_r = r; move_end = t + dur;
-                last_send = t;
-                need_stop = true;
                 fired_intent = intent;
                 armed = false;
-                return {Cmd{fmt_d(l, r), intent}};
+                segs = segments_for(intent);
+                return start_seg(t, intent);
             }
         }
         return {};
@@ -360,7 +438,7 @@ private:
                 return stop(t, "palm");
             return {};
         }
-        if (label == PEACE) {
+        if (label == PEACE || label == TEACH) {
             f_tgt_l = f_tgt_r = 0.0;
             return {};
         }
