@@ -4,8 +4,8 @@
  *   Pi -> Uno   "D <l> <r>"  every tick (also feeds the Uno's 200 ms watchdog)
  *               "S"  "A <arm> <deg> <dps>"  "X" (halt arms)  "Z"  "U"
  *               "M <mm> <speed>"  "R <deg> <speed>"  "K <diam> <track>"
- *               "L <pattern>"  "B <n>" (beeps)
- *   Uno -> Pi   "READY"  "T <deg>"  "B <mg>"  "DONE M|R <amt>"
+ *               "V [mm_s deg_s]" (DC speed cal / query)  "L <pattern>"  "B <n>" (beeps)
+ *   Uno -> Pi   "READY"  "WHEELS DC <mm_s> <deg_s>"  "T <deg>"  "B <mg>"  "DONE M|R <amt>"
  *               "ABORT M|R <amt> <why>"  "BTN TEACH|FORGET"
  *               "# ..." (diagnostics, logged only)
  *
@@ -105,10 +105,14 @@ static void parse_line(char *s)
         return;
     }
     char *end, what, why[16] = "";
-    float amt;
+    float amt, amt2;
     int n;
     if (!strcmp(s, "READY")) {
         ev_push(MOTOR_EV_READY, 0);
+    } else if (sscanf(s, "WHEELS DC %f %f%n", &amt, &amt2, &n) == 2 && !s[n]
+               && amt >= 20 && amt <= 2000 && amt2 >= 20 && amt2 <= 2000) {
+        motor_event_t *e = ev_push(MOTOR_EV_WHEELS, 0);
+        if (e) { e->what = 'D'; e->amount = amt; e->amount2 = amt2; }
     } else if (!strcmp(s, "BTN TEACH")) {
         ev_push(MOTOR_EV_BTN, MOTOR_BTN_TEACH);
     } else if (!strcmp(s, "BTN FORGET")) {
@@ -193,7 +197,9 @@ static int uno_init(const char *dev)
     snprintf(dev_path, sizeof dev_path, "%s", dev);
     /* A missing device is NOT fatal: at boot the USB serial port may appear
      * seconds after tars_motor starts. send_line() keeps retrying. */
-    if (uno_open() == 0) send_line("S\n");
+    /* V: a DC Uno that did NOT reboot on open (no DTR reset) still says WHEELS DC.
+     * Stepper firmware ignores it. If it did reboot, it says WHEELS before READY. */
+    if (uno_open() == 0) { send_line("S\n"); send_line("V\n"); }
     return 0;
 }
 
@@ -236,6 +242,14 @@ static int uno_wheel_cal(float d, float t)
 {
     char line[48];
     snprintf(line, sizeof line, "K %.1f %.1f\n", d, t);
+    return send_line(line);
+}
+
+static int uno_speed_cal(float mm_s, float deg_s)
+{
+    char line[48];
+    if (mm_s <= 0 || deg_s <= 0) return send_line("V\n");
+    snprintf(line, sizeof line, "V %.1f %.1f\n", mm_s, deg_s);
     return send_line(line);
 }
 
@@ -296,6 +310,7 @@ const motor_backend_t motor_uno_serial = {
     .move = uno_move,
     .move_abort = uno_move_abort,
     .wheel_cal = uno_wheel_cal,
+    .speed_cal = uno_speed_cal,
     .led = uno_led,
     .beep = uno_beep,
     .poll = uno_poll,

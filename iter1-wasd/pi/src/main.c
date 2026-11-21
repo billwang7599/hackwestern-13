@@ -21,12 +21,15 @@
  *   GESTURES             -> "OK wave point ..."
  *   PING                 -> "OK PONG" (also feeds the watchdog)
  *   STATUS               -> "OK <l> <r> <ms_since_cmd> <dist_m> <estop> key=val..."
- *   MOVE <mm> [speed]    stepper wheels: drive exactly <mm> (+ fwd), speed in (0,1]
+ *   MOVE <mm> [speed]    drive <mm> (+ fwd), speed in (0,1]. Stepper wheels: exact (steps).
+ *                        DC wheels (Uno says WHEELS DC): timed open loop at D 1, speed ignored.
  *                        -> "OK <id> <est_ms>" at once; progress in STATUS move=...
- *   TURN <deg> [speed]   stepper wheels: spin exactly <deg>, + = right (clockwise)
+ *   TURN <deg> [speed]   spin <deg>, + = right (clockwise); exact on steppers, timed on DC
  *                        A non-zero D, S, a new MOVE/TURN, tip, bump or the
  *                        client disconnecting aborts a running move.
- *   WHEELCAL [diam track] set (and save on the Uno) wheel diameter / track mm
+ *   WHEELCAL [diam track] set (and save on the Uno) wheel diameter / track mm (steppers)
+ *   SPEEDCAL [mm_s deg_s] DC wheels: save the speeds measured at D 1 on the Uno (V);
+ *                        no args -> "OK dc <mm_s> <deg_s>" or "OK stepper"
  *   LED <name|0-3>       on-robot status LED. Names (iter3-pet/vision/GESTURES.md §7): off=0,
  *                        teach=2 (slow blink), rec=1 (solid), ok=1, no=3 (fast), forget=3
  *   BEEP <n>             n short beeps on the robot's buzzer (0 = silence)
@@ -43,6 +46,10 @@
  *   SIM BTN TEACH|FORGET stub backend only: inject a button press
  *   POSE                 -> "OK <x_mm> <y_mm> <hdg_deg> <epoch> <moving>" dead-reckoned pose
  *   POSE RESET           pose back to 0,0,0 and a new epoch (iter2-autonomy/goto/ re-bases its memory)
+ *
+ * DC wheels: if the Uno sends "WHEELS DC <mm_s> <deg_s>" (Kuman SM11 firmware), D 1 is
+ * taken as mm_s straight and deg_s spinning, for the pose and for MOVE/TURN estimates.
+ * STATUS has wheels=stepper|dc dc_mm_s= dc_deg_s=.
  *
  * Pose (best effort, no encoders): the 28BYJ-48 wheels move what they're told,
  * so the pose is integrated from the motion that actually ran: the slewed D
@@ -188,6 +195,11 @@ static int   req_move;                    /* client asked: send mv_* to the devi
 static const char *req_move_abort;        /* client/thread asked: abort, with this why */
 static float wheel_d = WHEEL_DIAM_MM, wheel_t = WHEEL_TRACK_MM;
 static int   req_wheelcal;
+/* DC wheels (set by the Uno's WHEELS line, never by a client): speeds at D 1 */
+static int   wheels_dc;
+static float dc_mm_s, dc_deg_s;
+static int   req_speedcal;                /* 1 = send V (dc_req_*: 0 0 = query) */
+static float dc_req_mm_s, dc_req_deg_s;
 static int   led_pattern = -1, req_led = -1, req_beep = -1;
 static int   btn_teach, btn_forget;
 static int   uno_pending;                 /* moves sent to the device, not yet answered */
@@ -239,8 +251,25 @@ static void pose_drive_locked(float l, float r, double dt_s)
     if (fabsf(r) < 0.03f) r = 0;
     if (l == 0 && r == 0) return;
     double vmax = WHEEL_MAX_RPM / 60.0 * M_PI * wheel_d;      /* mm/s at fraction 1 */
+    double track = wheel_t;
+    if (wheels_dc) {
+        /* linear in D (rough: the Uno maps D to a min..cap duty); the effective track
+         * makes D 1 -1 spin at the measured deg/s (skid steer slips, so it's wider) */
+        vmax = dc_mm_s;
+        track = 2.0 * dc_mm_s / (dc_deg_s * M_PI / 180.0);
+    }
     double vl = l * vmax, vr = r * vmax;
-    pose_advance_locked((vl + vr) / 2.0 * dt_s, (vl - vr) / wheel_t * dt_s * 180.0 / M_PI);
+    pose_advance_locked((vl + vr) / 2.0 * dt_s, (vl - vr) / track * dt_s * 180.0 / M_PI);
+}
+
+/* Called with `lock` held: how long a MOVE/TURN should take, ms. */
+static int move_est_ms_locked(char kind, float amt, float spd)
+{
+    if (wheels_dc) {
+        float rate = kind == 'M' ? dc_mm_s : dc_deg_s;
+        return (int)(fabsf(amt) / rate * 1000.0f + 0.5f);
+    }
+    return wheel_move_ms(wheel_move_steps(kind, amt, wheel_d, wheel_t), spd);
 }
 
 static unsigned new_epoch(void)
@@ -417,6 +446,16 @@ static void ctl_event(const motor_event_t *ev, long long now)
                 ev->amount, ok ? "" : ev->why);
         break;
     }
+    case MOTOR_EV_WHEELS:
+        pthread_mutex_lock(&lock);
+        int was_dc = wheels_dc;
+        wheels_dc = 1;
+        dc_mm_s = ev->amount;
+        dc_deg_s = ev->amount2;
+        pthread_mutex_unlock(&lock);
+        fprintf(stderr, "[ctl] %sDC wheels: %.1f mm/s, %.1f deg/s at D 1 (timed MOVE/TURN)\n",
+                was_dc ? "" : "co-processor has ", ev->amount, ev->amount2);
+        break;
     case MOTOR_EV_BTN:
         pthread_mutex_lock(&lock);
         if (ev->value == MOTOR_BTN_TEACH) btn_teach++;
@@ -519,6 +558,9 @@ static void *control_thread(void *arg)
         int calibrate_wheels = req_wheelcal;
         float calibrate_d = wheel_d, calibrate_t = wheel_t;
         req_wheelcal = 0;
+        int calibrate_speed = req_speedcal;
+        float cal_mm_s = dc_req_mm_s, cal_deg_s = dc_req_deg_s;
+        req_speedcal = 0;
         int led = req_led, beep = req_beep;
         req_led = req_beep = -1;
 
@@ -557,6 +599,7 @@ static void *control_thread(void *arg)
          * During exact moves D 0 0 is a keepalive; gate denial already aborts M/R. */
         motor->drive(l, r);
         if (calibrate_wheels && motor->wheel_cal) motor->wheel_cal(calibrate_d, calibrate_t);
+        if (calibrate_speed && motor->speed_cal) motor->speed_cal(cal_mm_s, cal_deg_s);
 
         /* 4. arms + gestures (backend calls happen only here) */
         if (reset) fprintf(stderr, "[ctl] RESET: tip latch cleared\n");
@@ -774,7 +817,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
                      kind == 'M' ? "mm" : "deg");
             return;
         }
-        if (!motor->move) { snprintf(reply, rlen, "ERR backend has no exact moves (stepper wheels only)\n"); return; }
+        if (!motor->move) { snprintf(reply, rlen, "ERR backend has no MOVE/TURN\n"); return; }
         float lim = kind == 'M' ? MOVE_MAX_MM : TURN_MAX_DEG;
         float amt = clampf(a, -lim, lim), spd = n == 2 ? c : 1.0f;
         pthread_mutex_lock(&lock);
@@ -803,7 +846,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
             mv_speed = spd;
             mv_done = 0;
             snprintf(mv_why, sizeof mv_why, "-");
-            mv_est_ms = wheel_move_ms(wheel_move_steps(kind, amt, wheel_d, wheel_t), spd);
+            mv_est_ms = move_est_ms_locked(kind, amt, spd);
             req_move = 1;
             req_move_abort = NULL;            /* the device replaces a running move itself */
             snprintf(reply, rlen, "OK %d %d\n", mv_id, mv_est_ms);
@@ -823,6 +866,26 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         }
         pthread_mutex_lock(&lock);
         snprintf(reply, rlen, "OK %.1f %.1f\n", wheel_d, wheel_t);
+        pthread_mutex_unlock(&lock);
+    } else if (!strcasecmp(cmd, "SPEEDCAL")) {
+        int n = sscanf(line, "%*s %f %f", &a, &b);
+        if (!motor->speed_cal) { snprintf(reply, rlen, "ERR backend has no DC speed calibration\n"); return; }
+        if (n == 2 && a >= 20 && a <= 2000 && b >= 20 && b <= 2000) {
+            pthread_mutex_lock(&lock);
+            dc_req_mm_s = a;
+            dc_req_deg_s = b;
+            req_speedcal = 1;
+            pthread_mutex_unlock(&lock);
+            /* the Uno answers WHEELS DC <a> <b>; STATUS / SPEEDCAL show it once it has */
+            snprintf(reply, rlen, "OK sent %.1f %.1f\n", a, b);
+            return;
+        } else if (n > 0 || sscanf(line, "%*s %15s", name) == 1) {   /* any junk argument */
+            snprintf(reply, rlen, "ERR usage: SPEEDCAL [mm_s 20-2000 deg_s 20-2000]\n");
+            return;
+        }
+        pthread_mutex_lock(&lock);
+        if (wheels_dc) snprintf(reply, rlen, "OK dc %.1f %.1f\n", dc_mm_s, dc_deg_s);
+        else snprintf(reply, rlen, "OK stepper\n");
         pthread_mutex_unlock(&lock);
     } else if (!strcasecmp(cmd, "LED") || !strcasecmp(cmd, "BEEP")) {
         int led = !strcasecmp(cmd, "LED"), v = -1, n2 = 0;
@@ -890,7 +953,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
                  "vis_age_ms=%lld move=%s move_id=%d move_kind=%s move_req=%.1f move_done=%.1f "
                  "move_why=%s move_est_ms=%d wheel_d=%.1f wheel_t=%.1f btn_teach=%d btn_forget=%d "
                  "led=%d guard_enabled=%d guard_permit=%d guard_age_ms=%ld guard_reason=%s guard_epoch=%llu clients=%d hold_ms=%lld mode_req=%s mode_seq=%d stops=%d "
-                 "pose=%.0f,%.0f,%.1f pose_epoch=%u\n",
+                 "pose=%.0f,%.0f,%.1f pose_epoch=%u wheels=%s dc_mm_s=%.1f dc_deg_s=%.1f\n",
                  out_l, out_r, ms_since(&last_cmd), last_dist, estop, estop_why,
                  arm_pos[0], arm_pos[1], arm_tgt[0], arm_tgt[1], gesture_name,
                  tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name,
@@ -900,7 +963,8 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
                  mv_req, mv_done, mv_why, mv_est_ms, wheel_d, wheel_t, btn_teach, btn_forget,
                  led_pattern, cfg_guard_port != 0, guard_permit, guard_age, guard_reason, guard_epoch, n_clients,
                  hold_cid && now_ms() < hold_until_ms ? hold_until_ms - now_ms() : 0LL,
-                 mode_req, mode_seq, stop_count, pose_x, pose_y, pose_h, pose_epoch);
+                 mode_req, mode_seq, stop_count, pose_x, pose_y, pose_h, pose_epoch,
+                 wheels_dc ? "dc" : "stepper", dc_mm_s, dc_deg_s);
         pthread_mutex_unlock(&lock);
     } else if (!strcasecmp(cmd, "POSE")) {
         char sub[16] = "";

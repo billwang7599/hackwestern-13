@@ -675,7 +675,7 @@ def test_uno_moves() -> None:
 
         c.cmd("MOVE 100")
         time.sleep(0.05)
-        uno.send("ABORT M 0.0 nosteppers\r\n")       # the DC-wheel firmware
+        uno.send("ABORT M 0.0 nosteppers\r\n")       # older DC firmware (before timed M/R)
         time.sleep(0.1)
         st = c.status()
         check(st["move"] == "aborted" and st["move_why"] == "nosteppers", f"DC firmware refusal {st}")
@@ -1029,12 +1029,100 @@ def test_guard_gate() -> None:
         srv.stop()
 
 
+def test_uno_dc() -> None:
+    print("uno: DC wheels (Kuman SM11 firmware: WHEELS DC, timed MOVE/TURN, SPEEDCAL, pose)")
+    uno = FakeUno()
+    srv = Server("-b", "uno", "-d", uno.path, "-w", "300")
+    c = Client(srv.port)
+    nd = lambda: [l for l in uno.lines if not l.startswith("D ")]
+    try:
+        uno.pump(0.3)
+        check(nd()[:2] == ["S", "V"], f"open: S, then V asks a DC Uno that didn't reboot {nd()[:3]}")
+        st = c.status()
+        check(st["wheels"] == "stepper" and c.cmd("SPEEDCAL") == "OK stepper", "steppers until the Uno says otherwise")
+        r = c.cmd("MOVE 100")
+        check(2600 < int(r.split()[2]) < 2850, f"stepper estimate before WHEELS ({r})")
+        c.cmd("S")
+        uno.send("# junk\r\nWHEELS DC 5 100\r\nWHEELS DC 160 x\r\nWHEELS DC 160 100 7\r\n")
+        uno.pump(0.1)
+        check(c.status()["wheels"] == "stepper", "malformed / out-of-range WHEELS ignored")
+        uno.send("WHEELS DC 160.0 100.0\r\nREADY\r\n")
+        check(srv.wait_log(r"co-processor has DC wheels: 160\.0 mm/s, 100\.0 deg/s"), "WHEELS DC logged")
+        check(srv.wait_log(r"co-processor READY"), "READY after it")
+        st = c.status()
+        check(st["wheels"] == "dc" and st["dc_mm_s"] == "160.0" and st["dc_deg_s"] == "100.0", f"STATUS wheels {st['wheels']}")
+        check(c.cmd("SPEEDCAL") == "OK dc 160.0 100.0", "SPEEDCAL query")
+
+        print("uno dc: MOVE/TURN estimates + timeout from the DC speeds")
+        uno.lines.clear()
+        r = c.cmd("MOVE 320")
+        check(r.endswith(" 2000"), f"MOVE 320 at 160 mm/s -> est 2000 ms ({r})")
+        uno.pump(0.1)
+        check(nd() == ["M 320.0 1.00"], f"M on the wire {nd()}")
+        uno.send("DONE M 320.0\r\n")
+        time.sleep(0.1)
+        check(c.status()["move"] == "done", "DONE")
+        r = c.cmd("TURN -50 0.5")
+        check(r.endswith(" 500"), f"TURN -50 at 100 deg/s -> 500 ms, speed ignored ({r})")
+        uno.pump(0.1)                                 # let the control tick send R first
+        c.cmd("S")
+        uno.send("ABORT R -10.0 stop\r\n")
+        time.sleep(0.1)
+        x, y, h, _, _ = pose(c)
+        check(abs(x - 320) <= 1 and abs(y) <= 1 and h == -10.0, f"pose from DONE/ABORT amounts ({x},{y},{h})")
+        r = c.cmd("TURN 5")                           # never answered -> timeout 2*50+2000 ms
+        keepalive_for(c, 2.4)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "timeout", f"DC move timeout uses the DC estimate {st['move_why']}")
+
+        print("uno dc: pose from D uses the DC speeds")
+        c.cmd("POSE RESET")
+        drive_for(c, 1, 1, 1.0)
+        c.cmd("S")
+        x, y, h, _, _ = pose(c)
+        # 160 mm/s for ~1 s minus the 0.25 s slew ramp (~0.125 s lost) -> ~140 mm
+        check(120 < x < 165 and abs(y) < 1 and abs(h) < 0.2, f"D 1 1 for 1 s -> x {x} (~140 mm, not ~40 like steppers)")
+        c.cmd("POSE RESET")
+        drive_for(c, 0.5, -0.5, 1.0)
+        c.cmd("S")
+        _, _, h, _, _ = pose(c)
+        # D 0.5 -0.5 spins at half the measured 100 deg/s -> ~45 deg in ~1 s
+        check(35 < h < 55, f"D 0.5 -0.5 for 1 s spins right {h:.1f} deg (~45)")
+
+        print("uno dc: SPEEDCAL")
+        uno.lines.clear()
+        check(c.cmd("SPEEDCAL 200 90") == "OK sent 200.0 90.0", "SPEEDCAL set")
+        uno.pump(0.1)
+        check("V 200.0 90.0" in nd(), f"V on the wire {nd()}")
+        check(c.status()["dc_mm_s"] == "160.0", "not applied until the Uno confirms")
+        uno.send("WHEELS DC 200.0 90.0\r\n")
+        time.sleep(0.1)
+        check(c.cmd("SPEEDCAL") == "OK dc 200.0 90.0", "applied after WHEELS")
+        check(c.cmd("MOVE 100").endswith(" 500"), "new estimate")
+        c.cmd("S")
+        for bad in ("SPEEDCAL 5 90", "SPEEDCAL 200", "SPEEDCAL 200 9000", "SPEEDCAL x y"):
+            check(c.cmd(bad).startswith("ERR usage"), f"{bad!r} rejected")
+    finally:
+        c.close()
+    srv.stop()
+    uno.close()
+    srv = Server("-b", "stub")
+    c = Client(srv.port)
+    try:
+        check(c.cmd("SPEEDCAL").startswith("ERR backend has no DC speed"), "stub: no SPEEDCAL")
+        check(c.status()["wheels"] == "stepper", "stub: stepper wheels")
+    finally:
+        c.close()
+        srv.stop()
+
+
 if __name__ == "__main__":
     t0 = time.monotonic()
     test_stub()
     test_uno()
     test_stub_moves()
     test_uno_moves()
+    test_uno_dc()
     test_uno_reconnect()
     test_multi_client()
     test_pose()
