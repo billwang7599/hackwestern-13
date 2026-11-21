@@ -249,6 +249,68 @@ static void test_give_up(void)
           "not found: S + BEEP 3 (%s)", S.result);
 }
 
+/* Regression (full-stack sim, "moved" ~2 runs in 15 on a loaded Mac): a guard hiccup (lidar_guard
+ * stale for 100 ms) aborts a search TURN in tars_motor, as it should. goto used to end the whole
+ * GOTO on it (failed:turn_lidar_guard). Like a route leg: stop, wait, LOOK again, resume the search;
+ * the interrupted step isn't counted. Bounded by nav_max_replans; obstacle/stop unchanged. */
+static void test_turn_guard_hiccup(void)
+{
+    reset_sm();
+    start("door");
+    for (int i = 0; i < 4; i++) { advance(0.12); frame(NULL, 0, 0, 0); }
+    CHECK(S.st == ST_SEARCH_TURN && S.searched_deg == 30, "nothing in view -> search TURN (%s)", goto_state_name(S.st));
+    clear();
+    goto_sm_move_started(&S, T, 61, 0.7);
+    advance(0.2);
+    goto_sm_move_status(&S, T, 61, "aborted", "lidar_guard");
+    CHECK(S.st == ST_LOOK && has_event("guard_stop door"), "search TURN aborted by the guard -> S, LOOK again, not failed (%s, %s)",
+          goto_state_name(S.st), S.result);
+    CHECK(S.searched_deg == 0, "the interrupted step doesn't count toward the 360 (%.0f)", S.searched_deg);
+    /* the search carries on: still a full circle before not_found */
+    int turns = 0;
+    for (int step = 0; step < 30 && S.st != ST_IDLE; step++) {
+        clear();
+        for (int i = 0; i < 8 && S.st == ST_LOOK; i++) { advance(0.12); frame(NULL, 0, 0, 0); }
+        if (S.st == ST_SEARCH_TURN) { turns++; ack_turn(200 + step); advance(0.4); }
+    }
+    CHECK(S.st == ST_IDLE && turns == 12 && !strcmp(S.result, "failed:not_found"), "then a full 12 x 30 search (%d, %s)", turns, S.result);
+
+    /* refused at the start (guard stale right then): same */
+    reset_sm();
+    start("door");
+    for (int i = 0; i < 4; i++) { advance(0.12); frame(NULL, 0, 0, 0); }
+    clear();
+    CHECK(goto_sm_move_refused(&S, T, "guard_stale") == 1 && S.st == ST_LOOK, "search TURN refused (guard_stale) -> LOOK again (%s)",
+          goto_state_name(S.st));
+
+    /* a guard that never comes back: bounded, failed:blocked */
+    reset_sm();
+    start("door");
+    int n = 0;
+    for (int step = 0; step < 40 && S.st != ST_IDLE; step++) {
+        for (int i = 0; i < 8 && S.st == ST_LOOK; i++) { advance(0.12); frame(NULL, 0, 0, 0); }
+        if (S.st == ST_SEARCH_TURN) {
+            clear();
+            goto_sm_move_started(&S, T, 300 + step, 0.7);
+            advance(0.1);
+            goto_sm_move_status(&S, T, 300 + step, "aborted", "lidar_guard");
+            n++;
+        }
+    }
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:blocked") && n == (int)C.nav_max_replans + 1,
+          "guard keeps aborting -> failed:blocked after nav_max_replans (%d aborts, %s)", n, S.result);
+
+    /* an align TURN aborted by the guard: LOOK again (then re-align on the next sighting) */
+    reset_sm();
+    start("cup");
+    for (int i = 0; i < 4; i++) { advance(0.12); frame("cup", 0.9, 0.2, 0.6); }
+    CHECK(S.st == ST_ALIGN_TURN, "off to the side -> ALIGN TURN (%s)", goto_state_name(S.st));
+    clear();
+    goto_sm_move_started(&S, T, 71, 0.7);
+    goto_sm_move_status(&S, T, 71, "aborted", "lidar_guard");
+    CHECK(S.st == ST_LOOK, "align TURN aborted by the guard -> LOOK again (%s)", goto_state_name(S.st));
+}
+
 static void test_cancel_and_failures(void)
 {
     reset_sm();
@@ -1373,6 +1435,7 @@ int main(void)
     test_search_and_align();
     test_left_target_and_lost();
     test_give_up();
+    test_turn_guard_hiccup();
     test_cancel_and_failures();
     test_retarget_and_filters();
     test_describe();

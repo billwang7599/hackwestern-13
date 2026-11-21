@@ -1615,9 +1615,34 @@ void goto_sm_guard(goto_sm *s, double now, int permit, unsigned long long epoch)
     if (s->st == ST_APPROACH && s->lease_epoch != epoch) goto_sm_drive_refused(s, now, "guard epoch changed");
 }
 
+static int is_guard_why(const char *why)
+{
+    return why && (!strcmp(why, "lidar_guard") || !strncmp(why, "guard", 5));
+}
+
+/* A search / align / memory TURN aborted or refused by the guard. tars_motor lets an in-place TURN
+ * run under a fresh BLOCKED, so this is a guard that went stale/missing for a moment (a CPU hiccup;
+ * seen on a loaded Mac in the full-stack sim). Like a route leg: stop, wait, LOOK again and carry
+ * on, bounded by nav_max_replans. The interrupted search step isn't counted toward the 360. */
+static void turn_guard_retry(goto_sm *s, const char *why)
+{
+    char t[96];
+    snprintf(t, sizeof t, "guard_stop %s %.40s", target_name(s), why);
+    emit(s, ACT_STOP, 0, 0, NULL);
+    emit(s, ACT_EVENT, 0, 0, t);
+    if (++s->replans > (int)s->cfg.nav_max_replans) { goto_sm_fail(s, s->now, "blocked"); return; }
+    if (s->st == ST_SEARCH_TURN) s->searched_deg = fmax(0.0, s->searched_deg - s->cfg.search_step_deg);
+    s->have_track = 0;
+    start_look(s, s->now + s->cfg.nav_guard_wait_s);
+}
+
 int goto_sm_move_refused(goto_sm *s, double now, const char *why)
 {
     s->now = now;
+    if ((s->st == ST_SEARCH_TURN || s->st == ST_ALIGN_TURN || s->st == ST_MEM_TURN) && is_guard_why(why)) {
+        turn_guard_retry(s, why);
+        return 1;
+    }
     if (s->st != ST_FOLLOW_PATH) return 0;
     if (s->leg == 2) {
         char t[96];
@@ -1667,6 +1692,7 @@ void goto_sm_scan(goto_sm *s, double now)
     s->mode = MODE_SCAN;
     s->mem_phase = 0;
     s->scan_n = 0;
+    s->replans = 0;                           /* guard-hiccup retries of the scan turns */
     snprintf(s->result, sizeof s->result, "scanning");
     emit(s, ACT_LED, 0, 0, "rec");
     emit(s, ACT_BEEP, 1, 0, NULL);
@@ -1975,6 +2001,10 @@ void goto_sm_move_status(goto_sm *s, double now, int move_id, const char *move, 
     if (s->st == ST_FOLLOW_PATH && why && (!strcmp(why, "lidar_guard") || !strcmp(why, "obstacle") ||
                                            !strcmp(why, "watchdog") || !strncmp(why, "guard", 5))) {
         leg_blocked(s, why);
+        return;
+    }
+    if ((s->st == ST_SEARCH_TURN || s->st == ST_ALIGN_TURN || s->st == ST_MEM_TURN) && is_guard_why(why)) {
+        turn_guard_retry(s, why);
         return;
     }
     /* aborted / idle (replaced): obstacle, bump, tip, stop from someone else */
