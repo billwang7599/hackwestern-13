@@ -113,6 +113,18 @@ The camapi code is **written from the API docs and hasn't been compiled against 
 - `detect` is all inference: YOLOv8s-worldv2 at 320 px is roughly 13 GFLOPs at 640, so about 3.3 at 320. Expect about 5–10 fps on 2 threads of a Pi 5 with ONNX Runtime. `--fps 8` caps it. `--threads 2` leaves cores for speech. `--coco yolo11n.pt` is about 3× cheaper if the World model is too slow (but has no "trash can").
 - `detect` runs at **normal priority on purpose**, so it can never starve the motor loop.
 
+## nav: room map + route planner (C, `src/nav.[ch]`)
+
+The map side of map-guided GOTO. It's a C99 port of the grid and A* in `pi/dashboard/mapping.py`, with no deps beyond libc/libm, no threads and no I/O, so it builds with `qcc` like the rest of `goto`. Andrew's Python stays the **desktop visualization**; this module is what will drive the robot. `goto` links it but doesn't call it yet (the GOTO state machine integration is separate work).
+
+- **Grid:** 200×200 cells of 0.1 m covering ARKit world x,z in [-10, 10) m, each UNKNOWN/FREE/OCC. A point 0.06 m or less from the floor marks a cell FREE, but never clears an obstacle. A point 0.08–1.2 m above the floor marks it OCC. `nav_carve_ray` frees unknown cells along a ray. It's optional, and LDR1 ingest doesn't use it, the same as the Python.
+- **Feed:** `nav_ingest_ldr1()` parses one LDR1 packet (the phone's measured LiDAR, world-frame points + pose + floor_y, format in `pi/edge-ai/README.md`). The 4-byte length prefix is optional, and validation is the same as `lidar_guard`'s. It maps only when the tracking and floor flags are set. A floor jump over 0.1 m clears the grid. The JSON world-observation stream on 5561 is not parsed in C. Port 5562 is owned by `lidar_guard`, so the packets need to reach `goto` some other way (the nav feed in the plan).
+- **Plan:** `nav_plan(sx,sz → tx,tz)`. The robot's footprint square (2·ceil(r/0.1)+1 cells, r = 0.35 m by default, `nav_set_robot_radius`) must be entirely *observed* free, so **unknown blocks the same as a wall**. A* is 8-connected and never cuts a diagonal corner. Goals are the clear cells on the 0.6–0.85 m ring around the target. Collinear cells are dropped, and the output is the corner waypoints (start excluded, last = approach point). Errors: `START_BLOCKED`, `TARGET_OUTSIDE`, `NO_GOAL`, `NO_PATH`, `NO_MAP`, `TOO_LONG`. About 1.5 ms for a worst-case serpentine across the whole map on an M-series Mac (Pi 5 not measured).
+- **Occluded vs gone:** `nav_line_clear()` returns 1 for a clear line, 0 if an OCC cell is in between (occluded) and -1 if some cells are unknown. It ignores cells within 0.3 m of the end, because the object itself is occupied.
+- **Pose rule:** while tracking is OK, the ARKit pose comes from `nav_set_pose(..., 1)` or each LDR1 packet. When tracking is lost, `nav_get_pose()` maps the dead-reckoned motion (`nav_note_dr()`, from `tars_motor` STATUS `pose=`) since the last tracked moment into the ARKit frame. Always re-check the target with YOLO before declaring arrival.
+
+Tests: `make test` runs `test_nav`, which covers routes, errors, inflation, diagonals, line of sight, pose fallback, LDR1 good/truncated/oversized/NaN and a 200k-packet fuzz. `make test-nav-asan` runs the same tests plus a 1M-packet fuzz under ASan/UBSan. `make test-nav-parity` runs the C planner and `mapping.py`'s `Map._plan`, imported directly, on the same fixtures (wall, door, U-trap, unknown strip, every error, plus seeded random clutter). It requires an **identical** result, either the same error or the same corner list cell for cell. Ties break the way Python's `heapq` breaks them.
+
 ## Mac tests (what has actually run)
 
 ```sh
@@ -134,6 +146,8 @@ Results on the Mac (2026-11-21), host builds only:
 |---|---|
 | `test_core` (C state machine, parser, aliases, config) | 92/92. It also passes under ASan/UBSan. The JSON parser was fuzzed with 300k mutated lines under ASan/UBSan, and one UB was found and fixed (huge `w`/`h`). |
 | `test_yolo` (pre/post-processing, JSON contract) | 25/25 |
+| `test_nav` (grid, A*, line of sight, pose rule, LDR1 parser + fuzz) | 84/84, also under ASan/UBSan with 1M fuzzed LDR1 packets |
+| `nav_parity.py` (C `nav_plan` vs `mapping.py` `Map._plan`) | 1560/1560 identical over 5 seeds (12 hand fixtures + 300 random each; ~74% routed, the rest error cases) |
 | `test_goto_sim.py` sockets + sim + real `tars_motor_host -b stub` | all checks pass. CANCEL → `S` at the motor server: median 0.2 ms, max 0.24 ms. An external `S` cancels within one STATUS poll. |
 | 2D sim, 40 random start poses (0.8–3 m, any bearing, 0.4/0.6/0.8 m objects) | **40/40 arrived**. Median 46 s, max 77 s. Stopped 0.49–0.58 m away, facing within 2°. It never touched the object. |
 | `detect` with ONNX Runtime 1.32 (macOS arm64) + exported YOLO-World 320 px | boxes match ultralytics' own ONNX predict to within 0.1 px and 0.001 confidence on `bus.jpg`. About 11 ms/frame on an M-series Mac with 2 threads. The Pi 5 will be several times slower. |
