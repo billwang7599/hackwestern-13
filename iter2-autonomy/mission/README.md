@@ -153,3 +153,7 @@ kill -9 stopping only its own drive; no key → app won't start, wrong key → e
 **Not run:** on the Pi, under QNX/qcc, over real Wi-Fi, with a real iPhone, a real laptop mic
 in a browser (the JS was syntax-checked and the page logic exercised through the same HTTP
 API, but not clicked in a real browser), or with the real headless service.
+
+### Wheel-less diagnostics
+
+Open `laptop/actions.command` on the Mac for an SSH-only live action stream (or pass a different user@host). It tails the Pi user's `~/tars-{input,motor,nav}-actions.log` journals across creation and rotation. Input records include phone commands and keyboard transitions. Motor entries include command arguments and server replies, including refusals and repeated stop/drive requests. Navigation entries include planner events and dispatched motor commands. Each journal retains its active file and one 8 MiB rotation. Read-only STATUS/PING traffic is omitted. The standalone serial bench writes to the motor journal with client -1 and a serial TX result.
