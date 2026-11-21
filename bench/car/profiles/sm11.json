@@ -1,0 +1,38 @@
+{
+  "name": "sm11",
+  "about": "Kuman SM11 smart car kit: Uno R3, L298N-style EN+IN board, 2 TT 1:48 gearmotors, 2x18650. NOTHING here is measured yet: every value is a guess from the firmware constants, the DC car sims and TT-motor datasheet folklore. Replace them when the car arrives (see measure_when_the_car_arrives).",
+  "measure_when_the_car_arrives": [
+    "1. Battery: multimeter across the battery box, idle (batt_v) and while 'D 1 1' runs on the floor (sag -> batt_r_ohm ~= (V_idle - V_load) / ~0.6 A).",
+    "2. Straight speed: python3 iter1-wasd/laptop/wheel_cal.py dc-move (docs/PI_TEST.md Step 5) on the demo floor. The saved mm_s is the car's speed at D 1 (duty 0.45). In the bench: adjust kv_mps_per_v until 'M 1000' with the firmware's default 150 mm/s lands where the real car did (or run bench/tests/test_car.py's calibration step and compare its recovered mm_s with yours).",
+    "3. Spin: wheel_cal.py dc-spin (deg_s at D 1) -> track_eff_m = 2 * v_D1 / radians(deg_s). dc-spin --slow (duty 0.36) -> tune scrub_v until the bench's slow deg/s matches.",
+    "4. Drift: 'M 1000' on the floor, measure the sideways miss d (m) -> heading change ~= 2*d/1 rad; set gain_l/gain_r so the bench curves the same way (or trim DC_LEFT_GAIN/DC_RIGHT_GAIN in tars.ino, then put gains back to 1).",
+    "5. Deadband: wheels in the air, 'D x x' from rest with the kick disabled is not possible without reflashing; instead creep 'D 0.05 0.05' up until a ROLLING wheel keeps going (v_keep = duty * (batt_v - driver_drop_v)).",
+    "6. Flip 'measured' to true and write the date + how in 'source' for every value you replace."
+  ],
+  "params": {
+    "batt_v":          {"value": 7.4,   "measured": false, "source": "2x18650 nominal (PI_TEST §2b: 2x18650 typical, 8.4 V fresh / ~7.0 V flat; kit battery unverified)"},
+    "batt_r_ohm":      {"value": 0.30,  "measured": false, "source": "guess: two cheap 18650 cells + holder springs + switch"},
+    "idle_a":          {"value": 0.12,  "measured": false, "source": "guess: Uno + L298N logic"},
+    "driver_drop_v":   {"value": 1.8,   "measured": false, "source": "L298N datasheet: ~1.8-3.2 V total drop; low end at TT currents (driver chip itself unverified, PI_TEST §2b)"},
+    "kv_mps_per_v":    {"value": 0.147, "measured": false, "source": "chosen so duty 0.45 (DC_MAX_DUTY) at 7.4 V gives 150 mm/s, the firmware's DC_MM_S_DEFAULT; also ~0.66 m/s at 6 V = the TT 1:48 '200 rpm' rating on a 65 mm wheel"},
+    "v_keep":          {"value": 1.5,   "measured": false, "source": "just under DC_MIN_DUTY 0.30 x (7.4-1.8) = 1.68 V, so the firmware's minimum duty keeps a rolling wheel going (tars.ino DC tuning comment)"},
+    "v_start":         {"value": 2.2,   "measured": false, "source": "guess: above DC_MIN_DUTY so the 0.80 x 40 ms kick (DC_KICK_*) is what starts a wheel, as the firmware assumes"},
+    "scrub_v":         {"value": 0.15,  "measured": false, "source": "guess: skid-steer spin needs more torque (tars.ino DC_SLOW_TURN_DUTY comment)"},
+    "motor_r_ohm":     {"value": 6.5,   "measured": false, "source": "TT motor folklore: ~0.8-1 A stall at 6 V"},
+    "tau_s":           {"value": 0.08,  "measured": false, "source": "guess for a 1:48 TT gearmotor + a ~0.5 kg car"},
+    "brake_tau_s":     {"value": 0.03,  "measured": false, "source": "guess: BRAKE_ON_STOP shorts the motor (PI_TEST §2b 'stops dead')"},
+    "coast_tau_s":     {"value": 0.25,  "measured": false, "source": "guess"},
+    "gain_l":          {"value": 1.0,   "measured": false, "source": "matched sides; the real pair differs (490 vs 980 Hz EN PWM, tars.ino DC_*_GAIN comment)"},
+    "gain_r":          {"value": 1.0,   "measured": false, "source": "matched sides"},
+    "slip":            {"value": 0.03,  "measured": false, "source": "guess: rubber TT wheels on a hard floor"},
+    "drift_deg_per_m": {"value": 0.0,   "measured": false, "source": "0 here; iter2-autonomy/goto/tests/test_dc_car.py sweeps +-15 deg/m as the bad case"},
+    "noise_mps":       {"value": 0.002, "measured": false, "source": "guess"},
+    "track_eff_m":     {"value": 0.20,  "measured": false, "source": "iter2-autonomy/goto/tests/test_dc_car.py Car.track_eff (skid-steer effective track); NOTE: makes D 1 spin ~86 deg/s vs the firmware's uncalibrated 120 deg/s, so an uncalibrated TURN under-turns, as on a real car before wheel_cal.py dc-spin"},
+    "car_r_m":         {"value": 0.12,  "measured": false, "source": "guess: SM11 chassis ~25 x 15 cm"},
+    "bump_g_per_mps":  {"value": 16.0,  "measured": false, "source": "chosen so a 150 mm/s wall hit (2.4 g) passes the firmware's 1200 mg BUMP_THRESHOLD_MG"},
+    "imu_noise_g":     {"value": 0.01,  "measured": false, "source": "MPU6050 at +-8 g, guess"},
+    "uno_resets_below_v": {"value": 6.0, "measured": false, "source": "worst case: the Uno runs off the kit battery (VIN regulator dropout); with the Pi's USB powering it, set 0 (PI_TEST §2b power notes)"},
+    "boot_ms":         {"value": 1600,  "measured": false, "source": "Uno R3 Optiboot after a DTR reset (~1.5 s, motor_uno_serial.c comment) + setup()"},
+    "imu":             {"value": 1,     "measured": false, "source": "MPU6050 fitted on A4/A5 (the kit has none: without one tip/bump is off; set 0 to test that)"}
+  }
+}
