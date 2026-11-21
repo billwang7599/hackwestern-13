@@ -1,8 +1,10 @@
 """Receive motion/video without a screen; return status to the mounted iPhone."""
 import argparse
+import json
 import os
 import queue
 import signal
+import socket
 import threading
 import time
 from dashboard import Feed, stop_feed
@@ -11,6 +13,41 @@ from control import ControlLink, DebugDrive, MotorLink
 from mapping import SceneFeed
 from edge_status import EdgeStatus
 from headless_keyboard import HeadlessKeyboard
+
+
+class MissionTee:
+    """Opt-in copy of the phone status for the laptop mission control (iter2-autonomy/mission/).
+
+    Only runs when TARS_MISSION_TEE_PORT is set (mission_relay listens on 127.0.0.1:5576).
+    Read-only: once a second it sends the status this process last published for the phone,
+    one JSON line, to the relay. Its own thread and socket with a short timeout; any error
+    closes the link and retries later. It never touches the phone link, motors or the guard.
+    """
+    def __init__(self, link, port, period=1.0):
+        self.link, self.port, self.period = link, port, period
+        self.stop = threading.Event()
+        self.sent = 0
+
+    def run(self):
+        sock = None
+        while not self.stop.wait(self.period):
+            with self.link.lock:
+                status = self.link.latest
+            if not status:
+                continue
+            try:
+                if sock is None:
+                    sock = socket.create_connection(('127.0.0.1', self.port), timeout=0.5)
+                    sock.settimeout(0.5)
+                sock.sendall(json.dumps(status, allow_nan=False).encode() + b'\n')
+                self.sent += 1
+            except (OSError, ValueError):
+                if sock is not None:
+                    sock.close()
+                sock = None
+                self.stop.wait(2)
+        if sock is not None:
+            sock.close()
 
 
 def main():
@@ -33,6 +70,10 @@ def main():
     edge_thread.start()
     link_thread = threading.Thread(target=link.run, daemon=True)
     link_thread.start()
+    tee = None
+    if os.environ.get('TARS_MISSION_TEE_PORT'):
+        tee = MissionTee(link, int(os.environ['TARS_MISSION_TEE_PORT']))
+        threading.Thread(target=tee.run, daemon=True).start()
     feed, video = Feed(5557), VideoFeed(5558)
     scene = SceneFeed(fusion_port=5569)
     workers = []
@@ -136,6 +177,8 @@ def main():
                               receipt_age_ms=round(max(0, age) * 1000) if sample else None,
                               motor_mode=motor_status.get('mode', 'unknown'), motor=motor_status, left=left, right=right, surroundings=map_snapshot, **edge_snapshot))
     finally:
+        if tee is not None:
+            tee.stop.set()
         keyboard.close()
         motors.stop.set()
         motor_thread.join(timeout=1)

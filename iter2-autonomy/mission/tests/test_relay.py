@@ -553,6 +553,41 @@ def test_voice_pipe_key_down(exe, mport, env, voice):
         rl.close()
 
 
+def test_headless_tee(exe, mport, env):
+    """Andrew's headless.py MissionTee (opt-in, TARS_MISSION_TEE_PORT) feeding the relay."""
+    print("phone status tee from headless.py")
+    sys.path.insert(0, os.path.join(REPO, "iter2-autonomy", "dashboard"))
+    from headless import MissionTee                     # noqa: E402
+
+    class FakeLink:                                      # ControlLink's lock + latest
+        lock = threading.Lock()
+        latest = {"type": "status", "mode": "headless", "safety": {"verdict": "CLEAR"},
+                  "surroundings": {"grid": "0" * 40000, "pose": [0.1, 0, 0.2, 0.5]}}
+    rl = Relay(exe, mport, *env)
+    tee = MissionTee(FakeLink, rl.tee, period=0.2)
+    threading.Thread(target=tee.run, daemon=True).start()
+    try:
+        w = Lap(rl.port, "WATCH")
+        ok = wait_for(lambda: w.last("P") is not None, 3)
+        p = json.loads(w.last("P") or "{}")
+        check(ok and p.get("safety", {}).get("verdict") == "CLEAR" and len(p["surroundings"]["grid"]) == 40000,
+              "MissionTee's status (40 KB map included) reaches the laptop as P")
+        w.close()
+        port = rl.tee
+        rl.close()
+        time.sleep(1.0)                                   # one send may still land in the dead socket
+        sent = tee.sent
+        time.sleep(1.5)
+        check(tee.sent == sent, "relay gone: the tee stops sending (backs off), nothing else happens")
+        rl = Relay(exe, mport, *env, extra=("--tee", str(port)))   # same tee port (later flag wins)
+        w = Lap(rl.port, "WATCH")
+        check(wait_for(lambda: w.last("P") is not None, 5), "relay back: the tee reconnects by itself")
+        w.close()
+    finally:
+        tee.stop.set()
+        rl.close()
+
+
 def main() -> int:
     exe = sys.argv[1] if len(sys.argv) > 1 else os.path.join(MISSION, "build", "mission_relay_host")
     for p in (exe, MOTOR_BIN):
@@ -570,6 +605,7 @@ def main() -> int:
         test_slow_laptop(exe, mport, env, goto, broker)
         test_clean_disconnects(exe, mport, env, goto, voice)
         test_voice_pipe_key_down(exe, mport, env, voice)
+        test_headless_tee(exe, mport, env)
     finally:
         motor.terminate()
         motor.wait(5)
