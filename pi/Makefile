@@ -3,20 +3,22 @@
 #   make               cross-compile for QNX aarch64 (inside docker/run.sh; auto-
 #                      delegates to the container if qcc isn't on PATH)
 #   make host          build with the host cc (macOS clang) for quick testing
+#   make test          host build + test_server.py (stub + fake-Uno pty)
 #   make deploy        scp binary to the Pi
 #   make run           ssh in and run it (Ctrl-C stops motors)
 #   make compdb        regenerate compile_commands.json for clangd (via bear)
 #
-# Override: make deploy PI_HOST=qnxuser@192.168.1.42  BACKEND=stub  UART=/dev/ser2
+# Override: make run PI_HOST=qnxuser@192.168.1.42  BACKEND=stub  UART=/dev/ser1
 
 PI_HOST  ?= qnxuser@tars.local
 PI_DIR   ?= /data/home/qnxuser
-BACKEND  ?= pico
-UART     ?= /dev/ser1
+BACKEND  ?= uno
+UART     ?= /dev/serusb1
 PORT     ?= 5555
 
 BIN      := tars_motor
-SRCS     := src/main.c src/motor_stub.c src/motor_pico_uart.c src/obstacle.c
+SRCS     := src/main.c src/gesture.c src/motor_stub.c src/motor_uno_serial.c \
+            src/motor_pico_uart.c src/obstacle.c
 CFLAGS   := -Wall -Wextra -O2 -std=gnu11
 
 QCC      := qcc -V gcc_ntoaarch64le
@@ -24,7 +26,7 @@ QNX_LIBS := -lsocket -lm
 
 REPO     := $(abspath ..)
 
-.PHONY: all host deploy run compdb clean
+.PHONY: all host test deploy run compdb clean
 
 all: build/$(BIN)
 
@@ -44,6 +46,11 @@ build:
 host: | build
 	cc $(CFLAGS) -o build/$(BIN)_host $(SRCS) -lpthread -lm
 	@echo ">> run: ./build/$(BIN)_host -b stub"
+
+# Host build + protocol/watchdog/gesture/tip tests against -b stub, plus the
+# real uno backend talking to a fake Uno on a pseudo-terminal. stdlib only.
+test: host
+	python3 test_server.py build/$(BIN)_host
 
 deploy: build/$(BIN)
 	scp build/$(BIN) $(PI_HOST):$(PI_DIR)/$(BIN)

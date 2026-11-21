@@ -2,3 +2,5 @@ anthropic>=0.40
 # For real STT later (see voice.py listen()):
 # faster-whisper
 # sounddevice
+# Switch controller (switch_teleop.py), optional:
+# pygame>=2.5

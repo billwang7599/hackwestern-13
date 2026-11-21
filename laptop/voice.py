@@ -8,7 +8,8 @@
     python voice.py                 # with robot (TARS_HOST, default tars.local)
     python voice.py --no-robot      # brain only, moves are just printed
 
-Try: "set humor to 75 percent", "come forward a bit", "turn around", "wave".
+Try: "set humor to 75 percent", "come forward a bit", "turn around", "wave",
+"point at the door", "strike your pose", "raise your left arm".
 
 STT and TTS are deliberately pluggable: swap listen()/speak() below.
 """
@@ -19,10 +20,11 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 
 import anthropic
 
-from tars_client import DEFAULT_HOST, Tars, TarsError
+from tars_client import DEFAULT_HOST, GESTURES, Tars, TarsError
 
 MODEL = "claude-sonnet-5-5"
 
@@ -74,11 +76,32 @@ TOOLS = [
     },
     {
         "name": "gesture",
-        "description": "Do a physical gesture with the slabs.",
+        "description": (
+            "Do a physical gesture with your two outer slabs (arms). wave: right arm up "
+            "and waggle. point: right arm straight forward. shrug: both arms flick. nod: "
+            "small double dip. stance: split the slabs fore/aft into your signature pose "
+            "(stays). fold: all slabs flush, the closed monolith (stays). Gestures take "
+            "1-6 seconds; the tool returns when it's finished."
+        ),
         "input_schema": {
             "type": "object",
-            "properties": {"name": {"type": "string", "enum": ["wave", "nod"]}},
+            "properties": {"name": {"type": "string", "enum": GESTURES}},
             "required": ["name"],
+        },
+    },
+    {
+        "name": "arm",
+        "description": (
+            "Swing one outer slab to an absolute angle. 0 = flush with the body, positive "
+            "= top swings forward, negative = backward, limit +-135. Slow (about 45 deg/s)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "which": {"type": "string", "enum": ["left", "right", "both"]},
+                "degrees": {"type": "number", "minimum": -135, "maximum": 135},
+            },
+            "required": ["which", "degrees"],
         },
     },
     {
@@ -104,8 +127,10 @@ def system_prompt() -> str:
         "Let those settings visibly shape your tone: high humor means dry, deadpan jokes; "
         "low humor means plain and literal. Lower honesty allows tactful white lies. "
         "Your replies are spoken aloud: keep them to 1-3 short sentences, no markdown, "
-        "no emoji. Use the tools to move, gesture or change settings when asked; "
-        "confirm setting changes in character."
+        "no emoji. Use the tools to move, gesture, swing your arms or change settings "
+        "when asked, and feel free to add a fitting gesture now and then. Confirm "
+        "setting changes in character. If a tool says you're tipped over or bumped "
+        "something, say so and ask a human to help; never retry driving while tipped."
     )
 
 
@@ -133,7 +158,15 @@ class Robot:
                         "left": (-s, s), "right": (s, -s)}[args["direction"]]
                 self.t.move_for(l, r, float(args["seconds"]))
             elif name == "gesture":
-                self.t.gesture(args["name"])
+                self.t.gesture_wait(args["name"])
+            elif name == "arm":
+                arms = {"left": [0], "right": [1], "both": [0, 1]}[args["which"]]
+                st = self.t.status()
+                got = [self.t.arm(a, float(args["degrees"])) for a in arms]
+                # ~45 deg/s: wait so the next tool call sees the arm in place
+                travel = max(abs(got[i] - float(st.get(f"arm{a}", 0))) for i, a in enumerate(arms))
+                time.sleep(min(6.5, travel / 45.0 + 0.2))
+                return f"arm at {got[0]:.0f} degrees"
             return "done"
         except (TarsError, OSError) as e:
             return f"failed: {e}"

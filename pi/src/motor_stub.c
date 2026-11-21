@@ -1,6 +1,6 @@
 /* Stub backend: prints commands instead of moving anything.
- * Use it to test networking/watchdog with no hardware attached.
- * Also the starting point for a direct-GPIO backend on the Pi 5 (see TODO). */
+ * Use it to test networking, watchdog, gestures and tip/bump handling with no
+ * hardware attached (inject Uno events with the SIM command, stub only). */
 #include <stdio.h>
 #include <math.h>
 #include "motor.h"
@@ -11,9 +11,6 @@ static int stub_init(const char *dev)
 {
     (void)dev;
     fprintf(stderr, "[stub] init\n");
-    /* TODO(direct-gpio): open the QNX Pi GPIO resource manager here and set
-     * the TB6612FNG pins as outputs. Pi 5 GPIO goes through the RP1 chip; check
-     * the QNX RPi5 BSP docs / sample apps for the GPIO + PWM interface. */
     return 0;
 }
 
@@ -27,11 +24,15 @@ static int stub_drive(float l, float r)
     return 0;
 }
 
-static int stub_gesture(const char *name)
+static int stub_arm(int arm, float deg, float dps)
 {
-    fprintf(stderr, "[stub] gesture %s\n", name);
+    fprintf(stderr, "[stub] arm %d -> %.1f deg @ %.0f dps\n", arm, deg, dps);
     return 0;
 }
+
+static int stub_arm_halt(void) { fprintf(stderr, "[stub] arms halt\n"); return 0; }
+static int stub_arm_zero(void) { fprintf(stderr, "[stub] arms zero\n"); return 0; }
+static int stub_level(void)    { fprintf(stderr, "[stub] level (upright recaptured)\n"); return 0; }
 
 static void stub_shutdown(void)
 {
@@ -39,5 +40,15 @@ static void stub_shutdown(void)
 }
 
 const motor_backend_t motor_stub = {
-    "stub", stub_init, stub_drive, stub_gesture, stub_shutdown,
+    .name = "stub",
+    .default_dev = "-",
+    .init = stub_init,
+    .drive = stub_drive,
+    .gesture = NULL,              /* gestures run on the Pi as arm keyframes */
+    .shutdown = stub_shutdown,
+    .arm = stub_arm,
+    .arm_halt = stub_arm_halt,
+    .arm_zero = stub_arm_zero,
+    .level = stub_level,
+    .poll = NULL,                 /* events come from SIM in main.c */
 };

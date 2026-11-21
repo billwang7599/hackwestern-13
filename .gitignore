@@ -21,3 +21,7 @@ goalie/pi/build/
 goalie/**/.venv/
 goalie/sim/out/
 goalie/arduino/goalie/build/
+
+# tars uno
+uno/test/build/
+uno/tars/build/

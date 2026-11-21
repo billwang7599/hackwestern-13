@@ -84,6 +84,13 @@ static void pico_shutdown(void)
     fd = -1;
 }
 
+/* Legacy: the Pico has one gesture servo and no arms or IMU. Kept compiling in
+ * case a Pico turns up; the default backend is now "uno". */
 const motor_backend_t motor_pico_uart = {
-    "pico", pico_init, pico_drive, pico_gesture, pico_shutdown,
+    .name = "pico",
+    .default_dev = "/dev/ser1",
+    .init = pico_init,
+    .drive = pico_drive,
+    .gesture = pico_gesture,
+    .shutdown = pico_shutdown,
 };

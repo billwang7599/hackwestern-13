@@ -3,7 +3,9 @@
     from tars_client import Tars
     with Tars("tars.local") as t:
         t.drive(0.5, 0.5)     # must be refreshed < 500 ms or the watchdog stops
-        t.gesture("wave")
+        t.gesture("wave")     # wave point shrug nod stance fold
+        t.arm(0, 45)          # left arm swings 45 deg forward
+        t.home()
         t.stop()
 
 Set TARS_HOST / TARS_PORT env vars to change the default address.
@@ -18,6 +20,9 @@ import time
 DEFAULT_HOST = os.environ.get("TARS_HOST", "tars.local")
 DEFAULT_PORT = int(os.environ.get("TARS_PORT", "5555"))
 
+GESTURES = ["wave", "point", "shrug", "nod", "stance", "fold"]
+LEFT, RIGHT = 0, 1
+
 
 class TarsError(RuntimeError):
     pass
@@ -30,8 +35,6 @@ class Tars:
         self._sock: socket.socket | None = None
         self._file = None
         self._lock = threading.Lock()
-        self._hold: tuple[float, float] | None = None
-        self._hold_thread: threading.Thread | None = None
 
     # -- connection -------------------------------------------------------
     def connect(self) -> "Tars":
@@ -41,14 +44,16 @@ class Tars:
         return self
 
     def close(self) -> None:
-        self._hold = None
         if self._sock:
             try:
                 self.stop()
             except Exception:
                 pass
+            if self._file:
+                self._file.close()
             self._sock.close()
         self._sock = None
+        self._file = None
 
     def __enter__(self) -> "Tars":
         return self.connect()
@@ -68,37 +73,83 @@ class Tars:
         if not reply:
             raise TarsError("connection closed")
         if reply.startswith("ERR"):
-            raise TarsError(reply)
+            raise TarsError(reply[3:].strip())
         return reply[2:].strip()
 
-    # -- commands ---------------------------------------------------------
+    # -- wheels -----------------------------------------------------------
     def drive(self, left: float, right: float) -> None:
+        """Raises TarsError while tipped over ('tipped ...') or after a bump ('bumped ...')."""
         self.send(f"D {left:.3f} {right:.3f}")
 
     def stop(self) -> None:
-        self._hold = None
+        """Stop the wheels, cancel any gesture, halt both arms."""
         self.send("S")
 
-    def gesture(self, name: str) -> None:
-        self.send(f"G {name}")
+    # -- arms + gestures --------------------------------------------------
+    def gesture(self, name: str) -> float:
+        """Start a gesture (non-blocking). Returns its expected duration in seconds."""
+        r = self.send(f"G {name}")
+        return int(r) / 1000.0 if r.isdigit() else 0.0
 
+    def gesture_wait(self, name: str) -> None:
+        """Start a gesture and block until the Pi reports it finished."""
+        end = time.monotonic() + self.gesture(name) + 1.0   # timeout, not the normal exit
+        time.sleep(0.1)
+        while time.monotonic() < end and self.status().get("gesture") == name:
+            time.sleep(0.1)
+
+    def arm(self, which: int, deg: float, dps: float | None = None) -> float:
+        """Arm 0=left 1=right to deg (+ = forward, clamped to +-135). Returns the clamped angle."""
+        cmd = f"A {which} {deg:.1f}" + (f" {dps:.0f}" if dps else "")
+        return float(self.send(cmd))
+
+    def home(self) -> None:
+        self.send("HOME")
+
+    def zero(self) -> None:
+        """Declare the arms' current position as 0 (after straightening them by hand)."""
+        self.send("ZERO")
+
+    def level(self) -> None:
+        """Declare the robot's current orientation as upright (tilt reference)."""
+        self.send("LEVEL")
+
+    def reset(self) -> None:
+        """Clear the tip-over latch once TARS is standing again."""
+        self.send("RESET")
+
+    def gestures(self) -> list[str]:
+        return self.send("GESTURES").split()
+
+    # -- info ---------------------------------------------------------------
     def ping(self) -> float:
         t0 = time.monotonic()
         self.send("PING")
         return (time.monotonic() - t0) * 1000.0
 
     def status(self) -> dict:
-        l, r, age, dist, estop = self.send("STATUS").split()
-        return {"left": float(l), "right": float(r), "ms_since_cmd": int(age),
-                "dist_m": float(dist), "estop": estop == "1"}
+        parts = self.send("STATUS").split()
+        l, r, age, dist, estop = parts[:5]
+        st: dict = {"left": float(l), "right": float(r), "ms_since_cmd": int(age),
+                    "dist_m": float(dist), "estop": estop == "1"}
+        for kv in parts[5:]:
+            k, _, v = kv.partition("=")
+            try:
+                st[k] = float(v) if "." in v else int(v)
+            except ValueError:
+                st[k] = v
+        st["tipped"] = bool(st.get("tipped", 0))
+        return st
 
     # -- convenience: timed moves (feeds the watchdog for you) -------------
     def move_for(self, left: float, right: float, seconds: float, hz: float = 10) -> None:
         end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            self.drive(left, right)
-            time.sleep(1.0 / hz)
-        self.stop()
+        try:
+            while time.monotonic() < end:
+                self.drive(left, right)
+                time.sleep(1.0 / hz)
+        finally:
+            self.stop()
 
     def forward(self, seconds: float = 1.0, speed: float = 0.5) -> None:
         self.move_for(speed, speed, seconds)
