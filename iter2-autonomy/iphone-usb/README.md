@@ -7,7 +7,7 @@ This Pi image has no `devc-serusb` binary; the available `qnx-devc` package
 contains the PL011 UART driver, not the USB serial driver.
 
 The existing `uno_bridge.py` uses this project's patched libusb and exposes
-a raw PTY through `pi/dashboard/state/uno-serial` at fixed CDC 115200 8N1.
+a raw PTY through `iter2-autonomy/dashboard/state/uno-serial` at fixed CDC 115200 8N1.
 The runtime launcher/HID exclusions reserve this Uno as well as the phone.
 The service supervisor starts the bridge when the Uno backend and that
 project-local serial path are selected. Do not start a second USB claimant:
@@ -34,24 +34,24 @@ Upstream sources are retained locally in `vendor/iphone-usb/` (gitignored).
 `sources.lock` records their exact commits and URLs. No credentials are stored.
 Our scripts and application code are tracked separately from upstream sources.
 
-Recreate the source directories with `python3 pi/iphone-usb/fetch-sources.py`.
+Recreate the source directories with `python3 iter2-autonomy/iphone-usb/fetch-sources.py`.
 This checks pinned commits and applies the recorded QNX patch. Make a source
 archive without .git directories or macOS extended attributes. Transfer sources plus
 this directory while preserving their paths. Run on QNX:
 
 ```sh
-sh pi/iphone-usb/build-qnx.sh
-sh pi/iphone-usb/build-libusb-qnx.sh
+sh iter2-autonomy/iphone-usb/build-qnx.sh
+sh iter2-autonomy/iphone-usb/build-libusb-qnx.sh
 ```
 
-Installation is under `pi/iphone-usb/install/` in the transferred project;
-build output is under `pi/iphone-usb/logs/`. No boot service is configured.
+Installation is under `iter2-autonomy/iphone-usb/install/` in the transferred project;
+build output is under `iter2-autonomy/iphone-usb/logs/`. No boot service is configured.
 The build script uses native clang, not the repo's Docker cross-compile workflow.
 
 Compile the read-only USB probe:
 
 ```sh
-clang pi/iphone-usb/probe.c -o pi/iphone-usb/probe $(pkg-config --cflags --libs libusb-1.0)
+clang iter2-autonomy/iphone-usb/probe.c -o iter2-autonomy/iphone-usb/probe $(pkg-config --cflags --libs libusb-1.0)
 sudo ./pi/iphone-usb/probe
 ```
 
@@ -60,8 +60,8 @@ sudo ./pi/iphone-usb/probe
 From `/data/home/qnxuser/projects/iphone-usb`:
 
 ```sh
-sudo sh pi/iphone-usb/configure-runtime.sh
-sudo sh pi/iphone-usb/run-usbmuxd.sh
+sudo sh iter2-autonomy/iphone-usb/configure-runtime.sh
+sudo sh iter2-autonomy/iphone-usb/run-usbmuxd.sh
 ```
 
 The first command restarts the HID driver and USB launcher with a specific
@@ -72,20 +72,20 @@ modified. The second command runs in the foreground; Ctrl-C stops it.
 In a second SSH terminal, from the same directory:
 
 ```sh
-pi/iphone-usb/install/bin/idevicepair validate
+iter2-autonomy/iphone-usb/install/bin/idevicepair validate
 # Only if not already paired: idevicepair pair, then accept Trust on the phone.
-pi/iphone-usb/install/bin/iproxy -l -s 127.0.0.1 5557:5557
+iter2-autonomy/iphone-usb/install/bin/iproxy -l -s 127.0.0.1 5557:5557
 ```
 
 Open MotionUSB on the iPhone and tap Start. In a third terminal:
 
 ```sh
-python3 pi/iphone-usb/receive_motion.py --seconds 10
+python3 iter2-autonomy/iphone-usb/receive_motion.py --seconds 10
 ```
 
 The receiver connects only to localhost and times out after one second of
 silence. It is a diagnostic, not a motor safety controller. The iPhone app source
-and signing instructions are in `iphone/`.
+and signing instructions are in `iter2-autonomy/iphone/`.
 
 Observed on this image: the packaged libusb backend crashed in an unprivileged
 probe. The same probe under sudo successfully opened Apple device 05ac:12a8 and
@@ -119,11 +119,11 @@ first pairing attempt. **Stop the daemon before unplugging, and restart it after
 reconnecting.** This is a bring-up workaround, not a production-quality driver.
 Disconnect/recovery and long-running stability need more testing.
 
-Pairing records stay on the Pi under `pi/iphone-usb/state/`, excluded from git.
+Pairing records stay on the Pi under `iter2-autonomy/iphone-usb/state/`, excluded from git.
 To restore the original runtime USB behavior after stopping usbmuxd:
 
 ```sh
-sudo sh pi/iphone-usb/configure-runtime.sh restore
+sudo sh iter2-autonomy/iphone-usb/configure-runtime.sh restore
 ```
 
 The package-provided libusb remains installed; the patched library lives only

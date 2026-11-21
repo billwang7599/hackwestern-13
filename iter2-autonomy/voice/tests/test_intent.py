@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Intent classifier tests (Mac/Linux host; standard library only).
 
-    make -C voice test-intent        # builds build/intent_cli, then runs this
+    make -C iter2-autonomy/voice test-intent        # builds build/intent_cli, then runs this
 
   1. normalisation, wake word, safety words, number/slot parser (unit tests)
   2. held-out accuracy on TEST templates (phrasings never seen in training),
@@ -11,7 +11,7 @@
   5. Python <-> C parity on every sentence above + fuzz strings
   6. latency (C and Python)
 
---markdown prints the tables for voice/README.md.
+--markdown prints the tables for iter2-autonomy/voice/README.md.
 """
 from __future__ import annotations
 
@@ -270,7 +270,7 @@ def test_latency(m: I.Model, texts):
 
 if __name__ == "__main__":
     if not os.path.exists(CLI):
-        sys.exit(f"{CLI} missing: run make -C voice intent_cli")
+        sys.exit(f"{CLI} missing: run make -C iter2-autonomy/voice intent_cli")
     model = I.load_model()
     print(f"model: threshold {model.threshold}, stop_threshold {model.stop_threshold}")
     slot_texts = test_units(model)

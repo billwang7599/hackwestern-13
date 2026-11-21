@@ -21,14 +21,14 @@
  *                        A non-zero D, S, a new MOVE/TURN, tip, bump or the
  *                        client disconnecting aborts a running move.
  *   WHEELCAL [diam track] set (and save on the Uno) wheel diameter / track mm
- *   LED <name|0-3>       on-robot status LED. Names (vision/GESTURES.md §7): off=0,
+ *   LED <name|0-3>       on-robot status LED. Names (iter3-pet/vision/GESTURES.md §7): off=0,
  *                        teach=2 (slow blink), rec=1 (solid), ok=1, no=3 (fast), forget=3
  *   BEEP <n>             n short beeps on the robot's buzzer (0 = silence)
  *   VIS <mode> <fps> <cam_ms> <stop_ms> <label>
- *                        report from the vision app (vision/), shown in STATUS as
+ *                        report from the vision app (iter3-pet/vision/), shown in STATUS as
  *                        vis_*; does NOT feed the watchdog
  *   MODE <gesture|follow|toggle|teach>
- *                        ask the vision app to switch mode (e.g. from voice/;
+ *                        ask the vision app to switch mode (e.g. from iter2-autonomy/voice/;
  *                        teach = start teach-a-gesture, like the Uno button). Shown
  *                        in STATUS as mode_req= mode_seq=, and in the reply to VIS
  *                        ("OK MODE <name> <seq>") so the vision app sees it at 1 Hz.
@@ -36,7 +36,7 @@
  *   SIM T|B|READY [n]    stub backend only: inject a co-processor event (tests)
  *   SIM BTN TEACH|FORGET stub backend only: inject a button press
  *   POSE                 -> "OK <x_mm> <y_mm> <hdg_deg> <epoch> <moving>" dead-reckoned pose
- *   POSE RESET           pose back to 0,0,0 and a new epoch (goto/ re-bases its memory)
+ *   POSE RESET           pose back to 0,0,0 and a new epoch (iter2-autonomy/goto/ re-bases its memory)
  *
  * Pose (best effort, no encoders): the 28BYJ-48 wheels move what they're told,
  * so the pose is integrated from the motion that actually ran: the slewed D
@@ -50,9 +50,9 @@
  * STATUS also has move=idle|running|done|aborted move_id= move_kind=MOVE|TURN|-
  * move_req= move_done= move_why= move_est_ms= wheel_d= wheel_t= and the on-robot
  * button counters btn_teach= btn_forget= (they only ever count up), and stops=
- * (number of S received from any client; goto/ cancels when it goes up).
+ * (number of S received from any client; iter2-autonomy/goto/ cancels when it goes up).
  *
- * Several clients at once (e.g. vision/ + voice/ on the Pi, teleop on a laptop):
+ * Several clients at once (e.g. iter3-pet/vision/ + iter2-autonomy/voice/ on the Pi, teleop on a laptop):
  *   - S from ANY client stops everything at once, and for -H ms (default 1500)
  *     non-zero D from OTHER clients is refused ("ERR held ..."), so a follow-mode
  *     D stream can't undo someone else's stop. The client that sent S can drive
@@ -144,7 +144,7 @@ static int   req_halt, req_zero, req_level, req_stop_gesture, req_reset;
 static int   req_hard_stop;                /* S: zero the wheels this tick, no slew */
 static long long stop_rx_ms;
 static int   stop_count;                  /* S commands received (STATUS stops=), lets
-                                           * autonomous clients (goto/) see a stop sent by
+                                           * autonomous clients (iter2-autonomy/goto/) see a stop sent by
                                            * someone else and give up */              /* when that S arrived */
 static long  stop_ms = -1;                /* last S: received -> wheels commanded 0 */
 /* last VIS report from the vision app */
@@ -799,7 +799,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
     } else if (!strcasecmp(cmd, "LED") || !strcasecmp(cmd, "BEEP")) {
         int led = !strcasecmp(cmd, "LED"), v = -1, n2 = 0;
         char word[16] = "";
-        /* vision/GESTURES.md §7 names -> Uno L patterns (0 off, 1 on, 2 slow, 3 fast) */
+        /* iter3-pet/vision/GESTURES.md §7 names -> Uno L patterns (0 off, 1 on, 2 slow, 3 fast) */
         static const struct { const char *name; int pat; } led_names[] = {
             { "off", 0 }, { "teach", 2 }, { "rec", 1 }, { "ok", 1 }, { "no", 3 }, { "forget", 3 },
         };

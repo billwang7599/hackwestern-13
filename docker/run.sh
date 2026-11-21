@@ -3,7 +3,7 @@
 #
 #   docker/run.sh build          # build the image (once)
 #   docker/run.sh                # interactive shell, QNX env sourced, repo at its Mac path
-#   docker/run.sh make -C pi     # run one command in the container
+#   docker/run.sh make -C iter1-wasd/pi     # run one command in the container
 #
 # Env overrides:
 #   QNX_SDP_HOST  path to SDP on the Mac (default ~/qnx800)

@@ -15,7 +15,7 @@ packed YUV 4:2:2 instead, so this subclass also accepts packed frames:
 
 THIS FILE HAS NOT RUN ON QNX YET. The frame type number is logged on the first
 frame, so if colours look wrong, or the stride guess fails, the log says what
-the camera is really sending. The C++ app (vision/qnx/cpp) uses QNX's
+the camera is really sending. The C++ app (iter3-pet/vision/qnx/cpp) uses QNX's
 qnx_defs.cc, which handles YCBYCR/CBYCRY/RGB888/RGB8888/BGR8888 with the real
 header constants.
 """

@@ -52,37 +52,37 @@ Find the Pi's IP from the hotspot's client list, then check SSH works:
 ```sh
 docker/run.sh build                  # once: builds the tars-qnx800 image (~minutes)
 docker/run.sh qcc --version          # sanity: prints a qcc/gcc version
-make -C pi                           # cross-compiles in Docker -> pi/build/tars_motor
-file pi/build/tars_motor             # expect: ELF 64-bit LSB ... ARM aarch64
+make -C iter1-wasd/pi                           # cross-compiles in Docker -> iter1-wasd/pi/build/tars_motor
+file iter1-wasd/pi/build/tars_motor             # expect: ELF 64-bit LSB ... ARM aarch64
 ```
 
 If `qcc` is on your PATH (you sourced `~/qnx800/qnxsdp-env.sh` on a Linux
-laptop), `make -C pi` uses it directly with no Docker.
+laptop), `make -C iter1-wasd/pi` uses it directly with no Docker.
 
 Deploy it. `PI_HOST` defaults to `qnxuser@tars.local`; the file goes to `/data/home/qnxuser/tars_motor`:
 
 ```sh
-make -C pi deploy PI_HOST=qnxuser@<pi-ip>
+make -C iter1-wasd/pi deploy PI_HOST=qnxuser@<pi-ip>
 ```
 
-**Optional first check with no hardware:** `make -C pi host && make -C pi test`
+**Optional first check with no hardware:** `make -C iter1-wasd/pi host && make -C iter1-wasd/pi test`
 builds a Mac/Linux version and runs the server tests (about a minute). It
 should end with `270/270 checks passed`.
 
 ### 1b. Uno firmware — on the laptop, Uno plugged into the laptop
 
-The sketch is `uno/tars/tars.ino`. The defaults already match the wiring
+The sketch is `iter1-wasd/uno/tars/tars.ino`. The defaults already match the wiring
 below (stepper wheels, no arms, button/LED/buzzer).
 
-**Arduino IDE:** open `uno/tars/tars.ino`, then *Tools → Board → Arduino Uno*
+**Arduino IDE:** open `iter1-wasd/uno/tars/tars.ino`, then *Tools → Board → Arduino Uno*
 and *Tools → Port → the usbmodem / usbserial port*. Click Upload.
 
 **arduino-cli:**
 ```sh
 arduino-cli core install arduino:avr
 arduino-cli board list                                   # find the port
-arduino-cli compile --fqbn arduino:avr:uno uno/tars
-arduino-cli upload  --fqbn arduino:avr:uno -p /dev/cu.usbmodemXXXX uno/tars
+arduino-cli compile --fqbn arduino:avr:uno iter1-wasd/uno/tars
+arduino-cli upload  --fqbn arduino:avr:uno -p /dev/cu.usbmodemXXXX iter1-wasd/uno/tars
 ```
 The sketch has never been compiled by avr-gcc, only by a host compiler
 against a mock Arduino core. If the compile fails, send the error to the lead.
@@ -129,10 +129,10 @@ If it can't open the Uno, run `ls /dev/ser*` on the Pi and see "No serial device
 
 **4. Drive from the laptop** (wheels in the air first):
 ```sh
-python3 laptop/tars_client.py <pi-ip>     # ping + STATUS: expect 'backend': 'uno', 'ready': 1
-python3 laptop/teleop.py <pi-ip>          # click the window, hold W/A/S/D, Space = stop
+python3 iter1-wasd/laptop/tars_client.py <pi-ip>     # ping + STATUS: expect 'backend': 'uno', 'ready': 1
+python3 iter1-wasd/laptop/teleop.py <pi-ip>          # click the window, hold W/A/S/D, Space = stop
 ```
-`wheel_cal.py` (§3 step 5) works the same way: `TARS_HOST=<pi-ip> python3 laptop/wheel_cal.py move 100`.
+`wheel_cal.py` (§3 step 5) works the same way: `TARS_HOST=<pi-ip> python3 iter1-wasd/laptop/wheel_cal.py move 100`.
 
 ---
 
@@ -235,13 +235,13 @@ It's fine to start `tars_motor` **before** plugging in the Uno: it logs
 when the Uno appears. Unplugging the Uno logs `[uno] lost ...`, and
 replugging reconnects on its own.
 
-(Same thing from the laptop: `make -C pi run PI_HOST=qnxuser@<pi-ip> UART=/dev/serusb1`.)
+(Same thing from the laptop: `make -C iter1-wasd/pi run PI_HOST=qnxuser@<pi-ip> UART=/dev/serusb1`.)
 
 ### Step 3 — STATUS from the laptop
 
 ```sh
 export TARS_HOST=<pi-ip>
-python3 laptop/tars_client.py $TARS_HOST
+python3 iter1-wasd/laptop/tars_client.py $TARS_HOST
 ```
 Expect `ping N ms` and a dict containing `'backend': 'uno'`, `'ready': 1`,
 `'tipped': False`, `'move': 'idle'`, `'wheel_d': 65.0`.
@@ -266,7 +266,7 @@ because terminals don't report key release.
 
 ### Step 5 — Calibration (on the floor)
 
-Use a hard, flat floor and a tape measure. Run these from `laptop/`.
+Use a hard, flat floor and a tape measure. Run these from `iter1-wasd/laptop/`.
 
 1. **Wheel diameter:** mark the start, then `python wheel_cal.py move 1000`.
    Measure the real distance in mm. Then
@@ -304,14 +304,14 @@ Expected speed: about **4 cm/s** at 12 RPM with 65 mm wheels, so crossing
 
 ### Step 7 — voice (speech commands, all on the Pi)
 
-Details and the full command list are in [`voice/README.md`](../voice/README.md).
+Details and the full command list are in [`iter2-autonomy/voice/README.md`](../iter2-autonomy/voice/README.md).
 Everything here runs on QNX in C; no laptop is needed once it's deployed.
 
 **7a. Mic check first (10 min). If this fails, voice is off; tell the lead.**
 ```sh
-make -C voice mic_test                          # laptop: QNX build (Docker + ~/qnx800), no whisper needed
+make -C iter2-autonomy/voice mic_test                          # laptop: QNX build (Docker + ~/qnx800), no whisper needed
 ssh qnxuser@<pi-ip> 'mkdir -p voice'
-scp voice/build/qnx/mic_test qnxuser@<pi-ip>:voice/
+scp iter2-autonomy/voice/build/qnx/mic_test qnxuser@<pi-ip>:voice/
 ssh qnxuser@<pi-ip>
 cd voice
 ./mic_test -l                                   # lists cards/devices; the C270 should show up with [capture]
@@ -326,11 +326,11 @@ You should see a level meter jump while you talk and `VERDICT: OK`. Then listen 
 
 **7b. Build and deploy voice**
 ```sh
-voice/fetch_whisper.sh && voice/get_model.sh    # laptop, once: whisper.cpp v1.9.5 source + 31 MB model
-make -C voice                                   # QNX build of whisper.cpp + tars_voice (a few minutes the first time)
-make -C voice deploy PI_HOST=qnxuser@<pi-ip>    # -> /data/home/qnxuser/voice/ (binary, model, voice.conf, start script)
+iter2-autonomy/voice/fetch_whisper.sh && iter2-autonomy/voice/get_model.sh    # laptop, once: whisper.cpp v1.9.5 source + 31 MB model
+make -C iter2-autonomy/voice                                   # QNX build of whisper.cpp + tars_voice (a few minutes the first time)
+make -C iter2-autonomy/voice deploy PI_HOST=qnxuser@<pi-ip>    # -> /data/home/qnxuser/voice/ (binary, model, voice.conf, start script)
 ```
-This QNX build has never been run. If it fails, see "Not tested yet" in `voice/README.md` for likely fixes.
+This QNX build has never been run. If it fails, see "Not tested yet" in `iter2-autonomy/voice/README.md` for likely fixes.
 
 **7c. Try it** (`tars_motor` running from Step 2, robot on blocks first)
 ```sh
@@ -353,13 +353,13 @@ YOLO running. They go in the CPU table in PLAN.md.
 
 ### Step 8: go-to ("TARS, go to the trash can")
 
-Needs Steps 2–5 working. Details are in `goto/README.md`.
+Needs Steps 2–5 working. Details are in `iter2-autonomy/goto/README.md`.
 
 1. **On the laptop, build:**
-   - `goto/get_model.sh` writes `goto/models/yolo_world.onnx` and `labels.txt`.
-   - `make -C goto` builds `goto` with qcc.
-   - `make -C goto detect ORT_ROOT=...` needs ONNX Runtime built for QNX first (see `goto/README.md`).
-   - `make -C goto deploy PI_HOST=qnxuser@<pi-ip>` copies everything to the Pi.
+   - `iter2-autonomy/goto/get_model.sh` writes `iter2-autonomy/goto/models/yolo_world.onnx` and `labels.txt`.
+   - `make -C iter2-autonomy/goto` builds `goto` with qcc.
+   - `make -C iter2-autonomy/goto detect ORT_ROOT=...` needs ONNX Runtime built for QNX first (see `iter2-autonomy/goto/README.md`).
+   - `make -C iter2-autonomy/goto deploy PI_HOST=qnxuser@<pi-ip>` copies everything to the Pi.
 2. **Camera alone:** run `./detect --camera camapi:1 --nomodel --stdout --no-udp --frames 20`. You should get 20 lines with the right `w`/`h`.
    - If `camera_open failed`: check that the QNX `sensor` service is running and that its config lists the USB webcam.
 3. **Model alone:** run `./detect --camera camapi:1 --stdout --no-udp` and hold a cup or bottle in view. You should see a `"label":"cup"` box, and stderr prints fps every 5 s. Expect about 5–10 fps.
@@ -371,7 +371,7 @@ Needs Steps 2–5 working. Details are in `goto/README.md`.
    - **Watch:** `printf 'STATUS\n' | nc <pi-ip> 5570` shows `state= h= bearing=`.
    - **If it stops too early or too late:** change `arrive_h_frac` in `goto.conf`. It's the box height ÷ frame height at the spot where you want it to stop.
 6. **Stop test:** during an approach, `printf 'S\n' | nc <pi-ip> 5555`. The wheels stop at once, and goto STATUS shows `result=cancelled:stop`.
-7. **Object memory** (`goto/README.md`, "Object memory"):
+7. **Object memory** (`iter2-autonomy/goto/README.md`, "Object memory"):
    - `printf 'POSE\n' | nc <pi-ip> 5555` → `OK x y hdg epoch moving`. Drive 1 m with WASD and check `x` says about 1000. Spin 360° and check `hdg` comes back near 0. Write down how far off it is: that's the drift.
    - `printf 'SCAN\n' | nc <pi-ip> 5570` (or say "TARS, look around"): 12 × 30° turns, then `printf 'MEMORY\n' | nc <pi-ip> 5570` lists e.g. `trash can#1 fresh ... est_dist=`. Compare `est_dist` with a tape measure. If it's way off, set `cam_height_mm` / `cam_pitch_deg` in `goto.conf`.
    - Turn the robot away by hand with WASD, then `GOTO trash can`: the first move should be one TURN straight toward it, not a 30° search.
@@ -416,12 +416,12 @@ or ask the lead. Not tested yet.
 
 ## 6. Change firmware settings
 
-Everything is in the `CONFIG` block at the top of `uno/tars/tars.ino`. Edit,
+Everything is in the `CONFIG` block at the top of `iter1-wasd/uno/tars/tars.ino`. Edit,
 re-upload (§1b), and remember the Uno must be on the laptop to flash it.
 
 | Setting | Default | When to change |
 |---|---|---|
-| `WHEEL_MAX_RPM` | 12 | skipped steps/buzzing at full speed → 10 (also set `WHEEL_MAX_RPM` in `laptop/teleop.py` and `pi/src/wheels.h` so displays/estimates match) |
+| `WHEEL_MAX_RPM` | 12 | skipped steps/buzzing at full speed → 10 (also set `WHEEL_MAX_RPM` in `iter1-wasd/laptop/teleop.py` and `iter1-wasd/pi/src/wheels.h` so displays/estimates match) |
 | `WHEEL_ACCEL_SPS2` / `WHEEL_DECEL_SPS2` | 3000 / 6000 | skips when starting / stopping → lower them |
 | `WHEEL_INVERT` | `{false, true}` | a wheel goes the wrong way |
 | `WHEEL_STEPS_PER_REV` | 4075.77 | after diameter calibration a 1 m drive is still ~5 mm off → try 4096 (some motors are a true 64:1) |
@@ -441,7 +441,7 @@ re-upload (§1b), and remember the Uno must be on the laptop to flash it.
 - Ground: the stepper supply GND must connect to Uno GND.
 
 **One wheel goes the wrong way**
-- In `uno/tars/tars.ino` flip that wheel's entry in `WHEEL_INVERT`, then
+- In `iter1-wasd/uno/tars/tars.ino` flip that wheel's entry in `WHEEL_INVERT`, then
   re-upload. Test with `M 100`: both forward.
 - Both wheels backward: flip both. `R 30` must then turn **right** (clockwise from above).
 

@@ -2,7 +2,7 @@
 //
 // Camera (QNX libcamapi, via the qnx-ports MediaPipe example code qnx_defs.cc)
 //   -> flip + downscale -> MediaPipe Tasks HandLandmarker (VIDEO mode, 1 hand)
-//   -> tars::learn::Brain (vision/common/learn.hpp + gesture.hpp: built-in rules,
+//   -> tars::learn::Brain (iter3-pet/vision/common/learn.hpp + gesture.hpp: built-in rules,
 //      learned poses, the hands-only teach flow, Controller; the same code as the
 //      Python apps, parity-tested) -> TCP 127.0.0.1:5555.
 // Teach: hold the shaka sign 2 s, or press the Uno button (polled from
@@ -49,7 +49,7 @@
 
 ABSL_FLAG(long, camera_unit, 0, "QNX camera unit (0 = first available).");
 ABSL_FLAG(std::string, model, "hand_landmarker.task", "MediaPipe hand landmarker .task file.");
-ABSL_FLAG(std::string, conf, "gesture.conf", "vision/gesture.conf (shared with the Python apps).");
+ABSL_FLAG(std::string, conf, "gesture.conf", "iter3-pet/vision/gesture.conf (shared with the Python apps).");
 ABSL_FLAG(std::string, host, "127.0.0.1", "tars_motor host.");
 ABSL_FLAG(int, port, 5555, "tars_motor port.");
 ABSL_FLAG(bool, dry_run, false, "Print commands instead of sending them.");
@@ -68,7 +68,7 @@ double now_ms() {
 std::atomic<bool> g_running{true};
 void on_signal(int) { g_running = false; }
 
-// ---- link to tars_motor (same behaviour as vision/common/link.py) -------------
+// ---- link to tars_motor (same behaviour as iter3-pet/vision/common/link.py) -------------
 class MotorLink {
 public:
     MotorLink(std::string host, int port, bool dry) : host_(std::move(host)), port_(port), dry_(dry) {}
@@ -147,7 +147,7 @@ private:
     std::mutex m_;
 };
 
-// ---- runtime (same as vision/common/app.py) ------------------------------------
+// ---- runtime (same as iter3-pet/vision/common/app.py) ------------------------------------
 struct Runtime {
     tars::learn::Brain brain;
     tars::Controller &ctl;

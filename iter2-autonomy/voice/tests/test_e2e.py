@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """End-to-end voice test on a Mac: speech audio -> VAD -> whisper.cpp (tiny.en-q5_1)
 -> intent -> the REAL tars_motor (host build, -b stub) over TCP, and a fake
-go-to controller (records GOTO/CANCEL lines, like goto/ will on TCP 5570).
+go-to controller (records GOTO/CANCEL lines, like iter2-autonomy/goto/ will on TCP 5570).
 
-    make -C voice e2e
+    make -C iter2-autonomy/voice e2e
 
 Clips are synthesised with macOS `say` (two voices), converted to 16 kHz with
 `afconvert`, and joined into one stream with gaps, like someone talking to the
@@ -15,7 +15,7 @@ Checks: every stop clip ends in S (+ CANCEL to go-to) in clean and white-noise
 runs; no WRONG motion in clean runs; clean accuracy >= 85%; tars_motor
 accepted every command (OK replies); the go-to controller got exactly the
 GOTO lines. Crowd noise at 10 dB SNR is reported, not required. Prints latency.
-needs: macOS (say, afconvert), numpy, voice/build/tars_voice_host, pi/build/tars_motor_host.
+needs: macOS (say, afconvert), numpy, iter2-autonomy/voice/build/tars_voice_host, iter1-wasd/pi/build/tars_motor_host.
 """
 from __future__ import annotations
 
@@ -261,7 +261,7 @@ def test_talk_button(voice: str) -> None:
 def main() -> int:
     for p in (VOICE_BIN, MOTOR_BIN, MODEL):
         if not os.path.exists(p):
-            sys.exit(f"missing {p} (make -C voice host, make -C pi host, voice/get_model.sh)")
+            sys.exit(f"missing {p} (make -C iter2-autonomy/voice host, make -C iter1-wasd/pi host, iter2-autonomy/voice/get_model.sh)")
     rng = np.random.default_rng(7)
     voices = available_voices()
     results = []

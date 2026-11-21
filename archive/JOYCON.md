@@ -14,8 +14,8 @@ Joy-Con 2 uses a different protocol and is not supported by this implementation.
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -r laptop/requirements-joycon.txt
-.venv/bin/python laptop/joycon_relay.py --list
+.venv/bin/python -m pip install -r iter1-wasd/laptop/requirements-joycon.txt
+.venv/bin/python iter1-wasd/laptop/joycon_relay.py --list
 ```
 
 If discovery is empty, reconnect the controller, check its battery, and close other controller software.
@@ -30,7 +30,7 @@ All sources live in this repo. Copy the saved source and compile it on the Pi:
 
 ```sh
 ssh qnxuser@172.23.43.185 'mkdir -p projects/joycon-imu'
-scp pi/src/imu_receiver.cpp qnxuser@172.23.43.185:projects/joycon-imu/
+scp iter1-wasd/pi/src/imu_receiver.cpp qnxuser@172.23.43.185:projects/joycon-imu/
 ssh qnxuser@172.23.43.185 'clang++ -std=c++17 -Wall -Wextra -O2 projects/joycon-imu/imu_receiver.cpp -o projects/joycon-imu/imu_receiver -lsocket'
 ssh -t qnxuser@172.23.43.185 './projects/joycon-imu/imu_receiver'
 ```
@@ -38,13 +38,13 @@ ssh -t qnxuser@172.23.43.185 './projects/joycon-imu/imu_receiver'
 In another Mac terminal, first test the network without the controller:
 
 ```sh
-.venv/bin/python laptop/joycon_relay.py --simulate --seconds 3
+.venv/bin/python iter1-wasd/laptop/joycon_relay.py --simulate --seconds 3
 ```
 
 Then relay real readings:
 
 ```sh
-.venv/bin/python laptop/joycon_relay.py
+.venv/bin/python iter1-wasd/laptop/joycon_relay.py
 ```
 
 The receiver prints accelerometer and gyro **raw signed counts**, roughly four
@@ -88,6 +88,6 @@ Sources: [Joy-Con protocol](https://github.com/dekuNukem/Nintendo_Switch_Reverse
 
 ```sh
 python3 -m unittest discover -s laptop -p 'test_joycon_relay.py'
-clang++ -std=c++17 -Wall -Wextra -Werror pi/src/imu_receiver.cpp -o /tmp/hw13-imu-receiver
-python3 pi/test_imu_receiver.py /tmp/hw13-imu-receiver
+clang++ -std=c++17 -Wall -Wextra -Werror iter1-wasd/pi/src/imu_receiver.cpp -o /tmp/hw13-imu-receiver
+python3 iter1-wasd/pi/test_imu_receiver.py /tmp/hw13-imu-receiver
 ```

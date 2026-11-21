@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run on the Mac: copy vision/ (code, config, model) to the Pi.
-#   vision/qnx/deploy.sh                       # -> qnxuser@tars.local:/data/home/qnxuser/vision
-#   PI_HOST=qnxuser@192.168.1.42 vision/qnx/deploy.sh
+#   iter3-pet/vision/qnx/deploy.sh                       # -> qnxuser@tars.local:/data/home/qnxuser/vision
+#   PI_HOST=qnxuser@192.168.1.42 iter3-pet/vision/qnx/deploy.sh
 # Uses tar over ssh (QNX images don't always have rsync).
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"

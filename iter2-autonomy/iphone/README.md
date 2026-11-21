@@ -1,7 +1,7 @@
 # Mounted iPhone sensors and robot dashboard
 
 The current architecture uses the iPhone as a sensor/display and runs YOLO and
-MiDaS inference on the QNX Pi. See [the edge-AI guide](../pi/edge-ai/README.md)
+MiDaS inference on the QNX Pi. See [the edge-AI guide](../edge-ai/README.md)
 for protocols, separation, build instructions, model provenance and validation.
 The prior bundled Apple Core ML model remains a local prototype artifact but is
 not loaded or run by the current camera pipeline.
@@ -15,7 +15,7 @@ tap **Start sensors**. Keep the app foregrounded; backgrounding stops sensors.
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
-  -project iphone/MotionUSB.xcodeproj -scheme MotionUSB -sdk iphoneos \
+  -project iter2-autonomy/iphone/MotionUSB.xcodeproj -scheme MotionUSB -sdk iphoneos \
   -derivedDataPath /tmp/hw13-motion-build -allowProvisioningUpdates build
 ```
 
@@ -145,7 +145,7 @@ unsaved observations. Estimated geometry is not saved as reliable structure.
 
 ## Headless operation
 
-Run `python3 pi/dashboard/service.py start` on the Pi. It detaches from SSH and
+Run `python3 iter2-autonomy/dashboard/service.py start` on the Pi. It detaches from SSH and
 needs no monitor or laptop afterward, but must be restarted after a Pi reboot.
 The phone remains USB-connected to the Pi. The seven phone TCP listeners (including the
 speech link on 5573) have no application authentication; the intended transport is local USB forwarding.
@@ -182,12 +182,12 @@ may ignore it. Blank lines get no reply.
 Try it from the Pi (or the Mac with the app in the Simulator):
 
 ```sh
-python3 iphone/tools/say.py "I remember 2 things: a trash can to my left, and a chair behind me."
-python3 iphone/tools/say.py --urgent "Stopping."
-python3 iphone/tools/say.py --hush
+python3 iter2-autonomy/iphone/tools/say.py "I remember 2 things: a trash can to my left, and a chair behind me."
+python3 iter2-autonomy/iphone/tools/say.py --urgent "Stopping."
+python3 iter2-autonomy/iphone/tools/say.py --hush
 ```
 
-`python3 iphone/test_speech_link.py` compiles the parser, line framer and queue
+`python3 iter2-autonomy/iphone/test_speech_link.py` compiles the parser, line framer and queue
 policy straight out of `SpeechLink.swift` and runs 47 checks on the Mac.
 Not yet verified: speech on a real iPhone, the silent-switch behaviour, and the
 USB forward from the Pi.
@@ -203,7 +203,7 @@ a synthetic calibrated example; `--depth-anchors` and `--depth-cached` show the
 visual-memory modes. `--depth-stale` verifies stale styling. Fixtures are synthetic and do not validate
 hardware. Normal installed builds and launches do not activate them.
 
-Run `python3 iphone/test_depth_geometry.py` on the Mac for pure projection,
+Run `python3 iter2-autonomy/iphone/test_depth_geometry.py` on the Mac for pure projection,
 calibration, occlusion, texture correspondence, cache-range and RGB-orientation
 checks against the actual Swift helper code. These checks do not establish
 real-scene correspondence or far-range accuracy.

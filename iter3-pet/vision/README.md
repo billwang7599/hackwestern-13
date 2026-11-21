@@ -1,4 +1,4 @@
-# vision/: drive TARS with your hand (MediaPipe, on the Pi under QNX)
+# iter3-pet/vision/: drive TARS with your hand (MediaPipe, on the Pi under QNX)
 
 Three modes, cycled with a held peace sign ✌️ (GESTURE → FOLLOW → PET):
 
@@ -24,7 +24,7 @@ The rules and every number are in **[GESTURES.md](GESTURES.md)** and
 **[gesture.conf](gesture.conf)**, shared by all three apps:
 
 ```
-camera ─▶ MediaPipe HandLandmarker ─▶ classify ─▶ learned k-NN ─▶ Controller ─▶ TCP :5555 ─▶ tars_motor (pi/) ─▶ Uno ─▶ wheels
+camera ─▶ MediaPipe HandLandmarker ─▶ classify ─▶ learned k-NN ─▶ Controller ─▶ TCP :5555 ─▶ tars_motor (iter1-wasd/pi/) ─▶ Uno ─▶ wheels
           (21 points, 1 hand)          (rules)    (only if rules   (mode, debounce,     D l r / S / VIS / LED / BEEP
                                                    say unknown)     moves, follow,       ◀── STATUS btn_teach= (Uno button)
                                         └──── teach state machine ─┘ fail-safes)
@@ -72,24 +72,24 @@ Copy the values you like into `gesture.conf`.
 
 **Against the motor server, no robot needed:**
 ```sh
-make -C pi host && pi/build/tars_motor_host -b stub          # terminal 1: prints wheel commands
-vision/.venv/bin/python vision/desktop/gesture_drive.py --host 127.0.0.1   # terminal 2
+make -C iter1-wasd/pi host && iter1-wasd/pi/build/tars_motor_host -b stub          # terminal 1: prints wheel commands
+iter3-pet/vision/.venv/bin/python iter3-pet/vision/desktop/gesture_drive.py --host 127.0.0.1   # terminal 2
 printf 'STATUS\n' | nc 127.0.0.1 5555                          # shows vis=… stop_ms=…
 ```
 
 **Tests:**
 ```sh
-python3 vision/tests/test_gesture.py            # 40 unit tests: classifier, steps, follow, mode toggle/cycle
-python3 vision/tests/test_learn.py              # 35: invariance, few-shot, rejection, teach state machine (fake motor)
-python3 vision/tests/test_pet.py                # 38: pet states, mood, stop-wins from every state, bounds, sleep/wake
-python3 vision/tests/test_parity.py             # Python vs C++ (gesture/learn/pet .hpp): identical output + JSON
-vision/.venv/bin/python vision/tests/test_runtime_teach.py   # real runtime: ticker, button polling, save/reload
-python3 vision/tests/bench_learn.py             # µs per frame for the learned-pose classifier
-vision/tests/check_cpp_syntax.sh                # tars_gesture.cc type-checks (stub MediaPipe headers)
-vision/.venv/bin/python vision/tests/e2e_desktop.py   # real MediaPipe on real hand photos -> stub server
-make -C pi test                                  # server incl. hard-stop S + VIS (116 checks)
+python3 iter3-pet/vision/tests/test_gesture.py            # 40 unit tests: classifier, steps, follow, mode toggle/cycle
+python3 iter3-pet/vision/tests/test_learn.py              # 35: invariance, few-shot, rejection, teach state machine (fake motor)
+python3 iter3-pet/vision/tests/test_pet.py                # 38: pet states, mood, stop-wins from every state, bounds, sleep/wake
+python3 iter3-pet/vision/tests/test_parity.py             # Python vs C++ (gesture/learn/pet .hpp): identical output + JSON
+iter3-pet/vision/.venv/bin/python iter3-pet/vision/tests/test_runtime_teach.py   # real runtime: ticker, button polling, save/reload
+python3 iter3-pet/vision/tests/bench_learn.py             # µs per frame for the learned-pose classifier
+iter3-pet/vision/tests/check_cpp_syntax.sh                # tars_gesture.cc type-checks (stub MediaPipe headers)
+iter3-pet/vision/.venv/bin/python iter3-pet/vision/tests/e2e_desktop.py   # real MediaPipe on real hand photos -> stub server
+make -C iter1-wasd/pi test                                  # server incl. hard-stop S + VIS (116 checks)
 ```
-or all of them: `vision/tests/run_all.sh`.
+or all of them: `iter3-pet/vision/tests/run_all.sh`.
 
 ---
 
@@ -100,8 +100,8 @@ The C270 already works with `sensor -U usb_camera.conf` + `camera_example3_viewf
 
 ```sh
 # Mac
-vision/qnx/deploy.sh                            # PI_HOST=qnxuser@<ip> if tars.local doesn't resolve
-make -C pi deploy                               # tars_motor with the new S/VIS hook
+iter3-pet/vision/qnx/deploy.sh                            # PI_HOST=qnxuser@<ip> if tars.local doesn't resolve
+make -C iter1-wasd/pi deploy                               # tars_motor with the new S/VIS hook
 
 # Pi (ssh qnxuser@tars.local)
 cd /data/home/qnxuser/vision
@@ -110,7 +110,7 @@ python3 qnx/python/tars_gesture.py --list-units # which camera unit the C270 is
 python3 qnx/python/tars_gesture.py --dry-run --save-every 30   # look at gesture_view.jpg (scp it back)
 
 # drive: tars_motor in one ssh, the vision app in another
-/data/home/qnxuser/tars_motor -b uno -d /dev/serusb1        # (or: make -C pi run from the Mac)
+/data/home/qnxuser/tars_motor -b uno -d /dev/serusb1        # (or: make -C iter1-wasd/pi run from the Mac)
 python3 qnx/python/tars_gesture.py --unit <N>
 ```
 
@@ -146,7 +146,7 @@ codelab reports 25 fps on the Pi 5 with a lighter model. If it's under 8 fps:
    real-time loop with a hard ✋ stop."* (Mac numbers from `tests/bench_learn.py`; measure on the Pi for the slide.)
 
 Reset between judges: hold 🤙 for 5 s (forget all), or long-press the Uno button.
-Poses persist across reboots in `vision/learned.json` (`deploy.sh` never overwrites it).
+Poses persist across reboots in `/data/home/qnxuser/vision/learned.json` (`deploy.sh` never overwrites it).
 
 ## 2c. Autostart at boot (no laptop)
 
@@ -246,7 +246,7 @@ RGB888, RGB8888 and BGR8888, so the C270's packed YUV is covered.
 If neither Pi app works in time, run the Mac prototype against the robot over Wi-Fi.
 It uses the same logic, commands and fail-safes, with only the camera moved:
 ```sh
-vision/.venv/bin/python vision/desktop/gesture_drive.py --host tars.local
+iter3-pet/vision/.venv/bin/python iter3-pet/vision/desktop/gesture_drive.py --host tars.local
 ```
 Point the Mac webcam (or an iPhone via Continuity Camera, `--camera 1`) at
 yourself. In FOLLOW mode the camera should ride on the robot, so use the laptop
@@ -268,7 +268,7 @@ for GESTURE mode. Wi-Fi adds roughly 5–30 ms of `link_rtt`, which is shown in 
 | follow steers away from the hand | `follow_invert_turn = 1` |
 | follow overshoots / wobbles | lower `follow_kp_turn`, raise `follow_deadband` |
 | creeps when the hand is still | raise `follow_size_deadband` |
-| `[link] … ERR tipped over` | stand it up, send `RESET` (`python laptop/tars_client.py`) |
+| `[link] … ERR tipped over` | stand it up, send `RESET` (`python iter1-wasd/laptop/tars_client.py`) |
 | turns aren't 30° | `desktop/calibrate_turn.py --host tars.local` (12 turns = 360°) |
 | 🤙 doesn't start teaching | check `gesture_view.jpg`/log `[see] teach`. The pinky must be clearly out and the other three folded. Or use the Uno button |
 | new pose always `too_similar …` | it reads as that built-in in ≥ 30% of frames. Pick something more different, or raise `learn_builtin_frac` |
@@ -299,7 +299,7 @@ qnx/autostart/        tars_autostart.sh (boot supervisor), tars.env, install_aut
 tests/                unit, learn, parity, runtime-teach, bench, C++ syntax, end-to-end (handgen.py makes synthetic hands)
 ```
 
-### Server hook (pi/src/main.c)
+### Server hook (iter1-wasd/pi/src/main.c)
 - `S` is now a **hard stop**: the wheels go to 0 on the next tick with no slew (before, it slewed down over ~140 ms).
   `STATUS` reports `stop_ms=` (S received → wheels commanded 0).
 - New `VIS <mode> <fps> <cam_ms> <stop_ms> <label>`: the vision app reports

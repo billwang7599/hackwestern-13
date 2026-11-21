@@ -1,5 +1,5 @@
 /* Arduino Uno backend: text lines over USB serial (or the header UART).
- * Firmware + protocol: uno/tars/tars.ino.
+ * Firmware + protocol: iter1-wasd/uno/tars/tars.ino.
  *
  *   Pi -> Uno   "D <l> <r>"  every tick (also feeds the Uno's 200 ms watchdog)
  *               "S"  "A <arm> <deg> <dps>"  "X" (halt arms)  "Z"  "U"

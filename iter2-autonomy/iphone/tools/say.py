@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Make the mounted iPhone speak: send one line to the speech link (TCP 5573).
 
-    python3 iphone/tools/say.py "I remember 2 things."            # SAY line
-    python3 iphone/tools/say.py --urgent "Stopping."              # JSON, interrupts
-    python3 iphone/tools/say.py --hush                            # stop + clear queue
-    python3 iphone/tools/say.py --host 127.0.0.1 --port 5573 ...  # defaults shown
+    python3 iter2-autonomy/iphone/tools/say.py "I remember 2 things."            # SAY line
+    python3 iter2-autonomy/iphone/tools/say.py --urgent "Stopping."              # JSON, interrupts
+    python3 iter2-autonomy/iphone/tools/say.py --hush                            # stop + clear queue
+    python3 iter2-autonomy/iphone/tools/say.py --host 127.0.0.1 --port 5573 ...  # defaults shown
 
 On the Pi, 127.0.0.1:5573 is forwarded to the phone by iproxy (service.py).
 On the Mac with the app running in the iOS Simulator, 127.0.0.1 reaches it too.

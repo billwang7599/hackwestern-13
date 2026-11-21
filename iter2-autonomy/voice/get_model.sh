@@ -1,8 +1,8 @@
 #!/bin/sh
-# Download the whisper.cpp speech model into voice/models/ and check its SHA-256.
+# Download the whisper.cpp speech model into iter2-autonomy/voice/models/ and check its SHA-256.
 #
-#   voice/get_model.sh            ggml-tiny.en-q5_1.bin (~31 MB, default, see PLAN.md)
-#   voice/get_model.sh --base     ggml-base.en-q5_1.bin (~57 MB, fallback: better, ~2-3x slower)
+#   iter2-autonomy/voice/get_model.sh            ggml-tiny.en-q5_1.bin (~31 MB, default, see PLAN.md)
+#   iter2-autonomy/voice/get_model.sh --base     ggml-base.en-q5_1.bin (~57 MB, fallback: better, ~2-3x slower)
 #
 # Source: the official whisper.cpp Hugging Face repo. SHAs are the LFS oids
 # published there (https://huggingface.co/ggerganov/whisper.cpp/raw/main/<file>).

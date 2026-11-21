@@ -10,7 +10,7 @@ between them. Put a piece of tape on the floor along the rover's heading:
     python calibrate_turn.py --host tars.local --turn-ms 520
 
 new turn_ms = turn_ms * (N * 30) / (degrees it actually turned). Put it in
-vision/gesture.conf. Battery voltage and floor change it, so recheck at the venue.
+iter3-pet/vision/gesture.conf. Battery voltage and floor change it, so recheck at the venue.
 """
 from __future__ import annotations
 

@@ -227,7 +227,7 @@ static void parse_obj_line(goto_objects *o, char *line)
         add_alias(o, trim(a), idx);
 }
 
-/* Keep in sync with goto/objects.txt (used when the file isn't found). */
+/* Keep in sync with iter2-autonomy/goto/objects.txt (used when the file isn't found). */
 static const char *DEFAULT_OBJECTS[] = {
     "trash can: bin, trash, garbage, garbage can, trash bin, garbage bin, waste bin, wastebasket, "
         "waste basket, rubbish bin, recycling bin, recycle bin, dustbin, garbage pail",

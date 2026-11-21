@@ -1,5 +1,5 @@
 # Host unit tests for tars.ino (no Arduino needed).
-#   make -C uno/test     builds and runs four configurations of the sketch:
+#   make -C iter1-wasd/uno/test     builds and runs four configurations of the sketch:
 #     test_tars          stepper wheels, no arms (the default build)
 #     test_tars_arm1     stepper wheels + one arm on A0-A3
 #     test_tars_dc       DC wheels, 2-PWM driver, two arms (the old build)

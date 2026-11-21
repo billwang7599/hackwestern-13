@@ -58,17 +58,17 @@ All sources and model artifacts are saved locally before transfer to QNX.
 On the Pi, from the repository/deployment root:
 
 ```sh
-sh pi/edge-ai/setup-qnx.sh
-sh pi/edge-ai/ai-build.sh
-sh pi/edge-ai/build-guard.sh
-make -C pi native
-python3 pi/dashboard/service.py start
+sh iter2-autonomy/edge-ai/setup-qnx.sh
+sh iter2-autonomy/edge-ai/ai-build.sh
+sh iter2-autonomy/edge-ai/build-guard.sh
+make -C iter1-wasd/pi native
+python3 iter2-autonomy/dashboard/service.py start
 ```
 
 `service.py start` is detached from SSH and defaults to headless. It starts the
 USB daemon, six local USB proxies, native motor server and guard, RGB broker,
 both AI workers and headless dashboard. It must be started again after a Pi reboot. Stop it with
-`python3 pi/dashboard/service.py stop`. A monitor and laptop are unnecessary
+`python3 iter2-autonomy/dashboard/service.py stop`. A monitor and laptop are unnecessary
 while the service runs. Keep the phone app open and sensors started.
 
 The dependency installer uses the configured signed QNX package repository,
@@ -195,7 +195,7 @@ All Pi listeners/proxies bind localhost.
 | 5567 | MiDaS worker → dashboard UDP result |
 | 5568 | Native guard → native motor gate, independent of dashboard/AI |
 | 5569 | Mapping → native guard, optional inferred-obstacle veto |
-| 5573 | TARS speech (goto/voice → phone): `SAY <text>` lines, phone speaks them; see `iphone/README.md` |
+| 5573 | TARS speech (goto/voice → phone): `SAY <text>` lines, phone speaks them; see `iter2-autonomy/iphone/README.md` |
 
 5562 uses a four-byte big-endian length, then `LDR1`, sequence u32, source uptime
 microseconds u64, flags u32, count u32, pose `[x,y,z,yaw]` f32, floor_y f32 and
@@ -219,14 +219,14 @@ Private tests disable fusion publishing by default or use their own ports.
 ## Validation and demo
 
 ```sh
-python3 pi/edge-ai/ai-test.py
-python3 pi/edge-ai/ai-depth-test.py
-python3 pi/edge-ai/test_guard.py
-python3 pi/edge-ai/test_edge_transport.py
-python3 -m unittest discover -s pi/dashboard -p 'test_*.py'
-python3 pi/edge-ai/test_isolation.py
-python3 pi/edge-ai/test_isolation.py --with-depth
-MOTOR_BINARY=pi/build/tars_motor python3 pi/edge-ai/test_robot_stop.py
+python3 iter2-autonomy/edge-ai/ai-test.py
+python3 iter2-autonomy/edge-ai/ai-depth-test.py
+python3 iter2-autonomy/edge-ai/test_guard.py
+python3 iter2-autonomy/edge-ai/test_edge_transport.py
+python3 -m unittest discover -s iter2-autonomy/dashboard -p 'test_*.py'
+python3 iter2-autonomy/edge-ai/test_isolation.py
+python3 iter2-autonomy/edge-ai/test_isolation.py --with-depth
+MOTOR_BINARY=iter1-wasd/pi/build/tars_motor python3 iter2-autonomy/edge-ai/test_robot_stop.py
 ```
 
 66 automated tests passed on QNX (4 YOLO, 3 MiDaS, 11 guard, 17 transport,
@@ -293,7 +293,7 @@ obstacle, 165 ms for sensor silence, 22 ms for unknown tracking/calibration,
 commands remained rejected after clearance returned. These are individual
 software observations, not physical braking times or worst-case bounds.
 
-See [motor guard setup](../MOTOR_GUARD.md) for the independent heartbeat,
+See [motor guard setup](../../iter1-wasd/pi/MOTOR_GUARD.md) for the independent heartbeat,
 generation-aware command contract, explicit hardware configuration, and the
 remaining motor/controller bench work. The phone's background updates from
 telemetry at up to 5 Hz; the 100 Hz guard and 50 Hz motor loop do not wait for it.

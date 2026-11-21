@@ -12,21 +12,30 @@ The sensor-fusion design, state machine and port map are in [docs/ARCHITECTURE.m
 - **All motion goes through `tars_motor`** (TCP 5555). Vision, voice and YOLO are each a client. Don't open the Uno serial port from anything else.
 - **Stop always wins.** `S` from any client, ✋, the spoken word "stop", tip-over and watchdog timeouts must stop the wheels. No learned pose, classifier or mode may block a stop.
 - **Fail safe.** If a client crashes or goes quiet, `tars_motor`'s watchdog stops the wheels. Keep it that way.
-- **Don't touch `goalie/` or `balancer/`.** They're parked experiments.
+- **Don't touch `archive/goalie/` or `balancer/`.** They're parked experiments.
 - **Branches:** work on your own branch/worktree. Commit often, and **don't push unless the lead says so**. The base branch is `main`.
 - **Be honest about testing.** Say exactly what ran (Mac, simulator, stub server) and what has **not** run on the Pi/QNX/Uno.
 
 ## Layout
 
+One folder per iteration (README "Iterations"; old → new paths in `docs/MOVED.md`). Iterations 2 and 3 build on iteration 1's `tars_motor`.
+
 | Path | What | Language |
 |---|---|---|
-| `uno/tars/tars.ino` | Uno firmware: wheels, LED, buzzer, button, tip/bump | Arduino C++ |
-| `uno/test/` | host-side firmware tests with mocks (`make -C uno/test`) | C++ |
-| `pi/` | `tars_motor` QNX server + `test_server.py` (`make -C pi host && make -C pi test`) | C / Python |
-| `vision/` | MediaPipe gestures, follow mode, teach-a-gesture, pet mode (`GESTURES.md`) | Python + C++ ports (parity-tested) |
-| `voice/` | speech-to-text (whisper.cpp) + intent classifier | C/C++ (+ Python training) |
-| `goto/` | "go to the trash can": `goto` controller (C) + `detect` YOLO via ONNX Runtime (C++), `objects.txt` aliases, `DETECTIONS.md` (`make -C goto host && make -C goto test`) | C / C++ (+ Python export & sim) |
-| `laptop/` | `tars_client.py`, WASD `teleop.py`, `wheel_cal.py` (dev only) | Python |
+| **`iter1-wasd/`** | **Iteration 1: WASD driving** | |
+| `iter1-wasd/uno/tars/tars.ino` | Uno firmware: wheels, LED, buzzer, button, tip/bump | Arduino C++ |
+| `iter1-wasd/uno/test/` | host-side firmware tests with mocks (`make -C iter1-wasd/uno/test`) | C++ |
+| `iter1-wasd/pi/` | `tars_motor` QNX server + `test_server.py` (`make -C iter1-wasd/pi host && make -C iter1-wasd/pi test`), `MOTOR_GUARD.md` | C / Python |
+| `iter1-wasd/laptop/` | `tars_client.py`, WASD `teleop.py`, `wheel_cal.py` (dev only) | Python |
+| **`iter2-autonomy/`** | **Iteration 2: voice + YOLO + iPhone LiDAR autonomy** (`docs/ARCHITECTURE.md`) | |
+| `iter2-autonomy/voice/` | speech-to-text (whisper.cpp) + intent classifier | C/C++ (+ Python training) |
+| `iter2-autonomy/goto/` | "go to the trash can": `goto` controller (C) + `detect` YOLO via ONNX Runtime (C++), `nav.c` A*, object memory, `objects.txt` aliases, `DETECTIONS.md` (`make -C iter2-autonomy/goto host && make -C iter2-autonomy/goto test`) | C / C++ (+ Python export & sim) |
+| `iter2-autonomy/iphone/` | MotionUSB iOS app: ARKit pose, LiDAR, speech link (5573) | Swift |
+| `iter2-autonomy/edge-ai/`, `dashboard/`, `iphone-usb/` | Andrew's stack: QNX edge AI + `lidar_guard`, Pi dashboard / `service.py`, iPhone-over-USB for QNX | C++ / Python / sh |
+| **`iter3-pet/`** | **Iteration 3: MediaPipe pet** | |
+| `iter3-pet/vision/` | MediaPipe gestures, follow mode, teach-a-gesture, pet mode (`GESTURES.md`) | Python + C++ ports (parity-tested) |
+| `archive/` | parked: `goalie/`, `pico/` (legacy firmware; the `-b pico` backend still lives in `tars_motor`), `JOYCON.md` | |
+| `hardware/` | 3D-printable stepper wheel | |
 | `docker/` | QNX SDP 8.0 cross-compile container (`docker/run.sh`) | |
 | `docs/PI_TEST.md` | hardware bring-up checklist for the Pi teammate | |
 
@@ -44,26 +53,27 @@ Several clients at once: `S` from any client stops everything and holds other cl
 
 **`tars_motor` → Uno (USB serial 115200):** `D l r`, `M <mm>`, `R <deg>`, `S`, `K diam track`, `L <0-3>`, `B <n>`.
 **Uno → `tars_motor`:** `READY`, `DONE M|R <n>`, `ABORT …`, `T <deg>` tipped, `B <mg>` bump, `BTN TEACH`, `BTN FORGET`.
-The full spec is in the header comment of `uno/tars/tars.ino`.
+The full spec is in the header comment of `iter1-wasd/uno/tars/tars.ino`.
 
 **Clients → `goto` (TCP 5570):** `GOTO <object words>` · `RECALL <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `MEMORY SAY` · `NAV` · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.
-Object memory (`goto/README.md`) stores instances (`trash can#1`, `#2`) with status fresh/stale/gone in `memory.txt` next to `goto.conf`.
-**Phone / Mac fake → `goto` nav feed (TCP or UDP 127.0.0.1:5572):** `LDR1` packets, the same format as lidar_guard's 5562 (`pi/edge-ai/README.md`), with or without the 4-byte length prefix (TCP: with). Builds goto's occupancy grid + ARKit pose (`goto/README.md` "Map-guided GOTO").
+Object memory (`iter2-autonomy/goto/README.md`) stores instances (`trash can#1`, `#2`) with status fresh/stale/gone in `memory.txt` next to `goto.conf`.
+**Phone / Mac fake → `goto` nav feed (TCP or UDP 127.0.0.1:5572):** `LDR1` packets, the same format as lidar_guard's 5562 (`iter2-autonomy/edge-ai/README.md`), with or without the 4-byte length prefix (TCP: with). Builds goto's occupancy grid + ARKit pose (`iter2-autonomy/goto/README.md` "Map-guided GOTO").
 **voice → phone speech (TCP 127.0.0.1:5573, Andrew's SpeechLink via iproxy):** `SAY <text>` (≤ 300 chars) → `OK say`; urgent JSON `{"type":"say","text":"Stopping.","priority":"urgent"}` only *after* `S` + `CANCEL`. Best effort: never delays a stop. `say_port = 0` in `voice.conf` turns it off.
 **Guard (Andrew's `lidar_guard` → `tars_motor` UDP 5568):** a denial zeroes `D`/`DL`, aborts `MOVE`, bumps `guard_epoch` (a leased `DL <epoch> l r` from before the denial is refused). An in-place `TURN` is still allowed while the reason is a fresh `guard_blocked` (forward-only guard; lets the robot pivot away), never when stale/missing/invalid. Exact `MOVE`/`TURN` also need a keepalive (`PING`/`D`) within the 500 ms deadman.
 
-**Ports.** Andrew's stack owns 5555 and 5557–5569 (`pi/edge-ai/README.md`). Ours: `goto` control **5570** (was 5557), detections **5571** (was 5558), nav feed **5572** (new); **5573** is TARS speech → phone (Andrew's SpeechLink; voice is a client). *5570–5572 pending Andrew's sign-off.* Never bind 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
-**Detectors → `goto` (UDP/TCP 127.0.0.1:5571):** one JSON line per frame, `{"w","h","dets":[{"label","conf","box":[x1,y1,x2,y2]}]}`. See `goto/DETECTIONS.md`. `goto/detect` (YOLO-World) is the only detector that feeds `goto`.
+**Ports.** Andrew's stack owns 5555 and 5557–5569 (`iter2-autonomy/edge-ai/README.md`). Ours: `goto` control **5570** (was 5557), detections **5571** (was 5558), nav feed **5572** (new); **5573** is TARS speech → phone (Andrew's SpeechLink; voice is a client). *5570–5572 pending Andrew's sign-off.* Never bind 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
+**Detectors → `goto` (UDP/TCP 127.0.0.1:5571):** one JSON line per frame, `{"w","h","dets":[{"label","conf","box":[x1,y1,x2,y2]}]}`. See `iter2-autonomy/goto/DETECTIONS.md`. `iter2-autonomy/goto/detect` (YOLO-World) is the only detector that feeds `goto`.
 
 ## Before you commit
 
-Run the suites you touched, and preferably all of them:
+Run the suites you touched, and preferably all of them (from the repo root):
 ```sh
-make -C uno/test
-make -C pi host && make -C pi test
-python3 laptop/test_teleop.py
-make -C goto test
-# plus the tests in vision/tests and voice/ if you changed those
+make -C iter1-wasd/uno/test
+make -C iter1-wasd/pi host && make -C iter1-wasd/pi test
+python3 iter1-wasd/laptop/test_teleop.py
+make -C iter2-autonomy/goto test test-nav-asan test-nav-parity test-fullstack
+make -C iter2-autonomy/voice host && make -C iter2-autonomy/voice test
+(cd iter3-pet/vision/tests && for t in test_pet test_gesture test_learn test_parity; do python3 $t.py; done)
 ```
 Don't commit models (`*.task`, `*.bin`, `*.onnx`), `build/`, `.venv/` or `__pycache__/`. Use a `get_model.sh` script instead.
 

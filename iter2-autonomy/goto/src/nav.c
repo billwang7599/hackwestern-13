@@ -1,4 +1,4 @@
-/* nav: occupancy grid + A* planner. See nav.h. Port of pi/dashboard/mapping.py.
+/* nav: occupancy grid + A* planner. See nav.h. Port of iter2-autonomy/dashboard/mapping.py.
  *
  * Parity notes (tests/nav_parity.py checks these against the Python):
  *  - the same doubles as Python: cell = floor((x - ORIGIN) / RES), cell centre

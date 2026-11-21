@@ -2,7 +2,7 @@
 """TARS gesture / follow driving ON the Pi 5 under QNX (fast path).
 
 QNX's prebuilt MediaPipe (`sudo apk add mediapipe`) + the QNX Camera Library
-(libcamapi) + the shared gesture logic in vision/common -> tars_motor on
+(libcamapi) + the shared gesture logic in iter3-pet/vision/common -> tars_motor on
 localhost:5555. Headless; logs mode, fps and camera->command latency.
 
     python3 tars_gesture.py --list-units           # which camera units exist
@@ -14,7 +14,7 @@ Same flags for tuning as the Mac prototype: --set key=value overrides gesture.co
     python3 tars_gesture.py --pet                  # start in PET mode (GESTURES.md section 8)
 
 Runs fully on the robot: teach a new pose with the 🤙 TEACH sign (or the Uno
-button), learned poses persist in --learned (default vision/learned.json).
+button), learned poses persist in --learned (default learned.json in the vision folder).
 At boot it's started by qnx/autostart/tars_autostart.sh. If stdin is a
 terminal (ssh), you can also type: teach | forget | list | stop.
 """

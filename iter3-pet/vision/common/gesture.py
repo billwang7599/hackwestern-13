@@ -1,11 +1,11 @@
 """TARS gesture logic: hand landmarks -> gesture label -> motor commands.
 
 Pure Python, no dependencies, so it runs on the Mac, on QNX, and in tests.
-vision/common/gesture.hpp is a line-for-line C++ port; tests/test_parity.py
+iter3-pet/vision/common/gesture.hpp is a line-for-line C++ port; tests/test_parity.py
 checks the two produce identical labels and command streams. If you change a
-rule here, change it there too (and in vision/GESTURES.md).
+rule here, change it there too (and in iter3-pet/vision/GESTURES.md).
 
-    cfg = load_config()                       # vision/gesture.conf
+    cfg = load_config()                       # iter3-pet/vision/gesture.conf
     ctl = Controller(cfg)
     label = classify(landmarks, aspect, cfg)  # 21 (x, y[, z]) normalized points
     feat = hand_features(landmarks, aspect)   # (palm centre x, size) for follow
@@ -64,14 +64,14 @@ CONF_KEYS = [
     "min_detection_confidence", "min_tracking_confidence",
     # actions (learned poses can map to these)
     "spin_turns", "wiggle_ms", "arms_ms",
-    # teach-on-the-spot (vision/common/learn.py)
+    # teach-on-the-spot (iter3-pet/vision/common/learn.py)
     "teach_hold_ms", "teach_countdown_ms", "learn_gap_frames", "learn_cancel_frames",
     "learn_frames", "learn_record_timeout_ms", "learn_assign_ms", "learn_assign_frames",
     "learn_cooldown_ms", "learn_builtin_frac", "learn_similar_frac", "learn_max_classes",
     "learn_k", "learn_augment", "learn_jitter", "learn_angle_weight",
     "learn_thr_mult", "learn_thr_min", "learn_thr_max",
     "feedback_speed", "feedback_ms", "nudge_ms", "feedback_led_beep",
-    # pet mode (vision/common/pet.py, GESTURES.md section 8)
+    # pet mode (iter3-pet/vision/common/pet.py, GESTURES.md section 8)
     "pet_in_cycle", "pet_start", "pet_exit_ms", "pet_trick_frames", "pet_gap_frames",
     "pet_sleep_frames", "pet_wave_window_ms", "pet_wave_amp", "pet_wave_swings",
     "pet_send_ms", "pet_settle_ms", "pet_come_size", "pet_come_max_fwd", "pet_come_max_ms",
@@ -241,7 +241,7 @@ class Controller:
     """Gesture/follow state machine. Time is passed in (ms), so it's testable.
 
     on_frame() once per camera frame (label + hand features), tick() every ~20 ms.
-    Both return the Cmds to send, in order. Rules: vision/GESTURES.md.
+    Both return the Cmds to send, in order. Rules: iter3-pet/vision/GESTURES.md.
     """
 
     def __init__(self, cfg: dict):
@@ -435,7 +435,7 @@ class Controller:
         return []
 
     def _pet_frame(self, t: float, label: str) -> list[Cmd]:
-        """Safety floor under PET mode; vision/common/pet.py decides the behaviour.
+        """Safety floor under PET mode; iter3-pet/vision/common/pet.py decides the behaviour.
         Palm stops (same rule as GESTURE mode), a lost hand stops a D stream after
         follow_grace_frames. Short self-ending body moves run to their end."""
         c = self.cfg

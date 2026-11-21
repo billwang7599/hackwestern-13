@@ -11,7 +11,7 @@ A third set runs PET mode (common/pet.py vs pet.hpp): waves, come-here
 approaches, thumbs, peace flashes and holds, fists, long empty stretches
 (boredom, sleep), camera stalls and server-side stops.
 
-    python3 vision/tests/test_parity.py
+    python3 iter3-pet/vision/tests/test_parity.py
 """
 from __future__ import annotations
 

@@ -5,9 +5,9 @@
 
 Checks the full chain: forward step, peace -> FOLLOW, follow D stream,
 palm STOP with a latency line, hand-lost STOP, and the server's STATUS showing
-the VIS report. Needs vision/.venv (mediapipe, opencv) and `make -C pi host`.
+the VIS report. Needs iter3-pet/vision/.venv (mediapipe, opencv) and `make -C iter1-wasd/pi host`.
 
-    vision/.venv/bin/python vision/tests/e2e_desktop.py
+    iter3-pet/vision/.venv/bin/python iter3-pet/vision/tests/e2e_desktop.py
 """
 from __future__ import annotations
 

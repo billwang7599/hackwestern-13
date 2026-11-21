@@ -1,4 +1,4 @@
-# voice/: offline speech commands for TARS (QNX native)
+# iter2-autonomy/voice/: offline speech commands for TARS (QNX native)
 
 "TARS, go to the trash can." → the robot drives there. "Stop!" → it stops. Everything runs
 **on the Pi 5 under QNX 8.0, in C/C++ built with `qcc`**. No laptop, no internet, no Python on the robot.
@@ -45,23 +45,23 @@ controller, so its steering doesn't fight the move. A recognised command gets `B
 
 On the laptop (Mac or Linux):
 ```sh
-voice/fetch_whisper.sh            # pinned whisper.cpp v1.9.5 (d1be6fd) -> voice/third_party/ (not committed)
-voice/get_model.sh                # ggml-tiny.en-q5_1.bin, 31 MB, SHA-256 checked  (--base for base.en-q5_1)
-make -C voice host                # Mac/Linux build: tars_voice_host, intent_cli
-make -C voice test                # classifier tests + end-to-end (needs macOS `say`, numpy)
-python3 voice/intent/try.py       # type sentences, see intent / confidence / command
+iter2-autonomy/voice/fetch_whisper.sh            # pinned whisper.cpp v1.9.5 (d1be6fd) -> iter2-autonomy/voice/third_party/ (not committed)
+iter2-autonomy/voice/get_model.sh                # ggml-tiny.en-q5_1.bin, 31 MB, SHA-256 checked  (--base for base.en-q5_1)
+make -C iter2-autonomy/voice host                # Mac/Linux build: tars_voice_host, intent_cli
+make -C iter2-autonomy/voice test                # classifier tests + end-to-end (needs macOS `say`, numpy)
+python3 iter2-autonomy/voice/intent/try.py       # type sentences, see intent / confidence / command
 ```
 For the Pi, follow **docs/PI_TEST.md → Step 7: voice**. Run **`mic_test` first**: if the mic doesn't work under QNX, nothing else here matters.
 ```sh
-make -C voice mic_test            # QNX build in docker/run.sh (needs ~/qnx800), small: no whisper
-make -C voice                     # QNX: build/qnx/tars_voice (+ mic_test)
-make -C voice deploy PI_HOST=qnxuser@<pi-ip>
+make -C iter2-autonomy/voice mic_test            # QNX build in docker/run.sh (needs ~/qnx800), small: no whisper
+make -C iter2-autonomy/voice                     # QNX: build/qnx/tars_voice (+ mic_test)
+make -C iter2-autonomy/voice deploy PI_HOST=qnxuser@<pi-ip>
 ```
-Live mic on a Mac (dev only): `ffmpeg -f avfoundation -i ":0" -ac 1 -ar 16000 -f s16le - | voice/build/tars_voice_host --input raw:- --dry`
+Live mic on a Mac (dev only): `ffmpeg -f avfoundation -i ":0" -ac 1 -ar 16000 -f s16le - | iter2-autonomy/voice/build/tars_voice_host --input raw:- --dry`
 
 ## Adding phrases and retraining (for teammates)
 
-1. Open **`voice/intent/phrases.txt`**. Each line is `intent<TAB>phrase`:
+1. Open **`iter2-autonomy/voice/intent/phrases.txt`**. Each line is `intent<TAB>phrase`:
    ```
    forward	scoot ahead
    goto	roll over to the {o}
@@ -70,13 +70,13 @@ Live mic on a Mac (dev only): `ffmpeg -f avfoundation -i ":0" -ac 1 -ar 16000 -f
    Write it how a person says it, without "TARS" (that's added automatically), lowercase, no punctuation.
    `{n}` = a turn amount, `{d}` = a distance, `{o}` = an object. A phrase may only be under one intent.
    Intents: `forward back left right turn_around stop goto spin status unknown`.
-2. New object, or a new name for one? Edit **`voice/intent/objects.txt`** (`canonical<TAB>alias,alias`).
-   Keep it in sync with `goto/objects.txt`; it uses the same format.
-3. Run **`python3 voice/intent/train.py`**. It reads both files, adds simulated whisper mistakes
+2. New object, or a new name for one? Edit **`iter2-autonomy/voice/intent/objects.txt`** (`canonical<TAB>alias,alias`).
+   Keep it in sync with `iter2-autonomy/goto/objects.txt`; it uses the same format.
+3. Run **`python3 iter2-autonomy/voice/intent/train.py`**. It reads both files, adds simulated whisper mistakes
    ("for word", "turn lift", "stars" for TARS, dropped/merged words, typos), trains, writes
    `intent_model.h`, rebuilds the C checker and runs all classifier tests. It ends with
    `RETRAIN OK` or `TESTS FAIL`. Stop recall must stay 100%. About 15 s.
-4. Check your sentence: `python3 voice/intent/try.py "tars scoot ahead"`.
+4. Check your sentence: `python3 iter2-autonomy/voice/intent/try.py "tars scoot ahead"`.
 5. Commit `phrases.txt`, `objects.txt` and `intent_model.h`, then rebuild and redeploy `tars_voice`
    (the model is compiled in).
 
@@ -101,7 +101,7 @@ Live mic on a Mac (dev only): `ffmpeg -f avfoundation -i ":0" -ac 1 -ar 16000 -f
   ("garbage can" before "can"), plus plurals, 1-edit typos of 5+ letter words, and merged words
   ("trashcan").
 
-### Accuracy (Mac, `make -C voice test-intent`)
+### Accuracy (Mac, `make -C iter2-autonomy/voice test-intent`)
 
 **Held-out phrasings**: test templates hashed out of training, so the model has **never seen these
 phrasings**, only the vocabulary. 2250 sentences with simulated whisper errors:
@@ -146,10 +146,10 @@ status/unknown phrasings it has never seen, and they are rejected, not acted on.
 | Python ↔ C parity (2863 sentences incl. fuzz, wake required and not) | **2863/2863 identical**, both modes |
 | Decision latency (normalise + safety + classifier + slots) | **C 1.8 µs**, Python 48 µs per sentence (M4 Pro). Pi 5 estimate ~5–10 µs |
 
-### End to end: speech → whisper → intent → real `tars_motor` (Mac, `make -C voice e2e`)
+### End to end: speech → whisper → intent → real `tars_motor` (Mac, `make -C iter2-autonomy/voice e2e`)
 
 21 commands spoken by macOS `say` (2 voices), joined into one stream with pauses. The stream runs
-through `tars_voice_host` (whisper tiny.en-q5_1, 2 threads) into the real `pi/build/tars_motor_host
+through `tars_voice_host` (whisper tiny.en-q5_1, 2 threads) into the real `iter1-wasd/pi/build/tars_motor_host
 -b stub` and a fake go-to controller.
 
 | Condition | Samantha | Daniel | Wrong motions |

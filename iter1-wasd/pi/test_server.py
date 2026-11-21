@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for tars_motor (host build). Standard library only.
 
-    make -C pi test            # builds build/tars_motor_host, then runs this
+    make -C iter1-wasd/pi test            # builds build/tars_motor_host, then runs this
 
 Part 1 drives `-b stub` over TCP: protocol, watchdog, disconnect stop, arms,
 gestures (wave/point/shrug/nod/stance/fold), tip-over latch + RESET, bump hold,
@@ -236,7 +236,7 @@ def test_stub() -> None:
         n0 = int(st["stops"])
         check(n0 >= 1, f"stops= counts S ({n0})")
         c.cmd("S")
-        check(int(c.status()["stops"]) == n0 + 1, "stops= goes up by one per S (goto/ uses it)")
+        check(int(c.status()["stops"]) == n0 + 1, "stops= goes up by one per S (iter2-autonomy/goto/ uses it)")
         check(st["vis"] == "-" and st["vis_age_ms"] == "-1", "no VIS yet")
         check(c.cmd("VIS follow 14.5 52 61 fist") == "OK", "VIS accepted")
         st = c.status()

@@ -93,7 +93,7 @@ signals have no reference and the motors twitch or don't move.
 
 The H-bridge's "1.3 V" marking is probably a saturation-voltage spec, not the
 motor voltage. Check the chip markings before you pick a battery (see
-`uno/tars/tars.ino` CONFIG block for how to identify the driver type).
+`iter1-wasd/uno/tars/tars.ino` CONFIG block for how to identify the driver type).
 
 ## 5. Uno wiring
 
@@ -123,7 +123,7 @@ not 4096. At 12 RPM a 65 mm wheel does ~4 cm/s; 100 mm wheels ~6 cm/s.
 
 Button D2 / LED D13 / buzzer D12 in 2-PWM mode; button D10 / LED D13 / no buzzer in EN+IN mode.
 
-Firmware: `uno/tars/tars.ino`. Pins are set in its CONFIG block. Arm 1 uses
+Firmware: `iter1-wasd/uno/tars/tars.ino`. Pins are set in its CONFIG block. Arm 1 uses
 **D4–D7 in both driver modes**, so switching driver type never means rewiring the arms.
 
 **Default: DRIVER_2PWM** (L9110S / HG7881, DRV8833, MX1508: four inputs, no enable pins)
@@ -176,7 +176,7 @@ plug goes straight into the 28BYJ-48.
   clones with a CH340 chip are a different driver). The device name is
   **unknown until you try**: `/dev/serusb1` is a guess and is the default for
   `-b uno`. On the Pi: `ls /dev/ser*` before and after plugging in. Then
-  `make -C pi run UART=/dev/serusbN`.
+  `make -C iter1-wasd/pi run UART=/dev/serusbN`.
   - If nothing appears, check `pidin ar | grep -i usb` and whether
     `devc-serusb` is running/available on your image (start it by hand if it
     exists but isn't running).
@@ -192,7 +192,7 @@ plug goes straight into the 28BYJ-48.
 
 ## 7. Bring-up order on the bench
 
-1. **Uno alone, USB to the Mac:** upload `uno/tars/tars.ino`, open the Serial
+1. **Uno alone, USB to the Mac:** upload `iter1-wasd/uno/tars/tars.ino`, open the Serial
    Monitor at 115200 with "Newline" line endings. Check the boot lines (`# adxl345 at 0x53`
    or `# mpu6050 at 0x68`, then `READY`). Type `?`.
 2. **Arms:** with 5 V on the ULN2003 boards, `A 0 45`, `A 1 45`, `H`. Both
@@ -205,4 +205,4 @@ plug goes straight into the 28BYJ-48.
    Stand it up and after 0.5 s you get `# upright`.
 5. **Bump:** tap the body. You should see `B <mg>`. Drive on carpet/desk and
    make sure driving alone doesn't trigger it. Raise `BUMP_THRESHOLD_MG` if it does.
-6. **Pi:** `make -C pi deploy run`, then `python laptop/teleop.py`.
+6. **Pi:** `make -C iter1-wasd/pi deploy run`, then `python iter1-wasd/laptop/teleop.py`.

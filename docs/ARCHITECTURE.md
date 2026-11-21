@@ -2,6 +2,7 @@
 
 This is the design for the whole robot. It covers how the three sensing layers split the work, the feature list with honest status, the one behaviour state machine, pose, ports, CPU and what has actually run.
 Rules for changing code are in [AGENTS.md](../AGENTS.md). Status and priorities are in [PLAN.md](../PLAN.md).
+Everything here lives in `iter2-autonomy/` (voice, goto, iphone, edge-ai, dashboard, iphone-usb) on top of `iter1-wasd/pi/` (`tars_motor`); see [MOVED.md](MOVED.md).
 
 ```
  USB mic        C270 / phone RGB            iPhone 17 Pro (ARKit + LiDAR, USB)
@@ -11,7 +12,7 @@ Rules for changing code are in [AGENTS.md](../AGENTS.md). Status and priorities 
  INTENT          RECOGNITION + DOCKING          GEOMETRY
  "go to the bin" label, bearing, box height     pose, occupancy grid, obstacles
     │ GOTO/SCAN/…     │ JSON dets                     │ LDR1 / world obs
-    └────────────►  goto (C)  ◄───────────────────────┘ (via goto/nav.c)
+    └────────────►  goto (C)  ◄───────────────────────┘ (via iter2-autonomy/goto/nav.c)
                     object memory + nav + behaviour state machine
                         │ TURN / MOVE / DL / S / BEEP / LED   (TCP 5555)
                         ▼
@@ -29,8 +30,8 @@ Each layer answers one question and nothing else.
 
 | Layer | Answers | Owns | Does **not** do |
 |---|---|---|---|
-| **Voice** (`voice/`) | *What* to do, and *to which object* | intents, wake word, the stop-first safety pass | steering, geometry |
-| **YOLO** (`goto/detect`, YOLO-World) | *Which pixels are the object*, how centred, how close | label, confidence, fine bearing (box centre), arrival (box height ≥ `arrive_h_frac`) | metric position, obstacles |
+| **Voice** (`iter2-autonomy/voice/`) | *What* to do, and *to which object* | intents, wake word, the stop-first safety pass | steering, geometry |
+| **YOLO** (`iter2-autonomy/goto/detect`, YOLO-World) | *Which pixels are the object*, how centred, how close | label, confidence, fine bearing (box centre), arrival (box height ≥ `arrive_h_frac`) | metric position, obstacles |
 | **iPhone LiDAR + ARKit** | *Where am I, where are the walls, where is the object in the room, is it hidden or gone* | robot pose, 10 cm occupancy grid, object world (x,z), line-of-sight checks | recognising objects, deciding arrival |
 | **tars_motor + lidar_guard** | *May the wheels move right now?* | guard gate, watchdog, tip/bump, S-wins | anything above |
 
@@ -50,17 +51,17 @@ dist, conf, seen count, last_seen
 
 | | Feature | Status | Where |
 |---|---|---|---|
-| A | WASD teleop + voice manual drive (`MOVE`/`TURN`) | **built** | `laptop/teleop.py`, Pi keyboard (`pi/MOTOR_GUARD.md`), `voice/` |
-| B | Voice wake-word intent layer, stop-first | **built**, incl. `scan`/`forget`, `memory` ("what do you remember" → `MEMORY SAY`, printed + `BEEP n` + `SAY` to the phone on 5573) and `recall` ("go back to where the X was" → `RECALL`) | `voice/` |
-| C | YOLO-World recognition, 10 canonical labels + aliases | **built** | `goto/detect`, `goto/objects.txt` |
-| D | Visual-servo GOTO: search / align / approach / arrive | **built** | `goto/src/goto_core.c` |
-| E | ARKit pose + LiDAR occupancy grid | **built** in C (`goto/nav.c`, LDR1 feed on 5572); Andrew's Python stays the preview | `goto/nav.[ch]` |
-| F | A* with robot-radius inflation + 0.6–0.85 m approach ring | **built** in C, parity-identical to `mapping.py` (212/212) | `goto/nav.[ch]` |
-| G | Persistent multi-instance object memory (fresh/stale/gone) | **built**, now with map positions (`navw`) | `goto/memory.txt` |
+| A | WASD teleop + voice manual drive (`MOVE`/`TURN`) | **built** | `iter1-wasd/laptop/teleop.py`, Pi keyboard (`iter1-wasd/pi/MOTOR_GUARD.md`), `iter2-autonomy/voice/` |
+| B | Voice wake-word intent layer, stop-first | **built**, incl. `scan`/`forget`, `memory` ("what do you remember" → `MEMORY SAY`, printed + `BEEP n` + `SAY` to the phone on 5573) and `recall` ("go back to where the X was" → `RECALL`) | `iter2-autonomy/voice/` |
+| C | YOLO-World recognition, 10 canonical labels + aliases | **built** | `iter2-autonomy/goto/detect`, `iter2-autonomy/goto/objects.txt` |
+| D | Visual-servo GOTO: search / align / approach / arrive | **built** | `iter2-autonomy/goto/src/goto_core.c` |
+| E | ARKit pose + LiDAR occupancy grid | **built** in C (`iter2-autonomy/goto/nav.c`, LDR1 feed on 5572); Andrew's Python stays the preview | `iter2-autonomy/goto/nav.[ch]` |
+| F | A* with robot-radius inflation + 0.6–0.85 m approach ring | **built** in C, parity-identical to `mapping.py` (212/212) | `iter2-autonomy/goto/nav.[ch]` |
+| G | Persistent multi-instance object memory (fresh/stale/gone) | **built**, now with map positions (`navw`) | `iter2-autonomy/goto/memory.txt` |
 | H | **Map-guided GOTO**: route to the remembered spot, then YOLO-dock | **built** (Mac/sim only) | `goto` state machine, §3 |
-| I | Obstacle avoidance: lidar_guard hard gate + occlusion/detour | guard **built** (Andrew); OCCLUDED/DETOUR, re-plan on map change/guard **built** | `pi/edge-ai/`, `goto` |
+| I | Obstacle avoidance: lidar_guard hard gate + occlusion/detour | guard **built** (Andrew); OCCLUDED/DETOUR, re-plan on map change/guard **built** | `iter2-autonomy/edge-ai/`, `goto` |
 | J | SCAN: 12 × `TURN 30`, fill memory (and map) | **built** on object-memory | `goto` |
-| K | Safety floor: guard gate (5568), 500 ms watchdog, tip latch, bump hold, 0.6 m guard stop zone, `S` wins | **built** | `pi/src/main.c`, `pi/edge-ai/lidar_guard.cpp` |
+| K | Safety floor: guard gate (5568), 500 ms watchdog, tip latch, bump hold, 0.6 m guard stop zone, `S` wins | **built** | `iter1-wasd/pi/src/main.c`, `iter2-autonomy/edge-ai/lidar_guard.cpp` |
 
 ## 3. State machine (two levels)
 
@@ -118,7 +119,7 @@ stateDiagram-v2
 - **PLAN**: `nav_plan(pose → approach ring around instance.world)`. Output: simplified waypoints, last one on the 0.6–0.85 m ring.
 - **FOLLOW_PATH**: each waypoint is an exact `TURN <deg>` then `MOVE <mm>` leg. Re-plan if `nav_version()` changes, or if a leg is aborted by the guard (§3.4).
 - **LOOK**: standing still, check 4 fresh frames (2 hits). This is the YOLO confirmation at the spot.
-- **ALIGN_TURN / APPROACH / ARRIVED**: unchanged from the built visual servo (`goto/README.md`): one `TURN 0.9 × bearing`, then 10 Hz `D` P-control, arrive at box height ≥ 70% (person 80%) for 2 frames.
+- **ALIGN_TURN / APPROACH / ARRIVED**: unchanged from the built visual servo (`iter2-autonomy/goto/README.md`): one `TURN 0.9 × bearing`, then 10 Hz `D` P-control, arrive at box height ≥ 70% (person 80%) for 2 frames.
 - **SEARCH_TURN**: blind `TURN 30` steps up to 360°, starting toward the last-seen side.
 - **OCCLUDED**: `nav_line_clear(robot, instance.world) == 0` (an occupied cell between us and the spot). The object may still be there; don't downgrade it.
 - **DETOUR**: pick a free cell on the ring with clear line of sight to the spot (vantage cell), PLAN to it, LOOK again. One detour per instance.
@@ -185,7 +186,7 @@ The floor lives in `tars_motor`'s 50 Hz loop and pre-empts every `goto` state. `
 
 **Leased drive (built).** APPROACH sends `DL <guard_epoch> l r` with the epoch read from `STATUS` and fixed for the leg. A guard denial bumps the epoch, so a stale drive from before the obstacle stays refused even after the guard clears. The leg ends, and a new one starts only after a fresh LOOK. Path legs are exact `TURN`/`MOVE` (aborted by the guard directly).
 
-The guard checks a **forward** corridor only. Pivots and reverse are not covered, so the map's inflation (35 cm robot radius, kept) is what keeps `TURN` legs clear, and `goto` never plans a reverse `MOVE`. Because the 0.35 m inflation is smaller than the ~0.6 m stop zone, legs can end facing something inside the zone. That's why pivots are allowed under a fresh BLOCKED (see `goto/README.md` assumption 7; **to agree with Andrew**).
+The guard checks a **forward** corridor only. Pivots and reverse are not covered, so the map's inflation (35 cm robot radius, kept) is what keeps `TURN` legs clear, and `goto` never plans a reverse `MOVE`. Because the 0.35 m inflation is smaller than the ~0.6 m stop zone, legs can end facing something inside the zone. That's why pivots are allowed under a fresh BLOCKED (see `iter2-autonomy/goto/README.md` assumption 7; **to agree with Andrew**).
 
 **Pure visual GOTO stays the fallback.** With no phone, no map, or no pose, `goto` behaves exactly as it does on `main` today: memory turn (if any), LOOK, SEARCH, ALIGN, APPROACH. The guard gate is then disabled only if `tars_motor` was started without `-g` (bench mode).
 
@@ -206,7 +207,7 @@ The phone-to-robot extrinsics (mount offset, forward axis) are uncalibrated. Unt
 
 ## 5. Ports and processes
 
-**Andrew's stack** (from `pi/edge-ai/README.md`, all localhost):
+**Andrew's stack** (from `iter2-autonomy/edge-ai/README.md`, all localhost):
 
 | Port | Purpose |
 |---|---|
@@ -230,7 +231,7 @@ The phone-to-robot extrinsics (mount offset, forward axis) are uncalibrated. Unt
 | Port | Old | Purpose |
 |---|---|---|
 | 5570 | 5557 | clients → `goto` commands (`GOTO`, `RECALL`, `CANCEL`, `SCAN`, `MEMORY [SAY]`, `FORGET`, `NAV`, `STATUS`, `WATCH`, …) |
-| 5571 | 5558 | detector → `goto` detection JSON lines (`goto/DETECTIONS.md`) |
+| 5571 | 5558 | detector → `goto` detection JSON lines (`iter2-autonomy/goto/DETECTIONS.md`) |
 | 5572 | new | **as built: phone → `goto`**, LDR1 packets (the 5562 format, TCP length-prefixed or UDP); `goto` listens. A display feed back to the phone isn't built. |
 | 5573 | (Andrew) | TARS speech → phone (SpeechLink via iproxy): `SAY <text>` → `OK say`, urgent JSON form, `HUSH`. `tars_voice` is a client. |
 
@@ -258,18 +259,18 @@ ML at normal priority means a stop can never be starved, whatever the fps.
 
 ## 6. One detector
 
-- **`goto/detect` (YOLO-World, ONNX Runtime) is the only object detector that feeds `goto`.** It's the one that knows "trash can"; COCO/YOLOX doesn't.
+- **`iter2-autonomy/goto/detect` (YOLO-World, ONNX Runtime) is the only object detector that feeds `goto`.** It's the one that knows "trash can"; COCO/YOLOX doesn't.
 - Andrew's **YOLOX** (5565) and **MiDaS** (5567) serve the phone dashboard, depth fusion and the guard's inferred-obstacle veto (5569) only. In GOTO mode they're off (§5).
 - Proposed, **not agreed or built**: `detect` reading frames from Andrew's latest-frame broker (5566). As built, `detect` keeps its own camera source (C270 via camapi). Either way the output is the same JSON on 5571.
-- **`pi/dashboard/mapping.py` and the Python dashboard are visualization**, not robot runtime. The planner that moves the wheels is `goto/nav.c` (C, same grid, same A*, parity-tested against `mapping.py`).
+- **`iter2-autonomy/dashboard/mapping.py` and the Python dashboard are visualization**, not robot runtime. The planner that moves the wheels is `iter2-autonomy/goto/nav.c` (C, same grid, same A*, parity-tested against `mapping.py`).
 
 ## 7. Honest status (2026-11-21)
 
-**Run on the real Pi/QNX (Andrew's side, per `pi/edge-ai/README.md`):** YOLOX + MiDaS on QNX ONNX Runtime 1.24.4, `lidar_guard` with synthetic LiDAR, guard → `tars_motor` stub stop tests, live phone feeds to the Pi, a 1500-point mapping benchmark. **No physical drive** has been sent to the wheels.
+**Run on the real Pi/QNX (Andrew's side, per `iter2-autonomy/edge-ai/README.md`):** YOLOX + MiDaS on QNX ONNX Runtime 1.24.4, `lidar_guard` with synthetic LiDAR, guard → `tars_motor` stub stop tests, live phone feeds to the Pi, a 1500-point mapping benchmark. **No physical drive** has been sent to the wheels.
 
 **Mac only (our side, iteration 2 as built):** `tars_motor` 313/313 (guard gate, DL epoch, pivot-while-BLOCKED, pose), `goto` C unit 239/239 incl. ASan/UBSan, `nav` 84/84 + 1M-packet fuzz under ASan/UBSan, parity vs `mapping.py` 212/212, goto 2D sim 52/52, **scripted full-stack sim 27/27** (real `tars_motor_host` + `goto` + `tars_voice`/whisper; fake phone LDR1, fake YOLO, fake lidar_guard, fake phone speech: obstacle, occlusion → detour, moved object, STOP mid-route, visual-only, voice memory + recall), voice 149/149 (stop recall 1131/1131) and e2e 52/52, Uno 237/259/216/213, teleop 36/36. `detect` with ONNX Runtime on macOS only.
 
-**Never run on the Pi/QNX/iPhone:** `goto`, `detect` (camapi never compiled), `tars_voice`, the object memory, `goto/nav.c`, map-guided GOTO, the 5572 feed (no phone sends to it yet), the 5573 speech from voice. The blocker is still our `qcc` toolchain (Docker + SDP 8.0 in `~/qnx800`); Andrew builds with native QNX clang on the Pi, which may be the quicker route.
+**Never run on the Pi/QNX/iPhone:** `goto`, `detect` (camapi never compiled), `tars_voice`, the object memory, `iter2-autonomy/goto/nav.c`, map-guided GOTO, the 5572 feed (no phone sends to it yet), the 5573 speech from voice. The blocker is still our `qcc` toolchain (Docker + SDP 8.0 in `~/qnx800`); Andrew builds with native QNX clang on the Pi, which may be the quicker route.
 
 **Open items**
 - Andrew's sign-off on the port move (§5).
@@ -277,4 +278,4 @@ ML at normal priority means a stop can never be starved, whatever the fps.
 - The pivot-while-BLOCKED change in `tars_motor` (§3.4): agree it with Andrew.
 - Frame/yaw signs on the real phone mount (`NAV` shows the pose).
 - Phone-to-robot extrinsics, `arrive_h_frac` and `cam_height_mm` on the real mount.
-- Repo hygiene, to raise with Andrew, not blocking: ~90 MB of committed model blobs (`pi/edge-ai/models/*.onnx` 87 MB, `iphone/Models/YOLOv3TinyFP16.mlmodel`) and `.idea/` are in history.
+- Repo hygiene, to raise with Andrew, not blocking: ~90 MB of committed model blobs (`iter2-autonomy/edge-ai/models/*.onnx` 87 MB, `iter2-autonomy/iphone/Models/YOLOv3TinyFP16.mlmodel`) and `.idea/` are in history.

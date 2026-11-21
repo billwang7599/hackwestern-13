@@ -1,8 +1,8 @@
 """TARS pet mode: the rover reacts to your hand like a small pet.
 
-Pure Python, no dependencies. vision/common/pet.hpp is a line-for-line C++
+Pure Python, no dependencies. iter3-pet/vision/common/pet.hpp is a line-for-line C++
 port; tests/test_parity.py runs both on the same sessions and diffs every
-line. Rules: vision/GESTURES.md section 8. Every number is in gesture.conf.
+line. Rules: iter3-pet/vision/GESTURES.md section 8. Every number is in gesture.conf.
 
 The robot's only expressions are motion, the Uno LED and the buzzer, so the
 "body language" is short, bounded TURN-like wiggles made of D segments, played

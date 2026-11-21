@@ -1,7 +1,7 @@
-// TARS pet mode, C++17, header-only. Line-for-line port of vision/common/pet.py
+// TARS pet mode, C++17, header-only. Line-for-line port of iter3-pet/vision/common/pet.py
 // (same states, rules, command text and RNG). tests/test_parity.py runs both on
 // the same sessions and diffs every line. Change one, change the other (and
-// vision/GESTURES.md section 8). Safety notes: see the top of pet.py.
+// iter3-pet/vision/GESTURES.md section 8). Safety notes: see the top of pet.py.
 #pragma once
 
 #include <cmath>

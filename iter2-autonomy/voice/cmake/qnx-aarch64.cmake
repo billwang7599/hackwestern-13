@@ -1,9 +1,9 @@
-# CMake toolchain: QNX SDP 8.0, aarch64 (Raspberry Pi 5). Used by voice/Makefile to
+# CMake toolchain: QNX SDP 8.0, aarch64 (Raspberry Pi 5). Used by iter2-autonomy/voice/Makefile to
 # cross-build whisper.cpp/ggml with qcc. Needs the SDP environment sourced
 # (docker/run.sh does that: QNX_HOST / QNX_TARGET set, qcc on PATH).
 #
 # NOT YET RUN: written without SDP 8.0 on the build Mac. If it fails, the usual
-# suspects are listed in voice/README.md ("QNX build").
+# suspects are listed in iter2-autonomy/voice/README.md ("QNX build").
 set(CMAKE_SYSTEM_NAME QNX)
 set(CMAKE_SYSTEM_VERSION 8.0.0)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)

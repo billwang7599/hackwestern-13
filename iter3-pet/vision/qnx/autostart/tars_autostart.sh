@@ -64,7 +64,7 @@ start_all() {
             sleep 2
         fi
     fi
-    [ -x "$MOTOR_BIN" ] || log "WARNING: $MOTOR_BIN missing (make -C pi deploy)"
+    [ -x "$MOTOR_BIN" ] || log "WARNING: $MOTOR_BIN missing (make -C iter1-wasd/pi deploy)"
     supervise motor $MOTOR_BIN $MOTOR_ARGS &
     echo $! > "$PIDDIR/motor.sup"
     sleep 1                                  # let tars_motor open :5555 (the app retries anyway)

@@ -10,11 +10,11 @@ Pieces (stdlib only):
               STATUS pose= is DEAD-RECKONED from the commands like the real one, so
               it drifts from the true pose (turn_err, drive_err).
   SimCamera   pinhole camera (60 deg HFOV, 640x480, mounted 12 cm up) looking at
-              cylinders in the world; sends goto/DETECTIONS.md JSON lines over UDP
+              cylinders in the world; sends iter2-autonomy/goto/DETECTIONS.md JSON lines over UDP
               with latency, jitter, missed detections and motion blur.
 goto runs with -T (clock N times faster) so a 60 s approach takes a few seconds.
 
-Also runs goto against the REAL tars_motor host build (-b stub) if ../pi/build has it,
+Also runs goto against the REAL tars_motor host build (-b stub) if ../../iter1-wasd/pi/build has it,
 to check the protocol end to end.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ def free_port() -> int:
 
 
 def move_secs(kind: str, amount: float, speed: float) -> float:
-    """Same trapezoid as pi/src/wheels.h."""
+    """Same trapezoid as iter1-wasd/pi/src/wheels.h."""
     mm = abs(amount) if kind == "M" else math.pi * TRACK * abs(amount) / 360.0
     steps = mm * STEPS_PER_REV / (math.pi * WHEEL_D)
     v = MAX_RPM * STEPS_PER_REV / 60.0 * speed
@@ -618,7 +618,7 @@ def test_inputs(exe: str) -> None:
 def test_real_tars_motor(exe: str) -> None:
     tm = os.path.join(REPO, "iter1-wasd", "pi", "build", "tars_motor_host")
     if not os.path.exists(tm):
-        print("real tars_motor: skipped (run make -C pi host)")
+        print("real tars_motor: skipped (run make -C iter1-wasd/pi host)")
         return
     print("against the real tars_motor (host build, -b stub)")
     port = free_port()

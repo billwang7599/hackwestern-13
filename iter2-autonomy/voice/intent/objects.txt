@@ -7,8 +7,8 @@
 #     typos of words with 5+ letters match automatically
 #
 # Also lists a few whisper mishearings ("share" for chair); keep those, they're on purpose.
-# Keep in sync with goto/objects.txt (branch kothar/goto); same format, so you can copy it.
-# After editing: python3 voice/intent/train.py   (embeds the list in intent_model.h for the C code)
+# Keep in sync with iter2-autonomy/goto/objects.txt (branch kothar/goto); same format, so you can copy it.
+# After editing: python3 iter2-autonomy/voice/intent/train.py   (embeds the list in intent_model.h for the C code)
 
 trash can	trash ken,trash kin,bin,trash,garbage,garbage can,garbage bin,trash bin,trashcan,rubbish,rubbish bin,waste bin,wastebasket,recycling,recycling bin,dustbin
 chair	seat,stool,chairs,share,cheer,chare

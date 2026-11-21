@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """TARS hand-gesture / follow driving on the Mac webcam (MediaPipe + OpenCV).
 
-Same gesture logic as the QNX apps (vision/common/gesture.py, mirrored in C++).
+Same gesture logic as the QNX apps (iter3-pet/vision/common/gesture.py, mirrored in C++).
 Default is DRY RUN: commands are printed, nothing is sent.
 
     python gesture_drive.py                        # dry run, webcam 0, overlay window
-    python gesture_drive.py --host 127.0.0.1       # drive the stub server (pi/build/tars_motor_host -b stub)
+    python gesture_drive.py --host 127.0.0.1       # drive the stub server (iter1-wasd/pi/build/tars_motor_host -b stub)
     python gesture_drive.py --host tars.local      # drive the real robot over Wi-Fi (fallback path)
     python gesture_drive.py --video clip.mp4 --headless --frames 300
     python gesture_drive.py --set follow_kp_turn=1.5 --set stable_frames=3

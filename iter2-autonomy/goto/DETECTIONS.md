@@ -15,7 +15,7 @@ One line per frame, UTF-8, no newlines inside:
 |---|---|---|
 | `w`, `h` | int | **required.** Frame size in pixels, which is what `box` is measured in. |
 | `dets` | array | **required.** Send it even when it's empty (`[]`). Empty frames are how `goto` knows the camera is alive but sees nothing. |
-| `label` | string | Class name. It goes through the alias table in `goto/objects.txt`, so COCO's `"dining table"` or `"bottle"` work. Upper or lower case doesn't matter. |
+| `label` | string | Class name. It goes through the alias table in `iter2-autonomy/goto/objects.txt`, so COCO's `"dining table"` or `"bottle"` work. Upper or lower case doesn't matter. |
 | `conf` | number | 0..1. `goto` ignores anything below `min_conf` (0.30). Defaults to 1 if missing. |
 | `box` | 4 numbers | `x1, y1, x2, y2` in pixels, top-left origin, **in the full frame, not the letterboxed network input**. |
 | `t` | number | Capture time in any units. It's informational only, because `goto` uses arrival time. |
@@ -36,10 +36,10 @@ The ports are bound to localhost only, so the detector runs on the Pi next to `g
 
 ## Plugging in the teammate's YOLO
 
-**C/C++ (on the robot, QNX native).** Copy `to_json()` from `goto/src/yolo_post.hpp`, which is header-only with no dependencies, or write the string yourself:
+**C/C++ (on the robot, QNX native).** Copy `to_json()` from `iter2-autonomy/goto/src/yolo_post.hpp`, which is header-only with no dependencies, or write the string yourself:
 
 ```cpp
-#include "yolo_post.hpp"                    // goto/src
+#include "yolo_post.hpp"                    // iter2-autonomy/goto/src
 // dets: std::vector<yolo::Det>{cls, conf, x1, y1, x2, y2} in frame pixels
 std::string line = yolo::to_json(t, frame_w, frame_h, dets, class_names);
 sendto(udp_fd, line.data(), line.size(), 0, (sockaddr*)&goto_addr, sizeof goto_addr);  // 127.0.0.1:5571
@@ -59,7 +59,7 @@ for r in model.predict(source=0, stream=True, imgsz=320, verbose=False):
     sock.sendto(json.dumps({"t": 0, "w": w, "h": h, "dets": dets}).encode(), ("127.0.0.1", 5571))
 ```
 
-To drive the robot from a laptop detector, run `goto` on the laptop as well (`goto/build/goto_host -m <pi-ip>:5555`). It's a dev-only setup: Wi-Fi latency makes steering worse.
+To drive the robot from a laptop detector, run `goto` on the laptop as well (`iter2-autonomy/goto/build/goto_host -m <pi-ip>:5555`). It's a dev-only setup: Wi-Fi latency makes steering worse.
 
 ## Checking your output
 

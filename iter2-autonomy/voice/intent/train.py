@@ -1,7 +1,7 @@
 """Retrain the text -> intent classifier from phrases.txt, in one command.
 
-    python3 voice/intent/train.py             # train, write intent_model.h, run the tests
-    python3 voice/intent/train.py --no-test   # train + export only
+    python3 iter2-autonomy/voice/intent/train.py             # train, write intent_model.h, run the tests
+    python3 iter2-autonomy/voice/intent/train.py --no-test   # train + export only
 
 Steps: read phrases.txt -> add simulated whisper mistakes (gen_data.py) ->
 train -> write intent_model.h -> rebuild build/intent_cli -> run

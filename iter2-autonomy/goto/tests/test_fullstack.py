@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Scripted full-stack sim (Mac only): the real native processes, fake sensors.
 
-  real  pi/build/tars_motor_host -b stub   motion + pose + guard gate (-g, GAT1 UDP)
-  real  goto/build/goto_host               control 5570-style port, dets 5571-style, nav 5572-style
-  real  voice/build/tars_voice_host        (voice scenarios: wav in, whisper, intent, routing)
+  real  iter1-wasd/pi/build/tars_motor_host -b stub   motion + pose + guard gate (-g, GAT1 UDP)
+  real  iter2-autonomy/goto/build/goto_host               control 5570-style port, dets 5571-style, nav 5572-style
+  real  iter2-autonomy/voice/build/tars_voice_host        (voice scenarios: wav in, whisper, intent, routing)
   fake  lidar_guard   GAT1 to tars_motor: BLOCKED when anything is < GUARD_M ahead (forward only)
   fake  phone         LDR1 packets (pose + raycast LiDAR, 60 deg FOV) to goto's nav port, 20 Hz
   fake  YOLO          detection JSON lines to goto's det port, 8 Hz, occlusion-aware
@@ -21,7 +21,7 @@ voice memory query (MEMORY SAY -> print + BEEP + SAY to the phone) and voice "go
 where the bin was" (RECALL). Ports: every process gets free ephemeral ports so runs don't clash;
 the defaults (5570/5571/5572/5573) are checked by grep separately.
 
-usage: python3 goto/tests/test_fullstack.py [--only NAME] [-v]
+usage: python3 iter2-autonomy/goto/tests/test_fullstack.py [--only NAME] [-v]
 """
 from __future__ import annotations
 
@@ -603,7 +603,7 @@ class FakePhoneSpeech:
 def sc_voice():
     print("full-stack: VOICE: 'what do you remember' (MEMORY SAY) and 'go back to where the bin was' (RECALL)")
     if not (os.path.exists(VOICE) and os.path.exists(VMODEL)):
-        print("  skip: build voice (make -C voice host) and fetch its model (voice/get_model.sh)")
+        print("  skip: build voice (make -C iter2-autonomy/voice host) and fetch its model (iter2-autonomy/voice/get_model.sh)")
         return
     try:
         import numpy  # noqa: F401
@@ -648,7 +648,7 @@ SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion, "moved": sc_mov
 def main() -> int:
     for b in (MOTOR, GOTO):
         if not os.path.exists(b):
-            print(f"missing {b}: make -C pi host && make -C goto host")
+            print(f"missing {b}: make -C iter1-wasd/pi host && make -C iter2-autonomy/goto host")
             return 2
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
     t0 = time.monotonic()

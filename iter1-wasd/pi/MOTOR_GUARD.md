@@ -10,9 +10,9 @@ controlled. The source was integrated from `origin/stepper-wheels` at `39d55ea`.
 From the saved repository copy:
 
 ```sh
-make -C pi native
-sh pi/edge-ai/build-guard.sh
-python3 pi/dashboard/service.py start
+make -C iter1-wasd/pi native
+sh iter2-autonomy/edge-ai/build-guard.sh
+python3 iter2-autonomy/dashboard/service.py start
 ```
 
 The service uses `tars_motor -b stub -l -g 5568`: TCP 5555 is loopback-only,
@@ -62,15 +62,15 @@ the Pi can forge fresh guard packets. Do not expose the gate port on a network.
 
 ## Hardware bring-up later
 
-The imported hardware path expects the matching `uno/tars/tars.ino` firmware
+The imported hardware path expects the matching `iter1-wasd/uno/tars/tars.ino` firmware
 and a known serial device. It is not a Grove I2C driver implementation. Keep
 wheels raised for initial direction and stop tests. Stop the service, select the
 actual backend/device explicitly, then start it:
 
 ```sh
-python3 pi/dashboard/service.py stop
+python3 iter2-autonomy/dashboard/service.py stop
 TARS_MOTOR_BACKEND=uno TARS_MOTOR_DEVICE=/dev/ACTUAL_SERIAL_DEVICE \
-  python3 pi/dashboard/service.py start
+  python3 iter2-autonomy/dashboard/service.py start
 ```
 
 The placeholder must be replaced with the enumerated board's device; the service
@@ -85,10 +85,10 @@ and is not implemented by this bridge.
 ## Verification
 
 ```sh
-make -C pi test                       # full native stub + fake Uno serial suite
-python3 pi/test_guard_gate.py         # malformed/replayed gate, lease, stop races
-python3 pi/edge-ai/test_robot_stop.py  # real guard + real native motor, synthetic LiDAR
-python3 -m unittest discover -s pi/dashboard -p test_motor_link.py
+make -C iter1-wasd/pi test                       # full native stub + fake Uno serial suite
+python3 iter1-wasd/pi/test_guard_gate.py         # malformed/replayed gate, lease, stop races
+python3 iter2-autonomy/edge-ai/test_robot_stop.py  # real guard + real native motor, synthetic LiDAR
+python3 -m unittest discover -s iter2-autonomy/dashboard -p test_motor_link.py
 ```
 
 For native QNX test binaries set `MOTOR_BINARY` as the tests describe. The actual
@@ -97,7 +97,7 @@ not real hardware movement. No production gate port is used by these tests.
 
 ## USB keyboard driving
 
-Run `python3 pi/dashboard/service.py gui` and focus the Pi dashboard window.
+Run `python3 iter2-autonomy/dashboard/service.py gui` and focus the Pi dashboard window.
 Hold W for forward, S for reverse, A for an in-place left turn, D for right.
 Commands use 25% wheel speed through the existing independent wheel protocol:
 `D .25 .25`, `D -.25 -.25`, `D -.25 .25`, `D .25 -.25` respectively.
@@ -107,7 +107,7 @@ clears the held command. Autorepeat cannot restart it: release and press again.
 Keyboard use takes local ownership; F stops local motion and returns control
 to the phone. Esc closes the window and stops the command bridge.
 
-This requires `uno/tars/tars.ino`, not the older single-byte g/s sketch.
+This requires `iter1-wasd/uno/tars/tars.ino`, not the older single-byte g/s sketch.
 The default stepper build is 28BYJ-48 + ULN2003, left IN1..4 on 8,9,10,11 and
 right on 4,5,6,7. It includes a 200 ms Arduino drive watchdog. Confirm wiring
 and wheel direction with wheels lifted before floor testing. The guard remains
@@ -126,7 +126,7 @@ or rebooting the service (an ordinary start still defaults to stub).
 
 ### Headless keyboard (no focus or monitor required)
 
-Build `make -C pi keyboard-native`, then use `service.py headless`. The receiver
+Build `make -C iter1-wasd/pi keyboard-native`, then use `service.py headless`. The receiver
 launches `keyboard_hid` via sudo (QNX HID access needs privilege). It observes
 only the verified Compx 25a7:fa70 eight-byte boot keyboard interface. It neither
 opens a window nor sends motor commands; Python routes WASD through MotorLink

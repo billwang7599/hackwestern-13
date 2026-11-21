@@ -29,7 +29,7 @@ observation age and a 400 ms publisher lease. Expiry zero and distance -1 clear
 only the inferred contribution; they never grant measured clearance. A valid
 fit with no inferred obstacle uses distance -1 with a future expiry.
 
-Run `python3 -m unittest discover -s pi/dashboard -p 'test_*.py'` for mapping,
+Run `python3 -m unittest discover -s iter2-autonomy/dashboard -p 'test_*.py'` for mapping,
 fusion, transport and command tests. UDP transport tests bind private ports.
 
 # Pi dashboard and mounted-phone display
@@ -61,9 +61,9 @@ From `~/projects/iphone-usb`:
 
 ```sh
 # In a separate terminal, in addition to the motion proxy on 5557:
-pi/iphone-usb/install/bin/iproxy -l -s 127.0.0.1 5558:5558
+iter2-autonomy/iphone-usb/install/bin/iproxy -l -s 127.0.0.1 5558:5558
 # Then in another terminal:
-python3 pi/dashboard/dashboard.py
+python3 iter2-autonomy/dashboard/dashboard.py
 ```
 
 Dependencies already present on the tested image: Python 3, SDL2 compatibility
@@ -71,7 +71,7 @@ library, SDL2_ttf, SDL2_image, and `/usr/share/fonts/dejavu/DejaVuSans.ttf`.
 Use `--font PATH` to select another font or `--seconds 10` for a timed test.
 Click Start/Stop streams or press Space to connect/disconnect motion, video and scene feeds.
 Escape closes the dashboard. It does not stop the USB bridge.
-`sh pi/dashboard/run.sh` opens the dashboard paused. The phone camera remains
+`sh iter2-autonomy/dashboard/run.sh` opens the dashboard paused. The phone camera remains
 active while Pi reception is paused; use Stop in MotionUSB to stop capture.
 
 As an alternative to the integrated iPhone view, plug the Logitech into a spare Pi USB port, then run in another
@@ -117,7 +117,7 @@ send rate targets 10 Hz, with source-matched inference and bounded processing. I
 and records no video. Encoding runs separately from motion sampling. Combined
 LiDAR/detector performance and absolute end-to-end latency remain unmeasured.
 
-Run framing tests with `python3 -m unittest discover -s pi/dashboard -p 'test_*.py'`.
+Run framing tests with `python3 -m unittest discover -s iter2-autonomy/dashboard -p 'test_*.py'`.
 
 QNX setup reference:
 https://www.qnx.com/developers/docs/qnxeverywhere/com.qnx.doc.target_images/topic/qsti/next-steps.html
@@ -133,11 +133,11 @@ newline-delimited JSON status and commands, separate from motion and video.
 From `~/projects/iphone-usb`:
 
 ```sh
-python3 pi/dashboard/service.py start
-python3 pi/dashboard/service.py status
-python3 pi/dashboard/service.py gui       # open Pi window; keep phone status active
-python3 pi/dashboard/service.py headless  # close Pi window; keep phone status active
-python3 pi/dashboard/service.py stop
+python3 iter2-autonomy/dashboard/service.py start
+python3 iter2-autonomy/dashboard/service.py status
+python3 iter2-autonomy/dashboard/service.py gui       # open Pi window; keep phone status active
+python3 iter2-autonomy/dashboard/service.py headless  # close Pi window; keep phone status active
+python3 iter2-autonomy/dashboard/service.py stop
 ```
 
 The gui/headless commands switch the single active receiver. Closing the Pi
@@ -148,7 +148,7 @@ The service runs detached from SSH and manages usbmuxd, six local-only iproxy
 ports, and the headless receiver. Stop separate proxies and the graphical
 dashboard before starting it; the phone accepts one client per data stream.
 The launcher reapplies the runtime USB exception and needs passwordless sudo
-as configured on this Pi. Logs are in `pi/dashboard/state/headless-service.log`.
+as configured on this Pi. Logs are in `iter2-autonomy/dashboard/state/headless-service.log`.
 It checks for the phone every ten seconds and restarts the old USB daemon when
 no device is found; physical unplug recovery is still experimental. This is
 not a boot service: after a Pi reboot, run the start command again.
@@ -169,7 +169,7 @@ driver, so actual hardware control remains separate work.
 28 tests passed locally and on QNX: framing limits/truncation, reconnects, large
 map status packets, command validation, debug-intent timeout, world projection,
 clearance, unknown-space blocking, stale data, session reset and persistence.
-Run `python3 pi/dashboard/benchmark_mapping.py` for a synthetic Pi timing check;
+Run `python3 iter2-autonomy/dashboard/benchmark_mapping.py` for a synthetic Pi timing check;
 it is not a hardware sensor or end-to-end latency benchmark.
 
 ## Surroundings mapping

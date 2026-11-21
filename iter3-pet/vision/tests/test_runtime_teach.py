@@ -2,7 +2,7 @@
 thread, STATUS button polling, JSON persistence) with a fake tars_motor client
 and synthetic hands instead of MediaPipe. Runs in real time (~15 s).
 
-    vision/.venv/bin/python vision/tests/test_runtime_teach.py -v
+    iter3-pet/vision/.venv/bin/python iter3-pet/vision/tests/test_runtime_teach.py -v
 """
 from __future__ import annotations
 

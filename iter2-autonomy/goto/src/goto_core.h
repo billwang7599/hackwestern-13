@@ -87,7 +87,7 @@ typedef struct {
     int  alias_obj[GOTO_MAX_ALIAS];          /* -> index into obj */
 } goto_objects;
 
-void goto_objects_defaults(goto_objects *o);  /* built-in copy of goto/objects.txt */
+void goto_objects_defaults(goto_objects *o);  /* built-in copy of iter2-autonomy/goto/objects.txt */
 int  goto_objects_load(goto_objects *o, const char *path);   /* 0 ok, -1 can't open */
 /* phrase ("the big trash can", "Bin.", "dining table") -> canonical index or -1 */
 int  goto_objects_resolve(const goto_objects *o, const char *phrase);

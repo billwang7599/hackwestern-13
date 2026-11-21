@@ -2,7 +2,7 @@
 
 For the judges' slide. MediaPipe inference is separate (the app logs infer=).
 
-    python3 vision/tests/bench_learn.py
+    python3 iter3-pet/vision/tests/bench_learn.py
 """
 from __future__ import annotations
 

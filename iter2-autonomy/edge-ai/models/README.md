@@ -5,7 +5,7 @@
 release `0.1.1rc0`. It is about 3.5 MiB, recognizes the 80 COCO classes, and is
 separate from the phone's earlier Core ML YOLOv3 Tiny model.
 
-Run `python3 pi/edge-ai/models/fetch-model.py` from the repo root to download or
+Run `python3 iter2-autonomy/edge-ai/models/fetch-model.py` from the repo root to download or
 verify the files. Existing mismatched files are never silently overwritten.
 
 | File | SHA-256 |

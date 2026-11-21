@@ -466,13 +466,13 @@ def decide(model: Model, text: str, require_wake: bool = True) -> Decision:
     if intent == "unknown" or p[k] < model.threshold:
         return Decision("reject", intent, p[k], wake, "unknown" if intent == "unknown" else "low_conf",
                         ["LED no", "BEEP 3"])
-    if intent == "scan":                # look around and remember everything (goto/ memory)
+    if intent == "scan":                # look around and remember everything (iter2-autonomy/goto/ memory)
         return Decision("command", intent, p[k], wake, "classifier", [f"{GOTO_PREFIX}SCAN"])
     if intent == "forget":              # "forget the bin" -> one object; else everything
         obj = find_object(model.objects, rest)
         line = f"{GOTO_PREFIX}FORGET {obj}" if obj else f"{GOTO_PREFIX}FORGET"
         return Decision("command", intent, p[k], wake, "classifier", [line, "BEEP 2"])
-    if intent == "memory":              # one-sentence summary from goto/ memory; voice beeps per object
+    if intent == "memory":              # one-sentence summary from iter2-autonomy/goto/ memory; voice beeps per object
         return Decision("command", intent, p[k], wake, "classifier", [f"{GOTO_PREFIX}MEMORY SAY"])
     if intent == "recall":              # "go back to where the bin was": map-guided, any remembered instance
         obj = find_object(model.objects, rest)

@@ -31,7 +31,7 @@ import time
 
 from tars_client import DEFAULT_HOST, LEFT, RIGHT, Tars, TarsError
 
-WHEEL_MAX_RPM = 12.0          # must match WHEEL_MAX_RPM in uno/tars/tars.ino (D 1 1 = this)
+WHEEL_MAX_RPM = 12.0          # must match WHEEL_MAX_RPM in iter1-wasd/uno/tars/tars.ino (D 1 1 = this)
 SEND_HZ = 20.0
 ARC_INNER = 0.4               # inner wheel speed / outer wheel speed in an arc
 SPEED_STEP = 0.1

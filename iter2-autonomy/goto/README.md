@@ -1,4 +1,4 @@
-# goto/: "TARS, go to the trash can"
+# iter2-autonomy/goto/: "TARS, go to the trash can"
 
 Object name in, wheels out. Everything that runs on the robot is **QNX native C/C++** built with `qcc`/`q++`. Python is used only on the laptop: model export and the Mac simulator tests.
 
@@ -9,16 +9,16 @@ webcam ──► detect (C++, ONNX Runtime) ──JSON lines, UDP 127.0.0.1:5571
 iPhone LiDAR/ARKit ──LDR1 packets (pose + world points), TCP/UDP 127.0.0.1:5572──┘  (nav.c grid + A*)
 ```
 
-**One detector.** `goto/detect` (YOLO-World, ONNX Runtime) is the only object detector that feeds `goto`: it's the one that knows "trash can". Andrew's YOLOX/MiDaS (`pi/edge-ai`) serve the dashboard, depth fusion and the guard's veto only. Anything else that wants to feed `goto` must speak `DETECTIONS.md` on 5571, but run one detector at a time on the Pi.
+**One detector.** `iter2-autonomy/goto/detect` (YOLO-World, ONNX Runtime) is the only object detector that feeds `goto`: it's the one that knows "trash can". Andrew's YOLOX/MiDaS (`iter2-autonomy/edge-ai`) serve the dashboard, depth fusion and the guard's veto only. Anything else that wants to feed `goto` must speak `DETECTIONS.md` on 5571, but run one detector at a time on the Pi.
 
 **Ports** (Andrew's stack owns 5555 and 5557–5569): `goto` control **5570**, detections **5571**, nav feed **5572**; voice → phone speech **5573** (Andrew's SpeechLink). `goto` never binds 5562 (lidar_guard's LiDAR) or 5568 (guard → motor gate).
 
 | File | What |
 |---|---|
 | `src/goto.c`, `src/goto_core.[ch]` | the controller: control port, detection input, nav feed, state machine, `tars_motor` client |
-| `src/nav.[ch]` | occupancy grid + A* (C port of `pi/dashboard/mapping.py`), LDR1 parser, pose rule |
+| `src/nav.[ch]` | occupancy grid + A* (C port of `iter2-autonomy/dashboard/mapping.py`), LDR1 parser, pose rule |
 | `src/detect.cpp`, `src/camera.hpp`, `src/yolo_post.hpp` | the detector: QNX camera, YOLO via ONNX Runtime, JSON out |
-| `objects.txt` | object names + aliases (shared with `voice/`) |
+| `objects.txt` | object names + aliases (shared with `iter2-autonomy/voice/`) |
 | `goto.conf` | every threshold, with comments |
 | `export_world.py`, `get_model.sh` | laptop: YOLO-World with our classes, exported to ONNX |
 | `DETECTIONS.md` | the detector → goto interface |
@@ -74,7 +74,7 @@ PING            -> OK PONG
 
 ## Map-guided GOTO (iteration 2: voice + YOLO + iPhone LiDAR)
 
-The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. When a GOTO target is in memory **and** the pose is usable, `goto` drives over the map to the object's approach ring and lets YOLO confirm and dock. The design and transition table are in [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) §3. As built:
+The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. When a GOTO target is in memory **and** the pose is usable, `goto` drives over the map to the object's approach ring and lets YOLO confirm and dock. The design and transition table are in [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) §3. As built:
 
 - **RECALL**: pick the instance (fresh before stale, nearest; `RECALL` also takes stale/gone/old ones). Its map position is `map=x,z`, stored when it was seen with a good nav pose. Older instances are projected from the memory frame through the current pose.
 - **PLAN**: `nav_plan` from the fused pose to the 0.6–0.85 m ring. Before planning, the robot's own footprint is marked FREE (it's standing there; the phone can't see under itself). Outcomes:
@@ -113,7 +113,7 @@ The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. Whe
 ## Run order on the Pi
 
 ```sh
-./tars_motor -b uno -d /dev/serusb1 &                                     # 1. motors (pi/)
+./tars_motor -b uno -d /dev/serusb1 &                                     # 1. motors (iter1-wasd/pi/)
 ./goto -c goto.conf -o objects.txt &                                      # 2. controller
 ./detect --camera camapi:1 --model models/yolo_world.onnx --labels models/labels.txt &   # 3. eyes
 printf 'GOTO trash can\n' | nc 127.0.0.1 5570                             # or the voice app
@@ -122,10 +122,10 @@ printf 'GOTO trash can\n' | nc 127.0.0.1 5570                             # or t
 ## Build
 
 ```sh
-make -C goto host && make -C goto test     # Mac: goto_host, unit tests, simulator (no QNX needed)
-make -C goto                               # QNX: build/goto (qcc via docker/run.sh, like pi/)
-make -C goto detect ORT_ROOT=<staging>     # QNX: build/detect (needs ONNX Runtime for QNX, below)
-make -C goto deploy PI_HOST=qnxuser@<pi-ip>
+make -C iter2-autonomy/goto host && make -C iter2-autonomy/goto test     # Mac: goto_host, unit tests, simulator (no QNX needed)
+make -C iter2-autonomy/goto                               # QNX: build/goto (qcc via docker/run.sh, like iter1-wasd/pi/)
+make -C iter2-autonomy/goto detect ORT_ROOT=<staging>     # QNX: build/detect (needs ONNX Runtime for QNX, below)
+make -C iter2-autonomy/goto deploy PI_HOST=qnxuser@<pi-ip>
 ```
 
 `goto` uses only libc, BSD sockets (`-lsocket`) and `-lm`. `detect` also needs `-lonnxruntime` and `-lcamapi`.
@@ -133,9 +133,9 @@ make -C goto deploy PI_HOST=qnxuser@<pi-ip>
 ### Model (laptop)
 
 ```sh
-goto/get_model.sh            # venv + ultralytics, then export_world.py: YOLO-World v2 (s) with the
-                             # objects.txt classes baked in -> goto/models/yolo_world.onnx + labels.txt
-goto/get_model.sh --coco yolo11n.pt   # faster plain COCO model (no "trash can")
+iter2-autonomy/goto/get_model.sh            # venv + ultralytics, then export_world.py: YOLO-World v2 (s) with the
+                             # objects.txt classes baked in -> iter2-autonomy/goto/models/yolo_world.onnx + labels.txt
+iter2-autonomy/goto/get_model.sh --coco yolo11n.pt   # faster plain COCO model (no "trash can")
 ```
 
 Models are never committed. Re-export after changing the **canonical** names in `objects.txt`. Adding an alias only needs a restart.
@@ -180,10 +180,10 @@ The camapi code is **written from the API docs and hasn't been compiled against 
 
 ## nav: room map + route planner (C, `src/nav.[ch]`)
 
-The map side of map-guided GOTO. It's a C99 port of the grid and A* in `pi/dashboard/mapping.py`, with no deps beyond libc/libm, no threads and no I/O, so it builds with `qcc` like the rest of `goto`. Andrew's Python stays the **desktop visualization**; this module is what drives the robot (map-guided GOTO above).
+The map side of map-guided GOTO. It's a C99 port of the grid and A* in `iter2-autonomy/dashboard/mapping.py`, with no deps beyond libc/libm, no threads and no I/O, so it builds with `qcc` like the rest of `goto`. Andrew's Python stays the **desktop visualization**; this module is what drives the robot (map-guided GOTO above).
 
 - **Grid:** 200×200 cells of 0.1 m covering ARKit world x,z in [-10, 10) m, each UNKNOWN/FREE/OCC. A point 0.06 m or less from the floor marks a cell FREE, but never clears an obstacle. A point 0.08–1.2 m above the floor marks it OCC. `nav_carve_ray` frees unknown cells along a ray. It's optional, and LDR1 ingest doesn't use it, the same as the Python.
-- **Feed:** `nav_ingest_ldr1()` parses one LDR1 packet (the phone's measured LiDAR, world-frame points + pose + floor_y, format in `pi/edge-ai/README.md`). The 4-byte length prefix is optional, and validation is the same as `lidar_guard`'s. It maps only when the tracking and floor flags are set. A floor jump over 0.1 m clears the grid. The JSON world-observation stream on 5561 is not parsed in C. Port 5562 is owned by `lidar_guard`; `goto` takes its own copy of the packets on 5572. `nav_plan_ring()` is `nav_plan` with a custom ring; DETOUR and explore use ring 0–0.11 m to reach one exact cell.
+- **Feed:** `nav_ingest_ldr1()` parses one LDR1 packet (the phone's measured LiDAR, world-frame points + pose + floor_y, format in `iter2-autonomy/edge-ai/README.md`). The 4-byte length prefix is optional, and validation is the same as `lidar_guard`'s. It maps only when the tracking and floor flags are set. A floor jump over 0.1 m clears the grid. The JSON world-observation stream on 5561 is not parsed in C. Port 5562 is owned by `lidar_guard`; `goto` takes its own copy of the packets on 5572. `nav_plan_ring()` is `nav_plan` with a custom ring; DETOUR and explore use ring 0–0.11 m to reach one exact cell.
 - **Plan:** `nav_plan(sx,sz → tx,tz)`. The robot's footprint square (2·ceil(r/0.1)+1 cells, r = 0.35 m by default, `nav_set_robot_radius`) must be entirely *observed* free, so **unknown blocks the same as a wall**. A* is 8-connected and never cuts a diagonal corner. Goals are the clear cells on the 0.6–0.85 m ring around the target. Collinear cells are dropped, and the output is the corner waypoints (start excluded, last = approach point). Errors: `START_BLOCKED`, `TARGET_OUTSIDE`, `NO_GOAL`, `NO_PATH`, `NO_MAP`, `TOO_LONG`. About 1.5 ms for a worst-case serpentine across the whole map on an M-series Mac (Pi 5 not measured).
 - **Occluded vs gone:** `nav_line_clear()` returns 1 for a clear line, 0 if an OCC cell is in between (occluded) and -1 if some cells are unknown. It ignores cells within 0.3 m of the end, because the object itself is occupied.
 - **Pose rule:** while tracking is OK, the ARKit pose comes from `nav_set_pose(..., 1)` or each LDR1 packet. When tracking is lost, `nav_get_pose()` maps the dead-reckoned motion (`nav_note_dr()`, from `tars_motor` STATUS `pose=`) since the last tracked moment into the ARKit frame. Always re-check the target with YOLO before declaring arrival.
@@ -193,7 +193,7 @@ Tests: `make test` runs `test_nav`, which covers routes, errors, inflation, diag
 ## Mac tests (what has actually run)
 
 ```sh
-make -C goto test
+make -C iter2-autonomy/goto test
 ```
 
 - `test_core`: aliases, the JSON parser, config, and the state machine on scripted detection streams with a fake clock.
@@ -202,7 +202,7 @@ make -C goto test
   - the C `goto` over real sockets against a fake `tars_motor` with differential-drive kinematics, and a pinhole camera sim (60° HFOV, 12 cm mount, 150 ms latency, 10% misses, jitter, motion blur, a distractor chair)
   - CANCEL latency, and an external `S` from another client
   - the TCP and stdin inputs
-  - the real `pi/build/tars_motor_host -b stub` end to end
+  - the real `iter1-wasd/pi/build/tars_motor_host -b stub` end to end
   - random start poses
 
 Results on the Mac (2026-11-21), host builds only:

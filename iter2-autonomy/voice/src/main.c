@@ -3,7 +3,7 @@
  *   mic (io-audio) -> VAD (20 ms frames) -> segment <= 3 s -> whisper.cpp tiny.en
  *     -> text -> intent_decide() (safety stop, wake word, classifier, slots)
  *     -> lines to tars_motor (TCP 5555): S | MOVE | TURN | STATUS, + LED/BEEP
- *     -> "GOTO <object>" / "CANCEL" to the go-to controller (TCP 5570, goto/)
+ *     -> "GOTO <object>" / "CANCEL" to the go-to controller (TCP 5570, iter2-autonomy/goto/)
  *   stop  = S to tars_motor FIRST, then CANCEL to the go-to controller
  *   move  = CANCEL to go-to, then MOVE/TURN to tars_motor (manual beats go-to)
  * Talk button (button_talk=1): a short press of the Uno button (STATUS
@@ -408,7 +408,7 @@ int main(int argc, char **argv)
     long long t0 = now_ms();
     stt_cfg_t sc = { c.model, c.threads, c.audio_ctx, c.prompt };
     stt_t *stt = stt_init(&sc);
-    if (!stt) { fprintf(stderr, "[voice] can't load model %s (run voice/get_model.sh)\n", c.model); return 1; }
+    if (!stt) { fprintf(stderr, "[voice] can't load model %s (run iter2-autonomy/voice/get_model.sh)\n", c.model); return 1; }
     fprintf(stderr, "[voice] model %s loaded in %lld ms; threads=%d input=%s wake=%s %s\n", c.model,
             now_ms() - t0, c.threads, c.input, c.require_wake ? "required" : "optional",
             c.dry ? "(dry run)" : "");

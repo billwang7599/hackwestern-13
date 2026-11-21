@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run ON the Pi (QNX 8.0.5 QSTI image with apk), once, from vision/:
+# Run ON the Pi (QNX 8.0.5 QSTI image with apk), once, from vision/ (deploy.sh puts it at /data/home/qnxuser/vision):
 #   sh qnx/setup_pi.sh
 # Installs QNX's prebuilt MediaPipe Python package, fetches QNX's camera
 # helper from the official codelab, the hand model, and checks imports.

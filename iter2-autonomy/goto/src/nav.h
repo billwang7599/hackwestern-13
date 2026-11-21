@@ -1,6 +1,6 @@
 /* nav: QNX-native occupancy grid + A* route planner for goto.
  *
- * C99 port of pi/dashboard/mapping.py (Map.update + Map._plan). That Python
+ * C99 port of iter2-autonomy/dashboard/mapping.py (Map.update + Map._plan). That Python
  * stays a desktop visualization; this module is what drives the robot.
  * No dependencies beyond libc/libm, no threads, no I/O: the caller owns the
  * sockets and feeds packets in. Not thread-safe; call from one thread.
@@ -44,7 +44,7 @@
 #define NAV_LDR1_MAX_POINTS 1024
 #define NAV_LDR1_MAX_BODY (NAV_LDR1_HEADER + NAV_LDR1_MAX_POINTS * 12)
 
-/* LDR1 flags (pi/edge-ai/README.md) */
+/* LDR1 flags (iter2-autonomy/edge-ai/README.md) */
 #define NAV_LDR1_TRACKING 1u
 #define NAV_LDR1_FLOOR    2u
 #define NAV_LDR1_HEADING  4u

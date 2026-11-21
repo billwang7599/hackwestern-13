@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parity: goto/src/nav.c planner vs pi/dashboard/mapping.py Map._plan.
+"""Parity: iter2-autonomy/goto/src/nav.c planner vs iter2-autonomy/dashboard/mapping.py Map._plan.
 
 Mac test harness only (never runs on the robot). Builds shared grid fixtures,
 runs Andrew's Python planner on each (imported, not copied), runs the C planner

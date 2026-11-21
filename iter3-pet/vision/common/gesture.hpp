@@ -1,7 +1,7 @@
 // TARS gesture logic, C++17, header-only, no dependencies.
-// Line-for-line port of vision/common/gesture.py: same labels, same rules, same
+// Line-for-line port of iter3-pet/vision/common/gesture.py: same labels, same rules, same
 // command text. tests/test_parity.py runs both on the same inputs and diffs
-// them. Change one, change the other (and vision/GESTURES.md).
+// them. Change one, change the other (and iter3-pet/vision/GESTURES.md).
 #pragma once
 
 #include <cmath>

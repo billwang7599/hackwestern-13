@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tests for the hold-to-drive teleop (laptop/teleop.py). stdlib only, except
+"""Tests for the hold-to-drive teleop (iter1-wasd/laptop/teleop.py). stdlib only, except
 part 3, which needs pygame(-ce) and is skipped without it.
 
-    python3 laptop/test_teleop.py        # needs pi/build/tars_motor_host (make -C pi host)
+    python3 iter1-wasd/laptop/test_teleop.py        # needs iter1-wasd/pi/build/tars_motor_host (make -C iter1-wasd/pi host)
 
 1. HoldDrive: scripted keydown/keyup -> exact D/S stream (mixing, arcs, cancel,
    20 Hz resend, release = S, focus loss, speed caps).
@@ -232,7 +232,7 @@ def test_window() -> None:
 
 if __name__ == "__main__":
     if not os.path.exists(BIN):
-        sys.exit(f"build the server first: make -C pi host   ({BIN} missing)")
+        sys.exit(f"build the server first: make -C iter1-wasd/pi host   ({BIN} missing)")
     test_logic()
     test_stub_stream()
     test_window()

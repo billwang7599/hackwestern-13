@@ -1,4 +1,4 @@
-"""Unit tests for teach-on-the-spot (vision/common/learn.py). No camera, stdlib only.
+"""Unit tests for teach-on-the-spot (iter3-pet/vision/common/learn.py). No camera, stdlib only.
 
 Covers: invariant features, few-shot learn + recognise, rejection of unseen
 poses, too-similar rejection, palm-stop can't be overridden, save/load, and the
@@ -6,7 +6,7 @@ whole hands-only teach state machine (trigger, countdown feedback, recording,
 assignment by gesture, cancel, timeouts, forget, Uno button) via a fake motor
 client that records every line the robot would receive.
 
-    python3 vision/tests/test_learn.py -v
+    python3 iter3-pet/vision/tests/test_learn.py -v
 """
 from __future__ import annotations
 

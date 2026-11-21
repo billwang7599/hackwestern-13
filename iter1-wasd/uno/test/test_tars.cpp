@@ -1,5 +1,5 @@
 // Host unit tests for tars.ino (no Arduino needed).
-//   make -C uno/test
+//   make -C iter1-wasd/uno/test
 // The sketch is compiled as-is against mock/Arduino.h + mock/Wire.h.
 #include "Arduino.h"
 #include "Wire.h"

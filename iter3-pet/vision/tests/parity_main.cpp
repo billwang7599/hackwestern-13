@@ -1,4 +1,4 @@
-// Parity driver for vision/common/gesture.hpp + learn.hpp (built + run by test_parity.py).
+// Parity driver for iter3-pet/vision/common/gesture.hpp + learn.hpp (built + run by test_parity.py).
 // stdin script, one command per line:
 //   C <path/to/gesture.conf>
 //   F <t_ms> <aspect> <n> x0 y0 z0 ... x(n-1) y(n-1) z(n-1)     (n = 0: no hand)

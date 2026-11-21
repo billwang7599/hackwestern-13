@@ -1,6 +1,6 @@
 # Persistent native inference worker
 
-Build on QNX using `sh pi/edge-ai/ai-build.sh`, after installing QNX's
+Build on QNX using `sh iter2-autonomy/edge-ai/ai-build.sh`, after installing QNX's
 `onnxruntime-dev` and `libjpeg-turbo-dev` packages and their runtime dependencies.
 The build uses native `clang++`, not a host binary. `ORT_INCLUDE` can override the
 header location. One inference thread is the default; `--threads 2` is supported
@@ -9,8 +9,8 @@ for explicit benchmark comparisons. Both ORT inter/intra-op spinning are off.
 Smoke test:
 
 ```sh
-pi/edge-ai/build/ai_detector --model pi/edge-ai/models/yolox_nano.onnx \
-  --image pi/edge-ai/models/dog.jpg --repeat 5
+iter2-autonomy/edge-ai/build/ai_detector --model iter2-autonomy/edge-ai/models/yolox_nano.onnx \
+  --image iter2-autonomy/edge-ai/models/dog.jpg --repeat 5
 ```
 
 With no `--image`, stdin contains jobs: big-endian uint32 job ID, big-endian

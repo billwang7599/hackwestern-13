@@ -127,7 +127,7 @@ static void test_cfg(void)
     CHECK(goto_cfg_load(&c, "build/nope.conf", err, sizeof err) < 0, "missing file -> -1");
     goto_cfg d;
     goto_cfg_defaults(&d);
-    CHECK(goto_cfg_load(&d, "goto.conf", err, sizeof err) == 0 || goto_cfg_load(&d, "../goto.conf", err, sizeof err) == 0, "goto/goto.conf loads");
+    CHECK(goto_cfg_load(&d, "goto.conf", err, sizeof err) == 0 || goto_cfg_load(&d, "../goto.conf", err, sizeof err) == 0, "iter2-autonomy/goto/goto.conf loads");
     CHECK(!err[0], "goto.conf has no unknown keys (%s)", err);
     goto_cfg_defaults(&c);
     CHECK(memcmp(&c, &d, offsetof(goto_cfg, n_arrive_over)) == 0, "goto.conf matches the built-in defaults");

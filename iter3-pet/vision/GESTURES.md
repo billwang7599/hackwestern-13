@@ -194,7 +194,7 @@ receives ✋ as ✋. Learned actions end with `S` and obey hand-lost, ✋ and ca
 `arms` = `G wave` then wait `arms_ms` (set in JSON); `custom` = a list of segments in the JSON:
 `["D", l, r, ms]` or `["X", "<line>", 0, ms]`.
 
-**Storage:** `vision/learned.json` (`--learned`), written atomically on every change and
+**Storage:** `learned.json` in the vision folder (`--learned`; `/data/home/qnxuser/vision/learned.json` on the Pi), written atomically on every change and
 loaded at start: `{"version":1, "next_seed":N, "classes":[{"name","action","seed","thr","custom","examples":[[57 floats]...]}]}`.
 Jittered copies are rebuilt from `seed` on load.
 
@@ -202,7 +202,7 @@ Jittered copies are rebuilt from `seed` on load.
 1 pose 6 µs C++ / 160 µs Python · 4 poses 16 µs / 640 µs · 8 poses 32 µs / 1.3 ms.
 MediaPipe inference is milliseconds, so this is noise either way. The Pi 5 should be ~2–4× slower (not measured).
 
-### Uno button interface (for the owners of `uno/` and `pi/`; not implemented by vision/)
+### Uno button interface (for the owners of `iter1-wasd/uno/` and `iter1-wasd/pi/`; not implemented by iter3-pet/vision/)
 
 - **Uno → tars_motor** (serial line): `BTN TEACH` on a short press, `BTN FORGET` on a long
   press (≥ 2 s, the Uno decides). Debounce on the Uno.

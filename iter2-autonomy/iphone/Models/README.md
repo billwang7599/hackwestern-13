@@ -12,7 +12,7 @@ to the upstream Darknet repository for licensing. Those notices remain in the
 unmodified model. This detector has 80 fixed object classes; it does not perform
 open-vocabulary identification or identify a particular personal belonging.
 
-Run `python3 iphone/Models/fetch-model.py` to verify/recreate this pinned file.
+Run `python3 iter2-autonomy/iphone/Models/fetch-model.py` to verify/recreate this pinned file.
 Xcode compiles it into the application. No model download occurs on the robot.
 We selected this ready-made artifact for the first hardware integration; its
 accuracy and runtime need measurement before selecting a newer detector.

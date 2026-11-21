@@ -1,5 +1,5 @@
 /* mic_test: 10-minute check that the USB mic works under QNX io-audio, BEFORE
- * anything else in voice/ (PLAN.md hardware check 5).
+ * anything else in iter2-autonomy/voice/ (PLAN.md hardware check 5).
  *
  *   ./mic_test -l                 list sound cards / PCM devices
  *   ./mic_test                    record 3 s from the preferred capture device -> mic.wav

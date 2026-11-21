@@ -53,7 +53,7 @@ def make_landmarker(model_path: str, cfg: dict):
     from mediapipe.tasks.python import vision
 
     if not os.path.exists(model_path):
-        raise SystemExit(f"model not found: {model_path}\n  run vision/get_model.sh")
+        raise SystemExit(f"model not found: {model_path}\n  run iter3-pet/vision/get_model.sh")
     opts = vision.HandLandmarkerOptions(
         base_options=mpp.BaseOptions(model_asset_path=model_path),
         running_mode=vision.RunningMode.VIDEO,

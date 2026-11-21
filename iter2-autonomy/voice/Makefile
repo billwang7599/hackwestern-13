@@ -7,7 +7,7 @@
 #   make mic_test      QNX mic check only (no whisper; small, build this first)
 #   make deploy PI_HOST=qnxuser@<pi-ip>
 #
-# Needs: voice/fetch_whisper.sh (pinned whisper.cpp v1.9.5) and voice/get_model.sh.
+# Needs: iter2-autonomy/voice/fetch_whisper.sh (pinned whisper.cpp v1.9.5) and iter2-autonomy/voice/get_model.sh.
 
 PI_HOST ?= qnxuser@tars.local
 PI_DIR  ?= /data/home/qnxuser/voice

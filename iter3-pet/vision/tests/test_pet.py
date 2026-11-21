@@ -1,7 +1,7 @@
-"""Unit tests for pet mode (vision/common/pet.py): state transitions, mood,
+"""Unit tests for pet mode (iter3-pet/vision/common/pet.py): state transitions, mood,
 stop-wins from every state, bounded commands, sleep/wake. Stdlib only:
 
-    python3 vision/tests/test_pet.py -v
+    python3 iter3-pet/vision/tests/test_pet.py -v
 """
 from __future__ import annotations
 

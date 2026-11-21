@@ -1,7 +1,7 @@
 """Unit tests: classifier, gesture-mode debounce/moves/fail-safes, follow mode,
 mode toggle. No camera, no MediaPipe, stdlib only:
 
-    python3 vision/tests/test_gesture.py -v
+    python3 iter3-pet/vision/tests/test_gesture.py -v
 """
 from __future__ import annotations
 

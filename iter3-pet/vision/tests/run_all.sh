@@ -1,11 +1,11 @@
 #!/bin/sh
-# All Mac-side checks for vision/ (no camera, no robot).
+# All Mac-side checks for iter3-pet/vision/ (no camera, no robot).
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VISION="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$VISION/../.." && pwd)"
 PY="$VISION/.venv/bin/python"
-[ -x "$PY" ] || { echo "make vision/.venv first (see vision/README.md)"; exit 1; }
+[ -x "$PY" ] || { echo "make iter3-pet/vision/.venv first (see iter3-pet/vision/README.md)"; exit 1; }
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$HERE/build/mpl}"
 echo "== unit";        python3 "$HERE/test_gesture.py"
 echo "== learn";       python3 "$HERE/test_learn.py"

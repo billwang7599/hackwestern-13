@@ -9,8 +9,8 @@
 #   - {o} = an object from objects.txt ("trash can", "bin", "chair" ...)
 #   - '#' starts a comment. A phrase may only be listed under ONE intent (train.py checks).
 #
-# After editing:   python3 voice/intent/train.py      (retrains, rewrites intent_model.h, runs the tests)
-# Try it:          python3 voice/intent/try.py
+# After editing:   python3 iter2-autonomy/voice/intent/train.py      (retrains, rewrites intent_model.h, runs the tests)
+# Try it:          python3 iter2-autonomy/voice/intent/try.py
 #
 # About 1 in 5 phrases of 2+ words (picked by a fixed hash) is held out of
 # training and used to measure accuracy on phrasings the model has never seen.

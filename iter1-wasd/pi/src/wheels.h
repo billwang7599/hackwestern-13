@@ -1,4 +1,4 @@
-/* Stepper-wheel geometry and motion profile. Defaults MIRROR uno/tars/tars.ino
+/* Stepper-wheel geometry and motion profile. Defaults MIRROR iter1-wasd/uno/tars/tars.ino
  * (WHEEL_* constants); keep them in sync. The server uses them to estimate how
  * long MOVE/TURN take (reply + timeout), the stub backend to simulate it. */
 #ifndef TARS_WHEELS_H

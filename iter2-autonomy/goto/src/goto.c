@@ -5,7 +5,7 @@
  *
  * Inputs
  *   control  TCP 5570, one command per line, reply "OK ..." / "ERR ...":
- *              GOTO <object words>   start (or retarget). Aliases: goto/objects.txt
+ *              GOTO <object words>   start (or retarget). Aliases: iter2-autonomy/goto/objects.txt
  *              CANCEL | STOP | S     stop now (sends S to tars_motor even when idle)
  *              STATUS                "OK state=.. target=.. result=.. ..."
  *              OBJECTS               "OK trash can,chair,..."
@@ -22,10 +22,10 @@
  *              RECALL <object words> "go back to where the X was": any remembered instance
  *                                    (even stale/gone/old) over the map, YOLO confirms
  *              NAV                   "OK pose=src,x,z,yaw free=.. occ=.. version=.. feed_age=.."
- *   detect   one JSON object per line/datagram, see goto/DETECTIONS.md:
+ *   detect   one JSON object per line/datagram, see iter2-autonomy/goto/DETECTIONS.md:
  *              UDP 127.0.0.1:5571, or TCP 127.0.0.1:5571 (line stream), or stdin (-i)
- *              goto/detect (YOLO-World) is the ONLY detector that feeds goto.
- *   nav      LDR1 packets (pi/edge-ai/README.md "5562" format, with or without the 4-byte
+ *              iter2-autonomy/goto/detect (YOLO-World) is the ONLY detector that feeds goto.
+ *   nav      LDR1 packets (iter2-autonomy/edge-ai/README.md "5562" format, with or without the 4-byte
  *              length prefix): UDP 127.0.0.1:5572 one per datagram, or TCP 127.0.0.1:5572
  *              length-prefixed stream. Builds the nav.c grid and the ARKit pose. Not 5562:
  *              that one belongs to lidar_guard. No feed = visual-only GOTO, unchanged.

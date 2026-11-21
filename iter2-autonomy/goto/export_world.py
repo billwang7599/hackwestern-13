@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Export the detector model for detect (QNX). Runs on the LAPTOP, not the robot.
 
-    python3 goto/export_world.py                      # YOLO-World with goto/objects.txt classes
-    python3 goto/export_world.py --imgsz 416          # bigger input: farther objects, slower
-    python3 goto/export_world.py --coco yolo11n.pt    # plain COCO model instead (faster, 80 classes,
+    python3 iter2-autonomy/goto/export_world.py                      # YOLO-World with iter2-autonomy/goto/objects.txt classes
+    python3 iter2-autonomy/goto/export_world.py --imgsz 416          # bigger input: farther objects, slower
+    python3 iter2-autonomy/goto/export_world.py --coco yolo11n.pt    # plain COCO model instead (faster, 80 classes,
                                                       # no "trash can"; COCO labels map via aliases)
 
-Writes goto/models/yolo_world.onnx + goto/models/labels.txt (one class per line,
-same order as the ONNX outputs). `make -C goto deploy` copies both to the Pi.
+Writes iter2-autonomy/goto/models/yolo_world.onnx + iter2-autonomy/goto/models/labels.txt (one class per line,
+same order as the ONNX outputs). `make -C iter2-autonomy/goto deploy` copies both to the Pi.
 
 YOLO-World is open-vocabulary, but running its text encoder on the Pi would be
 far too slow. set_classes() bakes the CLIP text embeddings for OUR list into
@@ -16,7 +16,7 @@ fast as plain YOLOv8s at the same input size. Re-run after changing the
 canonical names in objects.txt (aliases don't need a re-export).
 
 Needs: pip install ultralytics onnx onnxslim "git+https://github.com/ultralytics/CLIP.git"
-(goto/get_model.sh makes a venv and does all of this.)
+(iter2-autonomy/goto/get_model.sh makes a venv and does all of this.)
 """
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ def main() -> None:
     with open(os.path.join(a.out, "labels.txt"), "w") as f:
         f.write("\n".join(names) + "\n")
     print(f"wrote {dst} ({os.path.getsize(dst) / 1e6:.1f} MB, input {a.imgsz}x{a.imgsz}) and labels.txt")
-    print("next: make -C goto deploy   (copies goto, detect, the model and labels to the Pi)")
+    print("next: make -C iter2-autonomy/goto deploy   (copies goto, detect, the model and labels to the Pi)")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-/* Host unit tests for goto/src/nav.c: grid marking, A* planner, line of sight,
+/* Host unit tests for iter2-autonomy/goto/src/nav.c: grid marking, A* planner, line of sight,
  * pose source rule, LDR1 parser (+ a deterministic fuzz loop; run this binary
  * under ASan/UBSan with `make test-nav-asan`). */
 #include <math.h>

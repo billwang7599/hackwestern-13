@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetch the pinned whisper.cpp source into voice/third_party/whisper.cpp (not committed).
+# Fetch the pinned whisper.cpp source into iter2-autonomy/voice/third_party/whisper.cpp (not committed).
 # Pinned: v1.9.5 = commit d1be6fde11ac6e0407606b4e42fe72d34add8037.
 set -eu
 cd "$(dirname "$0")"

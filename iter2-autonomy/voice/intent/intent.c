@@ -504,7 +504,7 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *d)
         add_line(d, "BEEP 3", 0);
         return;
     }
-    if (!strcmp(name, "scan")) {            /* look around, remember everything (goto/ memory) */
+    if (!strcmp(name, "scan")) {            /* look around, remember everything (iter2-autonomy/goto/ memory) */
         d->action = INTENT_ACT_COMMAND; d->why = "classifier";
         add_line(d, INTENT_GOTO_PREFIX "SCAN", 0);
         return;

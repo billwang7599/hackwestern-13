@@ -1,8 +1,8 @@
 """Teach TARS a new hand pose on the spot: features, few-shot k-NN, teach flow.
 
-Pure Python, no dependencies. vision/common/learn.hpp is a line-for-line C++
+Pure Python, no dependencies. iter3-pet/vision/common/learn.hpp is a line-for-line C++
 port; tests/test_parity.py runs both on the same sessions (including teaching,
-forgetting and save/load) and diffs every line. Rules: vision/GESTURES.md §7.
+forgetting and save/load) and diffs every line. Rules: iter3-pet/vision/GESTURES.md §7.
 
     brain = Brain(cfg)                       # wraps gesture.Controller
     brain.load(path)                         # learned poses (JSON), optional

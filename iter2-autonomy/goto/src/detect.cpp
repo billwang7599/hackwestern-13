@@ -1,5 +1,5 @@
-// detect: QNX-native object detector for goto/. Camera -> YOLO (ONNX Runtime,
-// CPU) -> one JSON line per frame (goto/DETECTIONS.md) over UDP to goto.
+// detect: QNX-native object detector for iter2-autonomy/goto/. Camera -> YOLO (ONNX Runtime,
+// CPU) -> one JSON line per frame (iter2-autonomy/goto/DETECTIONS.md) over UDP to goto.
 //
 //   detect --camera camapi:1 --model models/yolo_world.onnx --labels models/labels.txt
 //

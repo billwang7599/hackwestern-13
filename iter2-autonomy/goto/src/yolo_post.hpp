@@ -170,7 +170,7 @@ static inline std::string json_escape(const std::string &s)
     return o;
 }
 
-// One line of the goto/DETECTIONS.md format (no trailing newline).
+// One line of the iter2-autonomy/goto/DETECTIONS.md format (no trailing newline).
 static inline std::string to_json(double t, int w, int h, const std::vector<Det> &dets,
                                   const std::vector<std::string> &names)
 {

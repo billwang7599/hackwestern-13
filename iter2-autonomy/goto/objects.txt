@@ -1,10 +1,10 @@
-# Objects TARS can "go to", shared by goto/ (detector + controller) and voice/.
+# Objects TARS can "go to", shared by iter2-autonomy/goto/ (detector + controller) and iter2-autonomy/voice/.
 #
 #   canonical name: alias, alias, ...
 #
 # * The canonical names (left of ':') are the YOLO-World classes, in this
-#   order: goto/export_world.py feeds them to set_classes() and writes
-#   goto/models/labels.txt. Re-export after changing the canonical list.
+#   order: iter2-autonomy/goto/export_world.py feeds them to set_classes() and writes
+#   iter2-autonomy/goto/models/labels.txt. Re-export after changing the canonical list.
 # * Aliases are other words people (or whisper) use, and also labels other
 #   detectors emit (COCO says "dining table", "bottle", "tv"). Detector labels
 #   go through the same map, so a COCO model works for the shared names too.

@@ -1,17 +1,17 @@
 # TARS: four slabs on wheels
 
-For the QNX self-balancing sensor prototype, see [Right Joy-Con IMU relay](JOYCON.md).
-For the wired iPhone experiment, see [MotionUSB](iphone/README.md) and
-[QNX USB transport setup](pi/iphone-usb/README.md). Rear-camera/LiDAR mapping and
-the mounted-phone surroundings display are described in [the dashboard guide](pi/dashboard/README.md).
+For the QNX self-balancing sensor prototype, see [Right Joy-Con IMU relay](archive/JOYCON.md).
+For the wired iPhone experiment, see [MotionUSB](iter2-autonomy/iphone/README.md) and
+[QNX USB transport setup](iter2-autonomy/iphone-usb/README.md). Rear-camera/LiDAR mapping and
+the mounted-phone surroundings display are described in [the dashboard guide](iter2-autonomy/dashboard/README.md).
 
 For the native QNX AI runtime, independent LiDAR guard, and 3D phone display,
-see [QNX edge AI](pi/edge-ai/README.md).
+see [QNX edge AI](iter2-autonomy/edge-ai/README.md).
 
 > **Testing on the real Pi?** Start with **[docs/PI_TEST.md](docs/PI_TEST.md)**: build, wire,
 > bring-up, WASD teleop, calibration and troubleshooting, step by step from a fresh clone.
 > The wheels are now **two 28BYJ-48 steppers** (exact `MOVE`/`TURN`); the DC-motor build is still
-> available with `WHEEL_TYPE WHEELS_DC` in `uno/tars/tars.ino`.
+> available with `WHEEL_TYPE WHEELS_DC` in `iter1-wasd/uno/tars/tars.ino`.
 
 A TARS-inspired robot (from *Interstellar*) for Hack Western 13.
 
@@ -21,35 +21,58 @@ gearmotors + a caster, no balancing). The outer two are arms swung by
 tips over or bumps into something. **Build guide: [docs/tars_build.md](docs/tars_build.md).**
 
 ```
-[Mac laptop]  voice.py: listen() → Claude (humor/honesty %) → speak()  laptop/
+[Mac laptop]  voice.py: listen() → Claude (humor/honesty %) → speak()  iter1-wasd/laptop/
               teleop.py (keys) · switch_teleop.py (Switch controller)
      │  TCP :5555, line protocol over Wi-Fi
      ▼
-[Pi 5 · QNX 8.0]  tars_motor: SCHED_RR control thread @50 Hz,          pi/
+[Pi 5 · QNX 8.0]  tars_motor: SCHED_RR control thread @50 Hz,          iter1-wasd/pi/
                   500 ms watchdog, tip-over latch, bump hold, slew,
                   gesture keyframes + arm model
      │  USB serial 115200: "D 0.5 0.5" every tick, "A 1 70 60", ...
      │  ← "T 63" tipped, "B 1500" bump, "READY"
      ▼
-[Arduino Uno]  H-bridge → 2 DC wheels · 2× ULN2003 → 28BYJ-48 arms     uno/
+[Arduino Uno]  H-bridge → 2 DC wheels · 2× ULN2003 → 28BYJ-48 arms     iter1-wasd/uno/
                ADXL345 or MPU6050 → tip/bump · 200 ms watchdog
 ```
 
 Why an Uno in between? Pi 5 GPIO/PWM goes through the RP1 chip, and QNX
 support for it is new. Serial on QNX is reliable, and the Uno does PWM, stepper
 timing and the accelerometer well. The Uno stays dumb. Gestures are keyframe
-tables on the Pi (`pi/src/gesture.c`), so they can change without reflashing.
+tables on the Pi (`iter1-wasd/pi/src/gesture.c`), so they can change without reflashing.
+
+## Iterations
+
+The repo has one folder per iteration. Iterations 2 and 3 both build on iteration 1:
+all motion still goes through iteration 1's `tars_motor` (TCP 5555).
+
+| Folder | What you get | Needs |
+|---|---|---|
+| [`iter1-wasd/`](iter1-wasd/) | WASD driving: Uno firmware, the QNX motor server `tars_motor`, laptop teleop | Pi + Uno + wheels |
+| [`iter2-autonomy/`](iter2-autonomy/) | Iteration 1 plus voice commands, YOLO-World "go to the trash can", object memory, map-guided GOTO, and Andrew's iPhone LiDAR/ARKit + edge-AI + dashboard stack | iteration 1, mic, camera, iPhone |
+| [`iter3-pet/`](iter3-pet/) | Iteration 1 plus MediaPipe hand gestures, follow mode, teach-a-gesture and pet mode | iteration 1, camera |
+| [`archive/`](archive/) | Parked or legacy: the Goalie game, the Pico firmware, the Joy-Con IMU relay | nothing |
+
+Paths moved on 2026-11-21; [docs/MOVED.md](docs/MOVED.md) has the old → new table.
 
 ```
-docker/   Ubuntu amd64 container with QNX Linux host tools (SDP mounted from Mac)
-pi/       C motor server for QNX (Makefile: make / deploy / run / host / test)
-uno/      Arduino Uno firmware (uno/tars/tars.ino) + host unit tests (uno/test)
-laptop/   tars_client.py (lib), teleop.py, switch_teleop.py, voice.py (LLM brain)
-vision/   MediaPipe hand gestures + hand-follow, on the Pi under QNX (see vision/README.md)
-docs/     PI_TEST.md (hands-on checklist), tars_build.md (slabs, power, wiring), tars_stub_run.txt
-pico/     legacy MicroPython motor firmware (backend `-b pico`, if a Pico turns up)
-goalie/   separate project ("Beat the Goalie"), see goalie/README.md
-.clangd   clangd config for nvim
+iter1-wasd/
+  pi/              tars_motor: C motor server for QNX (Makefile: make / deploy / run / host / test)
+  uno/             Arduino Uno firmware (uno/tars/tars.ino) + host unit tests (uno/test)
+  laptop/          tars_client.py (lib), teleop.py, switch_teleop.py, wheel_cal.py, voice.py (LLM brain)
+iter2-autonomy/
+  voice/           offline speech -> intent classifier (whisper.cpp, C)
+  goto/            go-to controller + YOLO-World detector + object memory + nav.c A* (C/C++)
+  iphone/          MotionUSB iOS app (ARKit, LiDAR, speech link on 5573)
+  iphone-usb/      usbmuxd/libusb for QNX (iPhone over USB)
+  edge-ai/         QNX ONNX Runtime YOLOX/MiDaS, lidar_guard
+  dashboard/       Pi dashboard, mapping preview, service.py launcher
+iter3-pet/
+  vision/          MediaPipe hand gestures, follow, teach-a-gesture, pet mode (see iter3-pet/vision/README.md)
+archive/           goalie/ (separate "Beat the Goalie" project), pico/ (legacy MicroPython, backend `-b pico`), JOYCON.md
+hardware/          3D-printable 127 mm wheel for the 28BYJ-48 steppers
+docker/            Ubuntu amd64 container with QNX Linux host tools (SDP mounted from Mac)
+docs/              PI_TEST.md (hands-on checklist), ARCHITECTURE.md, MOVED.md, tars_build.md, tars_stub_run.txt
+.clangd            clangd config for nvim
 ```
 
 ---
@@ -118,11 +141,11 @@ For the Switch controller: `pip install pygame`, then pair the controller in
 macOS Bluetooth settings.
 
 ### Uno
-Arduino IDE: open `uno/tars/tars.ino`, board "Arduino Uno", upload. Or:
+Arduino IDE: open `iter1-wasd/uno/tars/tars.ino`, board "Arduino Uno", upload. Or:
 ```sh
 arduino-cli core install arduino:avr
-arduino-cli compile --fqbn arduino:avr:uno uno/tars
-arduino-cli upload  --fqbn arduino:avr:uno -p /dev/cu.usbmodemXXXX uno/tars
+arduino-cli compile --fqbn arduino:avr:uno iter1-wasd/uno/tars
+arduino-cli upload  --fqbn arduino:avr:uno -p /dev/cu.usbmodemXXXX iter1-wasd/uno/tars
 ```
 Check the CONFIG block first (driver type, inverts). See docs/tars_build.md §5 and §7.
 
@@ -132,45 +155,45 @@ Check the CONFIG block first (driver type, inverts). See docs/tars_build.md §5 
 
 ```sh
 # edit in nvim on the Mac, then:
-make -C pi                  # cross-compiles in Docker (auto) -> pi/build/tars_motor
-make -C pi deploy           # scp to $PI_HOST (default qnxuser@tars.local)
-make -C pi run              # ssh + run (BACKEND=uno UART=/dev/serusb1 PORT=5555)
-make -C pi run BACKEND=stub # no hardware: just prints motor/arm commands
+make -C iter1-wasd/pi                  # cross-compiles in Docker (auto) -> iter1-wasd/pi/build/tars_motor
+make -C iter1-wasd/pi deploy           # scp to $PI_HOST (default qnxuser@tars.local)
+make -C iter1-wasd/pi run              # ssh + run (BACKEND=uno UART=/dev/serusb1 PORT=5555)
+make -C iter1-wasd/pi run BACKEND=stub # no hardware: just prints motor/arm commands
 
-python laptop/tars_client.py tars.local     # ping + status
-python laptop/teleop.py tars.local          # window: HOLD WASD to drive, release = stop (--terminal: old mode)
-python laptop/wheel_cal.py move 1000         # exact moves / calibration (see docs/PI_TEST.md §5)
-python laptop/switch_teleop.py tars.local   # Switch controller (--show to map buttons)
-python laptop/voice.py --no-robot           # brain only
-python laptop/voice.py --host tars.local    # the whole thing
+python iter1-wasd/laptop/tars_client.py tars.local     # ping + status
+python iter1-wasd/laptop/teleop.py tars.local          # window: HOLD WASD to drive, release = stop (--terminal: old mode)
+python iter1-wasd/laptop/wheel_cal.py move 1000         # exact moves / calibration (see docs/PI_TEST.md §5)
+python iter1-wasd/laptop/switch_teleop.py tars.local   # Switch controller (--show to map buttons)
+python iter1-wasd/laptop/voice.py --no-robot           # brain only
+python iter1-wasd/laptop/voice.py --host tars.local    # the whole thing
 ```
 
-**No Pi yet?** Run `make -C pi host && pi/build/tars_motor_host -b stub`, then
+**No Pi yet?** Run `make -C iter1-wasd/pi host && iter1-wasd/pi/build/tars_motor_host -b stub`, then
 point the laptop scripts at `127.0.0.1` (`TARS_HOST=127.0.0.1`). A captured
 run is in `docs/tars_stub_run.txt`.
 
 **Tests (no hardware):**
 ```sh
-make -C pi test     # server: protocol, watchdog, gestures, tip/bump (stub)
+make -C iter1-wasd/pi test     # server: protocol, watchdog, gestures, tip/bump (stub)
                     # + the real uno backend against a fake Uno on a pty
-make -C uno/test    # firmware on a mock Arduino core: stepper wheels (+/- one arm),
+make -C iter1-wasd/uno/test    # firmware on a mock Arduino core: stepper wheels (+/- one arm),
                     # DC wheels (both driver types), both accelerometers
-python3 laptop/test_teleop.py   # hold-to-drive key logic, -> stub server, pygame window
+python3 iter1-wasd/laptop/test_teleop.py   # hold-to-drive key logic, -> stub server, pygame window
 ```
 
 Root may be needed for SCHED_RR priority > the user limit. If the thread can't
 get it, the server warns and continues at default priority.
 
 ### nvim / clangd
-- `make -C pi compdb` runs `bear` inside the container and writes
-  `pi/compile_commands.json`. The repo and SDP are mounted at the **same
+- `make -C iter1-wasd/pi compdb` runs `bear` inside the container and writes
+  `iter1-wasd/pi/compile_commands.json`. The repo and SDP are mounted at the **same
   absolute paths** as on the Mac, so the paths in it work for clangd on macOS.
 - `--query-driver` can't help here, because qcc is a Linux binary and clangd on the
   Mac can't execute it. Instead, `.clangd` strips qcc's `-V…` flag and adds
   `-isystem /Users/bill/qnx800/target/qnx/usr/include`, `-D__QNXNTO__` and an
   aarch64 target. **Edit that path** if your SDP lives elsewhere.
 - If headers still resolve to macOS ones, check `:LspInfo` and `:LspLog`, and confirm
-  `compile_commands.json` is next to `pi/` (clangd searches parent dirs).
+  `compile_commands.json` is next to `iter1-wasd/pi/` (clangd searches parent dirs).
 
 ---
 
@@ -192,8 +215,8 @@ get it, the server warns and continues at default priority.
 | `MOVE <mm> [speed]` | stepper wheels: drive exactly mm (+ fwd), speed 0–1 of max. Non-blocking; a non-zero `D`, `S`, tip, bump or disconnect aborts it | `OK <id> <est_ms>`; progress in STATUS `move=running\|done\|aborted` |
 | `TURN <deg> [speed]` | stepper wheels: spin in place exactly, **+ = right** (clockwise) | `OK <id> <est_ms>` |
 | `WHEELCAL [diam track]` | read / set (saved in the Uno's EEPROM) wheel diameter and track, mm | `OK <diam> <track>` |
-| `LED <name\|0-3>` / `BEEP <n>` | on-robot LED: `off`=0 `teach`=2 slow blink, `rec`/`ok`=1 solid, `no`/`forget`=3 fast blink (vision/GESTURES.md §7); n beeps (0–9) | `OK`, `ERR usage` / `ERR backend has no LED` (nothing changes) |
-| `VIS <mode> <fps> <cam_ms> <stop_ms> <label>` | report from the hand-gesture app (`vision/`); shown in STATUS, doesn't feed the watchdog | `OK` |
+| `LED <name\|0-3>` / `BEEP <n>` | on-robot LED: `off`=0 `teach`=2 slow blink, `rec`/`ok`=1 solid, `no`/`forget`=3 fast blink (iter3-pet/vision/GESTURES.md §7); n beeps (0–9) | `OK`, `ERR usage` / `ERR backend has no LED` (nothing changes) |
+| `VIS <mode> <fps> <cam_ms> <stop_ms> <label>` | report from the hand-gesture app (`iter3-pet/vision/`); shown in STATUS, doesn't feed the watchdog | `OK` |
 | `SIM T\|B\|READY [n]`, `SIM BTN TEACH\|FORGET` | **stub backend only**: inject an Uno event (tests) | `OK` |
 | anything else | | `ERR <reason>` |
 
@@ -203,13 +226,13 @@ Safety, in layers:
   wheels + gesture + arms and **latches**. Driving, arms and gestures are refused
   until `RESET`, which is only accepted 1 s after the last `T` report.
 - **bump** (|accel| spike > 1.2 g) → wheels stop, driving refused for 1 s (`-k`)
-- obstacle closer than 0.25 m blocks forward motion (`pi/src/obstacle.c`, a stub for now)
+- obstacle closer than 0.25 m blocks forward motion (`iter1-wasd/pi/src/obstacle.c`, a stub for now)
 - the Uno stops the wheels on its own after 200 ms without a `D` line (exact moves are
   self-terminating, and abort if the Pi goes quiet for 500 ms mid-move)
 - runs unattended: with no client the wheels stay stopped; a missing or unplugged Uno is
   reopened every second
 
-Pi → Uno serial protocol: see the header of `uno/tars/tars.ino`. The Pi sends
+Pi → Uno serial protocol: see the header of `iter1-wasd/uno/tars/tars.ino`. The Pi sends
 `D` every tick (50 Hz). Lines from the Uno starting with `#` are logged, never acted on.
 
 ---
@@ -225,19 +248,19 @@ driver types, the accelerometer, and the Pi↔Uno link (USB, or header UART with
 Quick reference (default 2-PWM driver): wheels D9/D10 (left) and D3/D11 (right),
 left arm ULN2003 on A0–A3, right arm on D4–D7, accelerometer SDA/SCL on A4/A5.
 
-The old Pi↔Pico UART + TB6612 wiring still works with `-b pico` (see `pico/main.py`).
+The old Pi↔Pico UART + TB6612 wiring still works with `-b pico` (see `archive/pico/main.py`).
 
 ---
 
 ## 5. Hackathon checklist
 
 - [ ] License deployed, SDP + Linux host tools in `~/qnx800`, `docker/run.sh qcc --version` works
-- [ ] `make -C pi` produces an aarch64 binary (`file pi/build/tars_motor`)
+- [ ] `make -C iter1-wasd/pi` produces an aarch64 binary (`file iter1-wasd/pi/build/tars_motor`)
 - [ ] Pi 5 boots QNX, joins the hotspot, `ssh` works, `ssh-copy-id` done
 - [ ] Plug the Uno into the Pi, `ls /dev/ser*` before/after: find its name
       (assumed `/dev/serusb1`) and set `UART=`. If nothing shows up, use the
       header-UART fallback (docs/tars_build.md §6)
-- [ ] `make -C pi run BACKEND=stub` + `teleop.py`: watch the watchdog stop when you quit
+- [ ] `make -C iter1-wasd/pi run BACKEND=stub` + `teleop.py`: watch the watchdog stop when you quit
 - [ ] Uno flashed, bench bring-up done (docs/tars_build.md §7): arms swing the
       right way, wheels spin the right way, `T`/`B` events appear
 - [ ] Chassis: middle slabs on the wheeled base + caster, arms pivot at mid-height,

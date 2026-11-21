@@ -1,4 +1,4 @@
-# goto/: go-to-object controller (C) + detector (C++), QNX native.
+# iter2-autonomy/goto/: go-to-object controller (C) + detector (C++), QNX native.
 #
 #   make               cross-compile goto for QNX aarch64le (inside docker/run.sh
 #                      if qcc isn't on PATH)
@@ -8,7 +8,7 @@
 #   make test          host build, C unit tests, Python 2D sim + socket tests
 #                      (includes test_nav, the nav grid/A*/LDR1 tests)
 #   make test-nav-asan test_nav + 1M-packet LDR1 fuzz under ASan/UBSan
-#   make test-nav-parity  nav.c A* vs pi/dashboard/mapping.py on shared fixtures
+#   make test-nav-parity  nav.c A* vs iter2-autonomy/dashboard/mapping.py on shared fixtures
 #   make test-fullstack   scripted full-stack sim (obstacle, occlusion, moved object, STOP, visual, voice)
 #   make deploy        scp goto (+ detect if built) and the config to the Pi
 #

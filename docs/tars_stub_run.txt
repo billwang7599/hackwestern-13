@@ -1,4 +1,4 @@
-# Scripted run: laptop/tars_client.py -> pi tars_motor_host -b stub (macOS host build, 2026-11-21)
+# Scripted run: iter1-wasd/laptop/tars_client.py -> pi tars_motor_host -b stub (macOS host build, 2026-11-21)
 
 ## client output
 ping 0.1 ms

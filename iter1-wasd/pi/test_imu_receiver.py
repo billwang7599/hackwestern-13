@@ -1,4 +1,4 @@
-"""Host integration test: python3 pi/test_imu_receiver.py /path/to/imu_receiver."""
+"""Host integration test: python3 iter1-wasd/pi/test_imu_receiver.py /path/to/imu_receiver."""
 import socket
 import subprocess
 import sys
