@@ -14,7 +14,8 @@ Frame conversion to ARKit (y up), the frame the phone sends:
     ARKit (x, y, z) = (world y, world z, world x);  pose = [x, cam_height, z, yaw],
     yaw = world heading th (forward = (sin yaw, cos yaw) in ARKit x/z, Andrew's convention).
 floor_y = 0. Only an approximation of the phone: a uniform depth grid with range noise
-and dropouts, no confidence map, no RGB surfaces, no inference/persistent points.
+and dropouts, no confidence map, no inference/persistent points. Its "surfaces" (Andrew's splat
+rows) are coloured by what was hit, not sampled from a camera image.
 """
 from __future__ import annotations
 
@@ -77,6 +78,13 @@ def room_from_json(value: dict) -> dict:
             "wall_height": float(value.get("wall_h", value.get("wall_height", 1.0)))}
 
 
+# Splat colours: the 2D editor's palette (web/panels/world2d.js), walls light grey, floor dark.
+COLORS = {"trash can": (76, 195, 138), "chair": (199, 154, 90), "person": (230, 180, 80), "door": (111, 127, 140),
+          "box": (167, 122, 214), "table": (143, 122, 90), "backpack": (90, 169, 230),
+          "water bottle": (89, 194, 214), "laptop": (154, 166, 178), "cup": (214, 138, 89), "": (150, 140, 120)}
+WALL_RGB, FLOOR_RGB = (200, 211, 219), (70, 82, 92)
+
+
 def to_arkit(x, y, z):
     return [y, z, x]
 
@@ -117,7 +125,7 @@ def _faces(room):
         key = ("box", i)
         faces += [(x0, y0, x1, y0, b["h"], key), (x1, y0, x1, y1, b["h"], key),
                   (x1, y1, x0, y1, b["h"], key), (x0, y1, x0, y0, b["h"], key)]
-        tops.append((x0, x1, y0, y1, b["h"]))
+        tops.append((x0, x1, y0, y1, b["h"], key))
     return faces, tops
 
 
@@ -151,36 +159,51 @@ def _hit_circle(ox, oy, dx, dy, cx, cy, r):
 class Caster:
     def __init__(self, room):
         self.room = room
-        self.faces, self.tops = _faces(room)
+        self.faces, tops = _faces(room)
+        self.tops = [t[:5] for t in tops]
+        self.top_keys = [t[5] for t in tops]
         self.cyl = [(c["x"], c["y"], c["r"], c["h"], ("cyl", i))
                     for i, c in enumerate(room["cylinders"]) if c.get("solid", True)]
 
     def cast(self, o, d, max_range):
         """Nearest hit distance of the 3D ray o + t d (|d| = 1), or None."""
-        best = max_range
+        hit = self.cast_hit(o, d, max_range)
+        return None if hit is None else hit[0]
+
+    def cast_hit(self, o, d, max_range):
+        """(t, normal (world xyz, unit, facing the ray), key) of the nearest hit, or None.
+        key: "floor", None (a wall), ("box", i) or ("cyl", i)."""
+        best, nrm, key = max_range, None, None
         if d[2] < -1e-9:
-            best = min(best, -o[2] / d[2])
-        for x1, y1, x2, y2, top, _ in self.faces:
+            best, nrm, key = min(best, -o[2] / d[2]), (0.0, 0.0, 1.0), "floor"
+        for x1, y1, x2, y2, top, k in self.faces:
             t = _hit_segment(o[0], o[1], d[0], d[1], x1, y1, x2, y2)
             if t is not None and t < best and 0.0 <= o[2] + t * d[2] <= top:
-                best = t
-        for cx, cy, r, h, _ in self.cyl:
+                ex, ey = x2 - x1, y2 - y1
+                L = math.hypot(ex, ey) or 1.0
+                n = (ey / L, -ex / L, 0.0)
+                if n[0] * d[0] + n[1] * d[1] > 0:
+                    n = (-n[0], -n[1], 0.0)
+                best, nrm, key = t, n, k
+        for cx, cy, r, h, k in self.cyl:
             t = _hit_circle(o[0], o[1], d[0], d[1], cx, cy, r)
             if t is not None and t < best:
                 z = o[2] + t * d[2]
                 if 0.0 <= z <= h:
-                    best = t
+                    px, py = o[0] + t * d[0] - cx, o[1] + t * d[1] - cy
+                    L = math.hypot(px, py) or 1.0
+                    best, nrm, key = t, (px / L, py / L, 0.0), k
                 elif z > h and d[2] < -1e-9 and o[2] > h:  # lid
                     tl = (h - o[2]) / d[2]
                     if tl < best and math.hypot(o[0] + tl * d[0] - cx, o[1] + tl * d[1] - cy) <= r:
-                        best = tl
+                        best, nrm, key = tl, (0.0, 0.0, 1.0), k
         if d[2] < -1e-9:
-            for x0, x1, y0, y1, h in self.tops:
+            for i, (x0, x1, y0, y1, h) in enumerate(self.tops):
                 if o[2] > h:
                     t = (h - o[2]) / d[2]
                     if t < best and x0 <= o[0] + t * d[0] <= x1 and y0 <= o[1] + t * d[1] <= y1:
-                        best = t
-        return best if best < max_range else None
+                        best, nrm, key = t, (0.0, 0.0, 1.0), self.top_keys[i]
+        return (best, nrm, key) if best < max_range else None
 
     def wall_distance(self, ox, oy, dx, dy, skip):
         """Nearest blocker along a horizontal unit ray, ignoring object `skip`."""
@@ -208,7 +231,8 @@ class SimPhone:
 
     def __init__(self, room=None, seed=1, session="sim-room", cam_height=0.138, pitch_deg=0.0,
                  hfov_deg=64.0, vfov_deg=50.0, cols=48, rows=30, depth_range=(0.2, 4.0),
-                 range_noise_m=0.01, dropout=0.02, tracking="normal", floor_y=0.0, detect=True):
+                 range_noise_m=0.01, dropout=0.02, tracking="normal", floor_y=0.0, detect=True,
+                 surfaces=True):
         self.rng = random.Random(seed)
         self.session = session
         self.cam_height, self.pitch = cam_height, math.radians(pitch_deg)
@@ -217,6 +241,7 @@ class SimPhone:
         self.depth_range = depth_range
         self.range_noise, self.dropout = range_noise_m, dropout
         self.tracking, self.floor_y, self.detect = tracking, floor_y, detect
+        self.surfaces = surfaces   # Andrew's "surfaces" rows (-> mapping.py surface_splats)
         self.room_source = "static"
         self.set_room(room if room is not None else DEFAULT_ROOM, "static")
 
@@ -230,6 +255,23 @@ class SimPhone:
         self.caster = Caster(norm)  # one attribute swap: scene() uses whichever it grabbed
         return True
 
+    def _surface(self, p, n, key, t, room):
+        """One of Andrew's surface rows (SceneCapture.surfaceSamples): ARKit position in cm, normal
+        x127, RGB, patch size (5..16, his d * width / fx * 5) -> mapping.Map keeps them, and
+        room_view.html / the iPhone draw them as Gaussian patches ("surface" mode)."""
+        if key == "floor":
+            rgb = FLOOR_RGB
+        elif key is None:
+            shade = 0.82 + 0.18 * min(1.0, p[2] / max(0.3, room["wall_height"]))
+            rgb = tuple(int(c * shade) for c in WALL_RGB)
+        else:
+            obj = (room["boxes"] if key[0] == "box" else room["cylinders"])[key[1]]
+            rgb = COLORS.get(obj.get("label", ""), COLORS[""])
+        rgb = tuple(max(0, min(255, int(c + self.rng.gauss(0, 6)))) for c in rgb)
+        na = to_arkit(*n)
+        size = int(round(min(16, max(5, t * 2 * math.tan(self.hfov / 2) * 5))))
+        return [int(round(100 * v)) for v in to_arkit(*p)] + [int(round(127 * v)) for v in na] + list(rgb) + [size]
+
     def _targets(self, room):
         for i, b in enumerate(room["boxes"]):
             yield b, ("box", i)
@@ -241,7 +283,7 @@ class SimPhone:
         room = caster.room
         hc = self.cam_height
         o = (x, y, hc)
-        points = []
+        points, surfaces = [], []
         lo, hi = self.depth_range
         if self.tracking == "normal":
             for j in range(self.rows):
@@ -250,13 +292,16 @@ class SimPhone:
                 for i in range(self.cols):
                     az = th + self.hfov * (0.5 - (i + 0.5) / self.cols)
                     d = (ce * math.cos(az), ce * math.sin(az), se)
-                    t = caster.cast(o, d, hi + 0.5)
-                    if t is None or self.rng.random() < self.dropout:
+                    hit = caster.cast_hit(o, d, hi + 0.5)
+                    if hit is None or self.rng.random() < self.dropout:
                         continue
-                    t += self.rng.gauss(0.0, self.range_noise)
+                    t = hit[0] + self.rng.gauss(0.0, self.range_noise)
                     if not lo <= t <= hi:
                         continue
-                    points.append([round(v, 3) for v in to_arkit(*(o[k] + t * d[k] for k in range(3)))])
+                    p = [o[k] + t * d[k] for k in range(3)]
+                    points.append([round(v, 3) for v in to_arkit(*p)])
+                    if self.surfaces and j % 2 == 0 and i % 2 == (j // 2) % 2 and len(surfaces) < 512:
+                        surfaces.append(self._surface(p, hit[1], hit[2], t, room))
         objects = []
         if self.detect and self.tracking == "normal":
             for b, key in self._targets(room):
@@ -276,6 +321,7 @@ class SimPhone:
                 "tracking": self.tracking,
                 "pose": [round(y, 4), round(hc, 4), round(x, 4), round(th, 5)],
                 "floor_y": self.floor_y, "points": points[:1500], "objects": objects[:20],
+                **({"surfaces": surfaces} if self.surfaces else {}),
                 "depth_range_m": [lo, hi], "image_orientation": "right",
                 "bench_sim": True}
 

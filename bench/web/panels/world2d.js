@@ -270,6 +270,8 @@
         for (let gy = Math.floor(Wd(0, canvas.clientHeight)[1] * 2) / 2; gy < Wd(0, 0)[1]; gy += 0.5) {
           const [, py] = S(0, gy); ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(canvas.clientWidth, py); ctx.stroke();
         }
+        // layers other panels add (window.World2DLayers: fn(ctx, S, scale, W)), e.g. goto's map (maps panel)
+        for (const fn of window.World2DLayers || []) { try { fn(ctx, S, s, W); } catch (e) { /* a layer never breaks the view */ } }
         // camera cone (truth)
         const t = W.truth;
         if (t) {
@@ -416,6 +418,7 @@
         canvas.focus();
         const [x, y] = ev2w(ev);
         if (!W || !W.room) return;
+        if (window.World2DPick) { const f = window.World2DPick; window.World2DPick = null; f(x, y); return; }  // one click for another panel
         if (tool === 'select') {
           const o = hitObj(x, y);
           if (o) { sel = {kind: 'obj', id: o.id}; drag = {kind: 'obj', id: o.id, dx: o.x - x, dy: o.y - y}; }
@@ -490,6 +493,7 @@
         requestAnimationFrame(frame);
       }
       window.addEventListener('resize', () => { dirty = true; });
+      window.World2DRedraw = () => { dirty = true; };
       requestAnimationFrame(frame);
     },
   });
