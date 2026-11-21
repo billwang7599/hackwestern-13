@@ -40,109 +40,102 @@ struct MotionUSBApp: App {
         }
     }
 
-    private var captureHeader: some View {
-        VStack(alignment: .leading, spacing: 10) {
-        HStack {
-            VStack(alignment: .leading) {
-                Text("Robot dashboard").font(.headline)
-                Text(pi.connected ? "Pi connected" : "Pi disconnected").font(.caption)
-                    .foregroundStyle(pi.connected ? Color.green : Color.orange)
+    @State private var controls = false
+
+    private func feed(_ title: String, _ image: UIImage?, _ timestamp: Double) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.black
+            if let cg = image?.cgImage {
+                Image(uiImage: UIImage(cgImage: cg, scale: 1, orientation: .left))
+                    .resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            Spacer()
-            Button(server.running ? "Stop sensors" : "Start sensors") {
-                if server.running { server.stop(); camera.stop(); stereo.stop() }
-                else { server.start(); if server.running { if stereoMode { stereo.start() } else { camera.start() } } }
-            }.buttonStyle(.borderedProminent)
-        }
-        TimelineView(.periodic(from: .now, by: 0.2)) { _ in
-            let appearance = ObstaclePresentation(status: pi.latestStatus, connected: currentGuardConnection)
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: appearance.symbol).foregroundStyle(appearance.color)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(appearance.title).font(.subheadline.bold())
-                    Text(appearance.detail).font(.caption)
-                }
-                Spacer(minLength: 0)
-            }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                .background(appearance.color.opacity(0.13), in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityElement(children: .combine)
-        }
-        if !speech.lastSpoken.isEmpty {
-            Label("TARS: \(speech.lastSpoken)", systemImage: "speaker.wave.2.fill").font(.caption)
-                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-        }
-        }.padding(.bottom, 8)
+            TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                Text(title + (image == nil ? " · waiting" : ProcessInfo.processInfo.systemUptime - timestamp > 2 ? " · stale" : ""))
+                    .font(.caption.bold()).padding(4).background(.black.opacity(0.65))
+            }
+        }.foregroundStyle(.white).clipped()
+    }
+
+    private func axes(_ key: String) -> String {
+        guard pi.connected, pi.latestStatus["motion_live"] as? Bool == true,
+              let values = pi.latestStatus[key] as? [NSNumber], values.count == 3 else { return "—" }
+        return values.map { String(format: "%.1f", $0.doubleValue) }.joined(separator: "  ")
     }
 
     var body: some Scene {
         WindowGroup {
-            TabView(selection: $activeTab) {
-                ScrollView { VStack(spacing: 16) {
-                    captureHeader
-                    Toggle("Rear stereo depth trial", isOn: $stereoMode).disabled(server.running)
-                    if stereoMode {
-                        Text(stereo.status)
-                        if let image = stereo.image { Image(uiImage: image).resizable().scaledToFit() }
-                        CameraInspectionPanel(image: stereo.detected, timestamp: stereo.detectedAt, title: "QNX object detection", source: "Boxes on the matching stereo RGB frame")
-                        Text("Bright areas are nearer. Dark areas are farther or have no match. Robot mapping and LiDAR driving require the regular sensor mode.").font(.caption)
-                    } else {
-                    Text(camera.status).font(.footnote).multilineTextAlignment(.center)
-                    if !isInspectionFixture || !ProcessInfo.processInfo.arguments.contains("--depth-only") {
-                    CameraInspectionPanel(image: camera.inspectionImage, timestamp: camera.inspectionTimestamp)
-                        .onTapGesture { inspectionExpanded = true }
-                    Text(camera.inspectionPerformance).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    Text("Warm = near, cool = far. Dim colors mark accepted medium confidence. Purple = rejected confidence, gray = outside 0.2–4 m, black = no reading.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Divider()
-                    CameraInspectionPanel(image: camera.qnxInspectionImage, timestamp: camera.qnxInspectionTimestamp,
-                        title: "QNX object detection", source: "YOLOX · QNX ONNX Runtime")
-                    Text(camera.qnxStatusString).font(.footnote)
-                    Divider()
-                    }
-                    }
-                }.padding() }.background { safetyBackground }.tabItem { Label("Camera", systemImage: "camera") }.tag("camera")
-
-                ScrollView { VStack(spacing: 16) {
-                    captureHeader
-                    PointCloudView(map: cloud)
-                    Text(camera.depthStatusString).font(.footnote).foregroundStyle(.secondary)
-                    HStack {
-                        Button("Set floor (aim down)") { camera.setFloor() }
-                        Button("Reset scan") { camera.resetMap() }
-                    }.buttonStyle(.bordered)
-                    HStack {
-                        Button("Save surroundings") { camera.saveMap { pi.command(["op": "map_save"]) } }
-                        Button("Load surroundings") { camera.loadMap { pi.command(["op": "map_load"]) } }
-                    }.buttonStyle(.bordered).disabled(!pi.connected)
-                    DisclosureGroup("Floor map and target selection") {
-                        SurroundingsView(map: pi.surroundings, connected: pi.connected, onCommand: pi.command)
-                    }
-                }.padding() }.background { safetyBackground }.tabItem { Label("3D map", systemImage: "cube") }.tag("map")
-
-                ScrollView { VStack(spacing: 16) {
-                    captureHeader
-                    ManualDrivePanel(pi: pi)
-                    EdgeStatusView(status: pi.latestStatus, connected: pi.connected)
-                    PiTelemetryView(status: pi.latestStatus, connected: pi.connected)
-                    HStack {
-                        Button("Pi Start streams") { pi.command(["op": "start"]) }
-                        Button("Pi Stop streams") { pi.command(["op": "stop"]) }
-                    }.buttonStyle(.bordered).disabled(!pi.connected)
-                    Text("Stream controls pause dashboard reception; the independent LiDAR guard keeps running.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Phone motion samples sent: \(server.sent)").font(.caption)
-                }.padding() }.background { safetyBackground }.tabItem { Label("Pi status", systemImage: "waveform.path.ecg") }.tag("status")
+            GeometryReader { g in
+                let side = g.size.width * 0.25
+                HStack(alignment: .top, spacing: 0) {
+                    VStack(spacing: 2) {
+                        feed("YOLO", camera.qnxInspectionImage, camera.qnxInspectionTimestamp)
+                        feed("LiDAR", camera.inspectionImage, camera.inspectionTimestamp)
+                    }.frame(width: side)
+                    PointCloudView(map: cloud, compact: true)
+                        .frame(width: g.size.width - 2 * side, height: g.size.height / 2)
+                        .clipped().accessibilityLabel("3D surroundings")
+                    VStack(alignment: .leading, spacing: 3) {
+                        SurroundingsView(map: pi.surroundings, connected: pi.connected, onCommand: pi.command, compact: true)
+                            .frame(maxHeight: .infinity).accessibilityLabel("Floor minimap")
+                        HStack {
+                            Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
+                            Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
+                        }.buttonStyle(.bordered).controlSize(.small)
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 5) {
+                                let keys = pi.latestStatus["keyboard"] as? [String: Any]
+                                Text((pi.connected ? "Pi online" : "Pi offline") + " · " + (pi.connected && keys?["connected"] as? Bool == true ? "Keyboard " + ((keys?["last_press"] as? [String])?.joined() ?? "") : "Keyboard offline"))
+                                TimelineView(.periodic(from: .now, by: 0.3)) { _ in
+                                    let state = ObstaclePresentation(status: pi.latestStatus, connected: currentGuardConnection)
+                                    Text(state.title).foregroundStyle(state.color).fontWeight(.bold)
+                                }
+                                if !speech.lastSpoken.isEmpty {
+                                    Label(speech.lastSpoken, systemImage: "speaker.wave.2.fill").font(.caption)
+                                }
+                                Text("Accel m/s²   " + axes("accel_m_s2"))
+                                Text("Gyro rad/s   " + axes("gyro_rad_s"))
+                                HStack {
+                                    Button(server.running ? "Stop" : "Start") {
+                                        if server.running { server.stop(); camera.stop() }
+                                        else { server.start(); if server.running { camera.start() } }
+                                    }.buttonStyle(.borderedProminent)
+                                    Button("Set floor") { camera.setFloor() }.buttonStyle(.bordered)
+                                }
+                                Text(camera.status).font(.caption2)
+                                Button(controls ? "Hide controls" : "More controls") { controls.toggle() }
+                                if controls {
+                                    ManualDrivePanel(pi: pi)
+                                    Button("Reset scan") { camera.resetMap() }
+                                    ForEach(["start","stop"], id: \.self) { op in
+                                        Button("Pi " + op + " streams") { pi.command(["op":op]) }
+                                    }
+                                }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(height: g.size.height * (controls ? 0.73 : 0.46))
+                    }.padding(.horizontal, 4).frame(width: side)
+                }
             }
-            .background { safetyBackground }
-            .fullScreenCover(isPresented: $inspectionExpanded) {
-                VStack {
-                    HStack { Text("Camera + LiDAR").font(.headline); Spacer(); Button("Done") { inspectionExpanded = false } }
-                    Spacer()
-                    CameraInspectionPanel(image: camera.inspectionImage, timestamp: camera.inspectionTimestamp)
-                    Spacer()
-                }.padding().background(Color.black).foregroundStyle(.white)
-            }
+            .overlay {
+                TimelineView(.periodic(from: .now, by: 0.08)) { _ in
+                    if let angle = server.floorTiltDegrees, angle <= 45 {
+                        let level = angle <= 1
+                        let tint = level ? Color.mint : Color(hue: 0.23 * (1 - angle / 45),
+                                                             saturation: 0.88, brightness: 0.92)
+                        GeometryReader { g in
+                            ZStack {
+                                tint.opacity(level ? 0.28 : 0.13)
+                                Rectangle().strokeBorder(tint, lineWidth: level ? 7 : 4)
+                                Label(level ? "Level · Set floor" : String(format: "Floor tilt  %.1f°", angle),
+                                      systemImage: level ? "checkmark.circle.fill" : "level")
+                                    .font(.headline.monospacedDigit()).foregroundStyle(.white)
+                                    .padding(.horizontal, 12).padding(.vertical, 6)
+                                    .background(.black.opacity(0.82), in: Capsule())
+                                    .position(x: g.size.width / 2, y: 25)
+                            }
+                        }
+                    }
+                }.allowsHitTesting(false)
+            }.statusBarHidden().background { safetyBackground }
             .onAppear {
                 speech.start()
                 #if DEBUG
@@ -413,6 +406,12 @@ final class MotionServer: ObservableObject {
     @Published var running = false
     @Published var sent: UInt64 = 0
     private let motion = CMMotionManager()
+    var floorTiltDegrees: Double? {
+        guard running, let sample = motion.deviceMotion,
+              ProcessInfo.processInfo.systemUptime - sample.timestamp < 0.4 else { return nil }
+        let g = sample.gravity
+        return atan2(hypot(g.x, g.y), -g.z) * 180 / .pi
+    }
     private var listener: NWListener?
     private var client: NWConnection?
     private var accel: CMAccelerometerData?
@@ -440,6 +439,10 @@ final class MotionServer: ObservableObject {
             sent = 0
             sequence = 0
             UIApplication.shared.isIdleTimerDisabled = true
+            if motion.isDeviceMotionAvailable {
+                motion.deviceMotionUpdateInterval = 0.05
+                motion.startDeviceMotionUpdates()
+            }
             motion.accelerometerUpdateInterval = 0.01
             motion.gyroUpdateInterval = 0.01
             motion.startAccelerometerUpdates(to: .main) { [weak self] data, error in
@@ -507,6 +510,7 @@ final class MotionServer: ObservableObject {
     }
 
     func stop() {
+        motion.stopDeviceMotionUpdates()
         motion.stopAccelerometerUpdates()
         motion.stopGyroUpdates()
         listener?.stateUpdateHandler = nil

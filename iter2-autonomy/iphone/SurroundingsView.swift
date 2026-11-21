@@ -6,6 +6,7 @@ struct SurroundingsView: View {
     let connected: Bool
     let onCommand: ([String: Any]) -> Void
 
+    var compact = false
     @State private var span: Double = 8
     @State private var selectedID: String?
     @State private var pan = CGSize.zero
@@ -22,6 +23,7 @@ struct SurroundingsView: View {
         let usable = connected && snapshot.valid && snapshot.live && snapshot.tracking == "normal"
         let targetsEnabled = usable && snapshot.floorReady
 
+        if compact { floorCanvas(snapshot, usable: usable) } else {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Surroundings").font(.title2.bold())
@@ -56,25 +58,7 @@ struct SurroundingsView: View {
                 Button("Recenter") { pan = .zero; span = 8 }
             }.buttonStyle(.bordered)
 
-            GeometryReader { geometry in
-                Canvas { context, size in
-                    var drawingContext = context
-                    draw(snapshot, context: &drawingContext, size: size, usable: usable)
-                }
-                .background(background)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 4)
-                    .updating($drag) { value, state, _ in state = value.translation }
-                    .onEnded { value in
-                        let scale = Double(geometry.size.width) / visibleSpan
-                        guard scale > 0 else { return }
-                        pan.width -= value.translation.width / scale
-                        pan.height -= value.translation.height / scale
-                    })
-                .simultaneousGesture(MagnifyGesture()
-                    .updating($magnification) { value, state, _ in state = value.magnification }
-                    .onEnded { value in span = max(2, min(30, span / Double(value.magnification))) })
-            }
+            floorCanvas(snapshot, usable: usable)
             .frame(height: 320)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(alignment: .bottomLeading) {
@@ -147,6 +131,30 @@ struct SurroundingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .onChange(of: snapshot.session) { _, _ in selectedID = nil; pan = .zero }
+    }
+
+    }
+
+    private func floorCanvas(_ snapshot: MapSnapshot, usable: Bool) -> some View {
+            GeometryReader { geometry in
+                Canvas { context, size in
+                    var drawingContext = context
+                    draw(snapshot, context: &drawingContext, size: size, usable: usable)
+                }
+                .background(background)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 4)
+                    .updating($drag) { value, state, _ in state = value.translation }
+                    .onEnded { value in
+                        let scale = Double(geometry.size.width) / visibleSpan
+                        guard scale > 0 else { return }
+                        pan.width -= value.translation.width / scale
+                        pan.height -= value.translation.height / scale
+                    })
+                .simultaneousGesture(MagnifyGesture()
+                    .updating($magnification) { value, state, _ in state = value.magnification }
+                    .onEnded { value in span = max(2, min(30, span / Double(value.magnification))) })
+            }
     }
 
     private func legend(_ label: String, color: Color) -> some View {

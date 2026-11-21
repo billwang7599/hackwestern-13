@@ -968,7 +968,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
                          persistentFit: persistentFresh ? persistentCalibration : nil, token: token)
         }
         if !previewBusy, frame.timestamp >= nextPreview {
-            nextPreview = nextDeadline(nextPreview, at: frame.timestamp, interval: 0.1)
+            nextPreview = nextDeadline(nextPreview, at: frame.timestamp, interval: 1.0 / 30)
             publishPreview(frame: frame, tracking: tracking, token: token)
         }
         // No fixed AI-frame timer: submit the newest camera frame whenever the
@@ -1081,9 +1081,8 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
             guard self.current(token) else { self.queue.async { self.previewBusy = false }; return }
             let depth = SceneDepthGrid(frame)
             let caption = "Live RGB + measured LiDAR • AI on QNX"
-            let rendered = InspectionRenderer.render(frame: frame, depth: depth, detections: [],
-                                                       caption: caption, context: self.previewContext)
-            let jpeg = self.video.available ? rendered?.jpegData(compressionQuality: 0.7) : nil
+            let rendered = depth.flatMap { InspectionRenderer.depthImage($0, context: self.previewContext) }
+            let jpeg = self.video.available ? InspectionRenderer.render(frame: frame, depth: depth, detections: [], caption: caption, context: self.previewContext)?.jpegData(compressionQuality: 0.7) : nil
             let processing = ProcessInfo.processInfo.systemUptime - started
             if self.current(token), let jpeg { self.video.send(jpeg) }
             self.queue.async {
@@ -1192,7 +1191,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
                         }
                     }
                     DispatchQueue.main.async {
-                        self.qnxInspectionImage = image
+                        self.qnxInspectionImage = image.cgImage?.cropping(to: CGRect(x: 12, y: 42, width: 320, height: 320 * CGFloat(source.image.height) / CGFloat(source.image.width))).map { UIImage(cgImage: $0) }
                         self.qnxInspectionTimestamp = source.timestamp
                         self.qnxStatusString = "\(matched.count) QNX detections • \(String(format: "%.1f", age)) s source age"
                         self.detections = matched
