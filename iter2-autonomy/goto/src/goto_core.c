@@ -1251,7 +1251,29 @@ static int pick_explore(goto_sm *s)
     return 0;
 }
 
-/* a free cell 0.7-1.3 m from the goal with a clear line of sight to it, reachable */
+/* From a vantage cell the robot LOOKs, then drives straight at the target (visual APPROACH), so a
+ * one-cell line of sight isn't enough: the lane the body sweeps up to the target must hold no
+ * obstacle either, or lidar_guard stops the approach on the occluder's edge (seen in the full-stack
+ * sim: a board end 0.41 m ahead, "docked" 0.88 m from the bin). Lines beside the centre line out to
+ * +-0.4 m (the footprint square nav_plan inflates by; it also absorbs the robot stopping up to a
+ * cell away from the vantage point), up to NAV_LOS_END_MARGIN from the target (the object itself
+ * is occupied). Unknown cells are allowed beside the lane. */
+static int lane_clear(const goto_sm *s, double px, double pz, double gx, double gz)
+{
+    double dx = gx - px, dz = gz - pz, L = hypot(dx, dz);
+    if (L <= NAV_LOS_END_MARGIN) return 1;
+    dx /= L; dz /= L;
+    double ex = gx - NAV_LOS_END_MARGIN * dx, ez = gz - NAV_LOS_END_MARGIN * dz;
+    for (int i = 1; i <= 4; i++)
+        for (int sgn = -1; sgn <= 1; sgn += 2) {
+            double off = sgn * 0.1 * i, ox = off * dz, oz = -off * dx;      /* perpendicular */
+            if (nav_line_clear_ex(s->nav, (float)(px + ox), (float)(pz + oz), (float)(ex + ox), (float)(ez + oz), 0.0f) == 0)
+                return 0;
+        }
+    return 1;
+}
+
+/* a free cell 0.7-1.3 m from the goal with a clear line of sight (and drive lane) to it, reachable */
 static int pick_vantage(goto_sm *s)
 {
     double x, z, yaw;
@@ -1265,6 +1287,7 @@ static int pick_vantage(goto_sm *s)
             double a = k * 2 * M_PI / 24, px = s->goal_x + R[r] * sin(a), pz = s->goal_z + R[r] * cos(a);
             if (nav_cell(s->nav, (float)px, (float)pz) != NAV_FREE) continue;
             if (nav_line_clear(s->nav, (float)px, (float)pz, (float)s->goal_x, (float)s->goal_z) != 1) continue;
+            if (!lane_clear(s, px, pz, s->goal_x, s->goal_z)) continue;
             if (!foot_clear(s, px, pz)) continue;   /* the robot must fit there: don't spend a try on it */
             double d = hypot(px - x, pz - z);
             int j = n++;

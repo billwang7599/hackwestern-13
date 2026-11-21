@@ -1152,6 +1152,14 @@ static void test_map_occluder_inside_footprint(void)
     CHECK(closest >= d0 - 0.02, "never drove closer to the board (start %.2f m, closest %.2f m)", d0, closest);
     CHECK(S.st == ST_LOOK && nav_line_clear(N, (float)PX, (float)PZ, 2.05f, 2.05f) == 1,
           "vantage reached with a clear view of the spot, LOOK (%s)", goto_state_name(S.st));
+    /* the visual approach drives straight at the bin from here: the body (and lidar_guard's
+     * corridor) must not clip the board on the way to the docking distance */
+    double L = hypot(2.05 - PX, 2.05 - PZ), lane = 9;
+    for (int k = 0; k <= 40; k++) {
+        double t = (L - 0.55) * k / 40 / L;
+        lane = fmin(lane, rect_dist(PX + (2.05 - PX) * t, PZ + (2.05 - PZ) * t, bx0, bz0 - 0.05, bx1, bz1));
+    }
+    CHECK(lane >= 0.25, "straight approach from the vantage keeps the body clear of the board (%.2f m)", lane);
     /* YOLO sees it from there and docks */
     clear();
     advance(0.4);
