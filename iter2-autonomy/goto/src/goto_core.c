@@ -580,8 +580,48 @@ double goto_mem_box_dist(const goto_cfg *c, const char *label, const goto_det *d
     return clampd(c->arrive_dist_mm * goto_cfg_arrive_h(c, label) / fmax(h, 1e-3), 150.0, 6000.0);
 }
 
-int goto_mem_sight(goto_mem *m, const goto_cfg *c, const char *label, double x, double y,
-                   double bearing, double dist, double conf, double wall)
+/* Where a sighting is in the phone's map (metres), for matching it against remembered
+ * instances. Only with a FRESH ARKit pose (have_nav_arkit): dead reckoning on a DC car can be
+ * metres off, and a nav pose carried by DR is no better. rel_deg + = right, dist mm. */
+typedef struct { int ok; double wx, wz, rel_deg, dist; } mem_wpos;
+
+static mem_wpos mem_wpos_of(const goto_mem *m, double rel_deg, double dist_mm)
+{
+    mem_wpos w = {0, 0, 0, rel_deg, dist_mm};
+    if (!m->have_nav || !m->have_nav_arkit) return w;
+    double yaw = m->nyaw - RAD(rel_deg);
+    w.wx = m->nx + dist_mm / 1000.0 * sin(yaw);
+    w.wz = m->nz + dist_mm / 1000.0 * cos(yaw);
+    w.ok = 1;
+    return w;
+}
+
+/* Is entry e this sighting? Same label assumed. Returns the match distance (mm) or -1.
+ * With a map position on both sides, the map decides (DR x/y is ignored: on a DC car it's off
+ * by metres, and a bin that moved from A to B would refresh A). Otherwise the DR world x/y. */
+static double mem_match(const goto_mem *m, const goto_cfg *c, const goto_mem_entry *e, double x, double y,
+                        double bearing, double dist, const mem_wpos *w)
+{
+    if (w && w->ok && e->has_w) {
+        double dw = hypot(e->wx - w->wx, e->wz - w->wz) * 1000.0;
+        if (dw <= c->memory_merge_mm) return dw;
+        double ex = e->wx - m->nx, ez = e->wz - m->nz, er = hypot(ex, ez) * 1000.0;
+        double eb = wrap180(-DEG(atan2(ex, ez) - m->nyaw));          /* relative, + = right */
+        int ray = er > 1 && fabs(wrap180(eb - w->rel_deg)) < 6.0 && er / w->dist > 0.65 && er / w->dist < 1.55;
+        return ray ? dw : -1;
+    }
+    double dw = hypot(e->x - x, e->y - y);
+    if (dw <= c->memory_merge_mm) return dw;
+    if (m->have_pose) {
+        double ex = e->x - m->px, ey = e->y - m->py, er = hypot(ex, ey);
+        double eb = DEG(atan2(ey, ex));
+        if (er > 1 && fabs(wrap180(eb - bearing)) < 6.0 && er / dist > 0.65 && er / dist < 1.55) return dw;
+    }
+    return -1;
+}
+
+static int mem_sight_w(goto_mem *m, const goto_cfg *c, const char *label, double x, double y,
+                       double bearing, double dist, double conf, double wall, const mem_wpos *w)
 {
     /* match: same label, and close in the world OR on the same ray within the range noise */
     int best = -1;
@@ -589,14 +629,8 @@ int goto_mem_sight(goto_mem *m, const goto_cfg *c, const char *label, double x, 
     for (int i = 0; i < m->n; i++) {
         goto_mem_entry *e = &m->e[i];
         if (strcmp(e->label, label)) continue;
-        double dw = hypot(e->x - x, e->y - y);
-        int ok = dw <= c->memory_merge_mm;
-        if (!ok && m->have_pose) {
-            double ex = e->x - m->px, ey = e->y - m->py, er = hypot(ex, ey);
-            double eb = DEG(atan2(ey, ex));
-            ok = er > 1 && fabs(wrap180(eb - bearing)) < 6.0 && er / dist > 0.65 && er / dist < 1.55;
-        }
-        if (ok && dw < best_d) { best_d = dw; best = i; }
+        double dw = mem_match(m, c, e, x, y, bearing, dist, w);
+        if (dw >= 0 && dw < best_d) { best_d = dw; best = i; }
     }
     goto_mem_entry *e;
     if (best >= 0) {
@@ -618,6 +652,12 @@ int goto_mem_sight(goto_mem *m, const goto_cfg *c, const char *label, double x, 
     e->status = MEM_FRESH;
     m->dirty = 1;
     return (int)(e - m->e);
+}
+
+int goto_mem_sight(goto_mem *m, const goto_cfg *c, const char *label, double x, double y,
+                   double bearing, double dist, double conf, double wall)
+{
+    return mem_sight_w(m, c, label, x, y, bearing, dist, conf, wall, NULL);
 }
 
 /* map position of a sighting at relative bearing rel_deg (+ right), dist mm, from the nav pose */
@@ -656,7 +696,8 @@ int goto_mem_observe(goto_mem *m, const goto_cfg *c, const goto_objects *o, cons
         double dist = goto_mem_box_dist(c, l, d, f->w, f->h);
         double wb = wrap180(m->ph + bearing_of(c, x));
         double ox = m->px + dist * cos(RAD(wb)), oy = m->py + dist * sin(RAD(wb));
-        int k = goto_mem_sight(m, c, l, ox, oy, wb, dist, d->conf, wall);
+        mem_wpos w = mem_wpos_of(m, bearing_of(c, x), dist);
+        int k = mem_sight_w(m, c, l, ox, oy, wb, dist, d->conf, wall, &w);
         /* two boxes of one label in one frame are two instances */
         if (k >= 0 && k < GOTO_MEM_MAX && taken[k]) {
             goto_mem_entry *e = mem_new(m, l);
@@ -1026,7 +1067,9 @@ static void sync_nav(goto_sm *s)
 {
     if (!s->mem) return;
     double x, z, yaw;
-    s->mem->have_nav = nav_pose(s, &x, &z, &yaw) != 0;
+    int src = nav_pose(s, &x, &z, &yaw);
+    s->mem->have_nav = src != 0;
+    s->mem->have_nav_arkit = src == NAV_POSE_ARKIT;
     if (s->mem->have_nav) { s->mem->nx = x; s->mem->nz = z; s->mem->nyaw = yaw; }
 }
 
@@ -1456,10 +1499,17 @@ static void arrived(goto_sm *s)
         const char *lab = s->objs->obj[s->target];
         double wb = wrap180(m->ph + s->last_bearing), d = s->cfg.arrive_dist_mm;
         double ax = m->px + d * cos(RAD(wb)), ay = m->py + d * sin(RAD(wb));
-        /* the instance we drove to, if it's plausibly this one; else match by position */
+        /* the instance we drove to, if it's plausibly this one; else match by position.
+         * Positions in the phone's map when both sides have one (DR can be metres off). */
+        sync_nav(s);
+        mem_wpos w = mem_wpos_of(m, s->last_bearing, d);
         int i = s->mem_phase ? goto_mem_find_id(m, lab, s->mem_id) : -1;
-        if (i >= 0 && hypot(m->e[i].x - ax, m->e[i].y - ay) > 3 * s->cfg.memory_merge_mm) i = -1;
-        if (i < 0) i = goto_mem_sight(m, &s->cfg, lab, ax, ay, wb, d, 0.5, wall_now(s));
+        if (i >= 0) {
+            const goto_mem_entry *e = &m->e[i];
+            double off = w.ok && e->has_w ? hypot(e->wx - w.wx, e->wz - w.wz) * 1000.0 : hypot(e->x - ax, e->y - ay);
+            if (off > 3 * s->cfg.memory_merge_mm) i = -1;
+        }
+        if (i < 0) i = mem_sight_w(m, &s->cfg, lab, ax, ay, wb, d, 0.5, wall_now(s), &w);
         goto_mem_entry *e = &m->e[i];
         e->x = ax; e->y = ay; e->bearing = wb; e->dist = d;
         sync_nav(s);

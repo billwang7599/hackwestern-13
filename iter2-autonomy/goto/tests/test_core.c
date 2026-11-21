@@ -1391,6 +1391,66 @@ static void test_map_fallbacks(void)
           "navw map position round-trips");
 }
 
+/* Regression (DC full-stack sim, "old spot A downgraded" failed): sightings were merged by
+ * tars_motor's dead-reckoned x/y. On a DC car that was ~2 m off, so a bin that moved from A to B
+ * refreshed A's instance. With a fresh ARKit pose, the map position decides. */
+static void test_memory_merge_by_map(void)
+{
+    map_setup();
+    put_robot(0, 0, 0);                                  /* phone: at the origin, facing +z */
+    goto_sm_pose(&S, T, 1, 0, 0, 0, 0);                  /* DR: also 0,0,0 ... */
+    /* #1 = spot A: on the map 2 m to the robot's LEFT-side x (2, 0); but DR believes it is 2 m
+     * straight ahead (DR was 90 deg off when it was seen). STALE: GOTO already looked there. */
+    int a = goto_mem_sight(&MM, &C, "trash can", 2000, 0, 0, 2000, 0.8, S.wall_base + T);
+    MM.e[a].has_w = 1; MM.e[a].wx = 2.0; MM.e[a].wz = 0.0; MM.e[a].status = MEM_STALE;
+    /* the bin, now at B = 2 m straight ahead on the map (0, 2) */
+    advance(0.1);
+    frame("trash can", 0.5, 0.25, 0.569);
+    a = goto_mem_find_id(&MM, "trash can", 1);
+    CHECK(goto_mem_count(&MM, "trash can") == 2, "a bin at B is a new instance, not A refreshed by DR (%d instances)",
+          goto_mem_count(&MM, "trash can"));
+    CHECK(a >= 0 && MM.e[a].status == MEM_STALE && fabs(MM.e[a].wx - 2.0) < 1e-6 && fabs(MM.e[a].wz) < 1e-6,
+          "A keeps its map spot and stays stale (%s, %.2f,%.2f)", a >= 0 ? goto_mem_status_name(MM.e[a].status) : "-",
+          a >= 0 ? MM.e[a].wx : 0, a >= 0 ? MM.e[a].wz : 0);
+    int b = goto_mem_find_id(&MM, "trash can", 2);
+    CHECK(b >= 0 && MM.e[b].has_w && fabs(MM.e[b].wx) < 0.2 && fabs(MM.e[b].wz - 2.0) < 0.4,
+          "B's map spot is ahead (%.2f,%.2f)", b >= 0 ? MM.e[b].wx : 0, b >= 0 ? MM.e[b].wz : 0);
+    /* the other way round: same map spot, DR far off -> still the same instance */
+    put_robot(0, 0, M_PI / 2);                           /* phone: facing +x, i.e. at A */
+    goto_sm_pose(&S, T, 1, 0, 0, 180, 0);                /* DR: facing the other way */
+    advance(0.1);
+    frame("trash can", 0.5, 0.25, 0.569);
+    CHECK(goto_mem_count(&MM, "trash can") == 2 && MM.e[a].status == MEM_FRESH,
+          "seen again at A on the map (DR says elsewhere) -> A refreshed, no third instance (%d)",
+          goto_mem_count(&MM, "trash can"));
+    /* without the phone: DR decides, as before */
+    goto_mem_init(&MM);
+    goto_sm_set_nav(&S, NULL);
+    goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
+    a = goto_mem_sight(&MM, &C, "trash can", 2000, 0, 0, 2000, 0.8, S.wall_base + T);
+    MM.e[a].status = MEM_STALE;
+    advance(0.1);
+    frame("trash can", 0.5, 0.25, 0.569);
+    CHECK(goto_mem_count(&MM, "trash can") == 1 && MM.e[a].status == MEM_FRESH, "no phone: DR merge as before");
+    goto_sm_set_nav(&S, N);
+
+    /* arrival: docking at B after looking for A must not rewrite A (DR 1.45 m from B's dock) */
+    map_setup();
+    put_robot(0, 0, 0);
+    a = goto_mem_sight(&MM, &C, "trash can", 2000, 0, 0, 2000, 0.8, S.wall_base + T);
+    MM.e[a].has_w = 1; MM.e[a].wx = 2.0; MM.e[a].wz = 0.0; MM.e[a].status = MEM_STALE;
+    start("trash can");                                  /* empty map -> visual memory turn to #1 */
+    CHECK(S.mem_id == 1, "GOTO tries #1 (%d)", S.mem_id);
+    for (int i = 0; i < 40 && S.st != ST_LOOK && S.st != ST_IDLE; i++) { ack_turn(300 + i); advance(0.3); }
+    advance(0.5);
+    for (int i = 0; i < 6 && S.st != ST_IDLE; i++) { advance(0.12); frame("trash can", 0.5, 0.75, 0.95); }
+    a = goto_mem_find_id(&MM, "trash can", 1);
+    CHECK(!strcmp(S.result, "arrived"), "docked (%s)", S.result);
+    CHECK(a >= 0 && MM.e[a].status == MEM_STALE && fabs(MM.e[a].wx - 2.0) < 1e-6,
+          "arrival at B didn't overwrite A (%s, map %.2f,%.2f)", a >= 0 ? goto_mem_status_name(MM.e[a].status) : "-",
+          a >= 0 ? MM.e[a].wx : 0, a >= 0 ? MM.e[a].wz : 0);
+}
+
 static void test_memory_say(void)
 {
     goto_mem m;
@@ -1456,6 +1516,7 @@ int main(void)
     test_map_guard_and_replan();
     test_leased_approach();
     test_map_fallbacks();
+    test_memory_merge_by_map();
     test_memory_say();
     printf("%d/%d checks passed\n", passed, passed + failed);
     return failed ? 1 : 0;

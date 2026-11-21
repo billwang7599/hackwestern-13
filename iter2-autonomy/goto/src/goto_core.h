@@ -116,7 +116,8 @@ int goto_parse_frame(const char *line, goto_frame *f);
  * remembered INSTANCES, keyed label + id (trash can #1, trash can #2). A
  * sighting merges into an instance of the same label whose world x,y is within
  * memory_merge_mm, or that lies on the same ray from the robot within the
- * (noisy) range; otherwise it becomes a new instance.
+ * (noisy) range; otherwise it becomes a new instance. With a fresh ARKit pose (have_nav_arkit)
+ * and an instance with a map position (has_w), that match is done in the map frame instead.
  * World frame: built on tars_motor's dead-reckoned pose (x forward, y right of
  * where tars_motor started, mm; headings/bearings deg, + = clockwise like
  * TURN). tars_motor's pose restarts at 0 when it restarts (new pose_epoch); the
@@ -156,6 +157,8 @@ typedef struct {
     int rebased;             /* times it re-based on a new epoch (STATUS / tests) */
     int have_nav;            /* robot pose in the nav (ARKit) frame, for has_w/wx/wz of new sightings */
     double nx, nz, nyaw;     /* metres, rad; forward = (sin yaw, cos yaw); + yaw = left turn */
+    int have_nav_arkit;      /* ... and it's a fresh ARKit pose (not DR-carried): sightings then
+                              * match instances by map position (wx, wz), not by the DR x/y */
 } goto_mem;
 
 void goto_mem_init(goto_mem *m);
