@@ -1,10 +1,16 @@
 # vision/: drive TARS with your hand (MediaPipe, on the Pi under QNX)
 
-Two modes, switched with a held peace sign ✌️:
+Three modes, cycled with a held peace sign ✌️ (GESTURE → FOLLOW → PET):
 
 - **GESTURE**: ✋ stop · 👍/☝️ step forward · ✊/👇/👎 step back · 👈/👉 turn 30°
 - **FOLLOW**: the rover steers toward your hand and drives until it's at
   arm's length. ✋ stops it, and losing the hand stops it.
+- **PET** (iteration 3): it reacts to your hand like a small pet. 👋 wave = it wiggles
+  hello · ✋ stay · ☝️ come here · 👍 happy spin · 👎 sad back-up · ✌️ flash = 360° trick
+  (hold 2 s = leave) · ✊ hold = play dead · no hand = gets bored, looks around, then
+  sleeps. It has a mood that rises and decays. ✋ still stops it from every state.
+  [GESTURES.md §8](GESTURES.md#8-pet-mode-it-reacts-to-your-hand-like-a-small-pet),
+  state machine in [§2d](#2d-pet-mode-iteration-3). **Mac-tested only.**
 - **TEACH** 🤙 (hold 2 s, or the Uno button): show it a pose it has never seen,
   pick an action by showing an existing gesture, and from then on that pose
   drives the robot. It learns on the Pi in seconds, with no retraining, and it
@@ -73,9 +79,10 @@ printf 'STATUS\n' | nc 127.0.0.1 5555                          # shows vis=… s
 
 **Tests:**
 ```sh
-python3 vision/tests/test_gesture.py            # 38 unit tests: classifier, steps, follow, mode toggle
+python3 vision/tests/test_gesture.py            # 40 unit tests: classifier, steps, follow, mode toggle/cycle
 python3 vision/tests/test_learn.py              # 35: invariance, few-shot, rejection, teach state machine (fake motor)
-python3 vision/tests/test_parity.py             # Python vs C++ (gesture.hpp + learn.hpp): identical output + JSON
+python3 vision/tests/test_pet.py                # 38: pet states, mood, stop-wins from every state, bounds, sleep/wake
+python3 vision/tests/test_parity.py             # Python vs C++ (gesture/learn/pet .hpp): identical output + JSON
 vision/.venv/bin/python vision/tests/test_runtime_teach.py   # real runtime: ticker, button polling, save/reload
 python3 vision/tests/bench_learn.py             # µs per frame for the learned-pose classifier
 vision/tests/check_cpp_syntax.sh                # tars_gesture.cc type-checks (stub MediaPipe headers)
@@ -163,6 +170,56 @@ sh tars_autostart.sh status     # motor: running / gesture: running + last log l
   says so; add the line to whatever your image runs at boot. The supervisor itself was tested on macOS `sh`.
 - Paths in `tars.env` must not contain spaces (the default `/data/home/qnxuser` is fine).
 
+## 2d. Pet mode (iteration 3)
+
+```sh
+.venv/bin/python desktop/gesture_drive.py --pet               # Mac, dry run (overlay shows PET:<state> + energy bar)
+python3 qnx/python/tars_gesture.py --pet                      # Pi, Python app
+qnx/cpp/tars_gesture_cpu --pet --model=… --conf=gesture.conf  # Pi, C++ app (the robot path)
+```
+Or hold ✌️ to cycle into it from FOLLOW, or set `pet_start = 1` / `GESTURE_ARGS="--pet"` in `tars.env`.
+The rules and the stop/bound table are in [GESTURES.md §8](GESTURES.md#8-pet-mode-it-reacts-to-your-hand-like-a-small-pet).
+The log prints `[pet] <event> (energy …)`, and `STATUS` on tars_motor shows `vis=pet:<state>`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle: enter (LED ok, BEEP 2)
+    idle --> watch: hand off-centre
+    watch --> idle: centred for pet_settle_ms (S)
+    idle --> come: ☝️ held
+    watch --> come: ☝️ held
+    come --> idle: palm big = arrived (S, BEEP 1) / pet_come_max_ms (S)
+    idle --> happy: 👍 held
+    watch --> happy: 👍 held
+    idle --> sad: 👎 held
+    watch --> sad: 👎 held
+    idle --> trick: ✌️ flashed and released
+    watch --> trick: ✌️ flashed and released
+    idle --> look: no hand pet_bored_ms (chance ∝ energy)
+    idle --> sleep: ✊ held / no hand pet_sleep_after_ms (S, LED off)
+    watch --> sleep: ✊ held
+    happy --> idle: move done (S)
+    sad --> idle: move done (S)
+    trick --> idle: 360° done (S)
+    look --> idle: move done (S)
+    greet --> idle: move done (S)
+    stay --> greet: waved, then palm dropped
+    stay --> idle: palm dropped
+    sleep --> stay: ✋ (wake, LED ok)
+    idle --> [*]: ✌️ held pet_exit_ms (S, LED off) → GESTURE mode
+    note right of stay
+        ✋ from ANY state: S on the first frame, nothing moves while it's up.
+        Also from any moving state: hand lost (watch/come), camera stall,
+        server refusing D (another client's S, watchdog, tip, guard) → stop.
+    end note
+```
+`happy` at energy ≥ `pet_excited` is the full 360° "zoomies". Every body segment is clamped
+to `pet_max_speed` and `pet_max_seg_ms`, and `come` to `pet_come_max_ms` per command.
+
+**Not run on the Pi/QNX or with a real camera/hand.** Tested on the Mac only: `tests/test_pet.py`
+(synthetic labels) and `tests/test_parity.py` (synthetic MediaPipe hands, Python vs C++ identical).
+Expect to tune `pet_wave_amp`, `pet_come_size` and the speeds on the real robot.
+
 ## 3. Pi: C++ app (`qnx/cpp`)
 
 Built **on the Pi** inside QNX's MediaPipe port, exactly as in QNX's
@@ -229,6 +286,8 @@ common/gesture.py     classifier + controller (pure Python)
 common/gesture.hpp    the same in C++17 (header-only)
 common/learn.py       teach-on-the-spot: features, k-NN, teach state machine (Brain), JSON
 common/learn.hpp      the same in C++17
+common/pet.py         pet mode (iteration 3): states, mood, body language (pure Python)
+common/pet.hpp        the same in C++17
 learned.json          learned poses (created on the robot; not in git)
 common/app.py         MediaPipe runtime + ticker + status/VIS (Python apps)
 common/link.py        TCP client with reconnect / dry run

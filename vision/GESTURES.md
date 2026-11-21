@@ -4,8 +4,8 @@ Three implementations follow these rules exactly:
 
 | Where | Code |
 |---|---|
-| Mac prototype (`desktop/gesture_drive.py`) and QNX Python app (`qnx/python/tars_gesture.py`) | `common/gesture.py` + `common/learn.py` |
-| QNX C++ app (`qnx/cpp/tars_gesture.cc`) | `common/gesture.hpp` + `common/learn.hpp` (line-for-line ports) |
+| Mac prototype (`desktop/gesture_drive.py`) and QNX Python app (`qnx/python/tars_gesture.py`) | `common/gesture.py` + `common/learn.py` + `common/pet.py` |
+| QNX C++ app (`qnx/cpp/tars_gesture.cc`) | `common/gesture.hpp` + `common/learn.hpp` + `common/pet.hpp` (line-for-line ports) |
 
 `tests/test_parity.py` runs the Python and C++ versions on the same ~50,000
 lines of random sessions and fails on the first differing label, mode or
@@ -42,11 +42,14 @@ Checked in this order:
 
 ## 2. Modes
 
-Starts in **GESTURE** mode. Holding a **peace sign ✌️** for `mode_frames`
-consecutive frames toggles GESTURE ↔ FOLLOW and sends `S`. A second toggle needs
+Starts in **GESTURE** mode (or **PET** with `pet_start = 1` / `--pet`). Holding a
+**peace sign ✌️** for `mode_frames` consecutive frames moves to the next mode,
+GESTURE → FOLLOW → PET → GESTURE, and sends `S`. With `pet_in_cycle = 0` it's the
+old GESTURE ↔ FOLLOW toggle. In PET mode the peace sign means something else:
+hold it `pet_exit_ms` (2 s) to go back to GESTURE (§8). A second toggle needs
 **both** a release (any non-peace frame) **and** `mode_cooldown_ms` since the
 last toggle, so holding the sign never flips it back. The mode shows in the log
-`[status] mode=…`, in the server's `STATUS` (`vis=…`), and on the desktop overlay.
+`[status] mode=…`, in the server's `STATUS` (`vis=…`, `pet:<state>` in PET mode), and on the desktop overlay.
 
 ## 3. GESTURE mode: discrete steps
 
@@ -211,3 +214,58 @@ MediaPipe inference is milliseconds, so this is noise either way. The Pi 5 shoul
 - Optional **feedback commands** the vision app sends (reply `OK`, or `ERR` if unsupported):
   `LED <teach|rec|ok|no|forget|off>` and `BEEP <n>` (n short beeps). A buzzer on a spare Uno pin is enough.
 - The vision app's `VIS` mode field shows `teach:<state>` while teaching (≤ 15 chars).
+
+## 8. PET mode: it reacts to your hand like a small pet
+
+Code: `common/pet.py` / `pet.hpp` (`Pet`, owned by the `Brain`). Enter with `--pet`
+(`pet_start = 1`), or by holding ✌️ from FOLLOW (§2). The robot can only express
+itself with motion, the Uno LED and the buzzer, so its "body language" is made of
+short in-place wiggles. Everything is in `gesture.conf` under `pet_*`.
+
+**None of this has run on the Pi/QNX or with a real camera and hand yet.** It is
+tested on the Mac with synthetic hands only (unit tests + Python/C++ parity).
+
+### Behaviours
+
+| You do | Pet state | Robot does |
+|---|---|---|
+| ✋ open palm | `stay` | **`S` on the first frame** (`stop_frames`), from every state, and holds still while the palm is up. Nothing ever starts moving while a palm is visible |
+| 👋 wave (palm swinging side to side: ≥ `pet_wave_swings` reversals of ≥ `pet_wave_amp` frame widths within `pet_wave_window_ms`), **then drop the hand** | `greet` | `LED ok`, `BEEP 2`, wiggle left `w`, right `2w`, left `2w`, right `w` (`w = pet_body_ms`): ends facing you. Energy += `pet_greet_boost` |
+| 👋 wave, then keep the palm still | `stay` | nothing (a still palm is "stay") |
+| any hand (not ✋ ✌️ 🤙) off-centre | `watch` | turns in place to keep the hand centred, like a puppy watching (the FOLLOW steering rule, no forward part). D stream every `pet_send_ms`; once centred it settles with one `S` after `pet_settle_ms` |
+| ☝️ point up, held `stable_frames` | `come` | drives toward the hand (FOLLOW rule, forward ≤ `pet_come_max_fwd`, never reverses) until the palm size reaches `pet_come_size`, then `S`, `BEEP 1`, `LED ok`, energy += `pet_come_boost`. **Capped at `pet_come_max_ms` (5 s ≈ 20–40 cm) per command** |
+| 👍 thumbs up, held `stable_frames` | `happy` | energy += `pet_happy_boost`; `LED ok`, `BEEP 1`, a little spin right then left (`pet_happy_ms` each). **At energy ≥ `pet_excited`: "zoomies"**: `BEEP 2` and the full 360° trick spin |
+| 👎 thumbs down, held `stable_frames` | `sad` | energy −= `pet_sad_drop`; `LED no`, backs up for `pet_sad_ms` |
+| ✌️ flash (≥ `pet_trick_frames` frames, released before 2 s) | `trick` | `LED ok`, `BEEP 1`, a 360° spin (`turn_ms × spin_turns` at `turn_speed`, the calibrated turn). Fires on release |
+| ✌️ held `pet_exit_ms` | (leaves) | `S`, `LED off`, back to **GESTURE** mode |
+| ✊ fist held `pet_sleep_frames` | `sleep` | "play dead": `S`, `LED off`. Ignores every gesture except ✋ (wakes into `stay`, `LED ok`); a wave then greets |
+| no hand for `pet_bored_ms` | `look` | bored: every `pet_look_every_ms`, with chance `0.3 + 0.7 × energy`, a look-around (turn `pet_look_ms`, pause, turn back; random side) |
+| no hand for `pet_sleep_after_ms` | `sleep` | falls asleep (`LED off`) |
+| 🤙 held 2 s | (teach) | teaching works from PET mode too, and leaves it (§7) |
+
+- **Once per hold:** a reaction fires once and needs a different label before it can fire
+  again. After a body move there's a `cooldown_ms` pause, and the boredom timer restarts.
+- **One thing at a time:** while a body move (`greet happy sad trick look`) runs, other
+  gestures are ignored except ✋ (stops it) and ✌️ (trick/leave).
+- **Mood:** `energy` ∈ [0, 1] starts at `pet_energy_start`, decays linearly toward
+  `pet_energy_rest` at `pet_energy_decay_per_s`, and is clamped. Body-language wheel
+  speed = `pet_speed_min + (pet_speed_max − pet_speed_min) × energy`. Watch and come
+  speeds scale the same way. Energy also picks happy vs zoomies and how often it looks around.
+- **Deterministic:** time is passed in and the RNG is a seeded LCG (`pet_seed`), so Python
+  and C++ make identical choices (`tests/test_parity.py`).
+
+### Bounds and stops (stop always wins)
+
+| Rule | How |
+|---|---|
+| ✋ stops from **every** pet state | every frame goes through the Controller's PET-mode safety floor **before** the pet logic: palm → `S` on the first frame (same rule as GESTURE mode) |
+| nothing moves while ✋ is up | the pet only reacts to a wave after the palm drops |
+| hand lost while watching/coming | `S` after `follow_grace_frames` (body moves are < 1 s and self-ending, except the 360° trick spin) |
+| camera stalls | `S` after `frame_timeout_ms` (ticker thread); the pet never starts anything while frames are stale |
+| `S` from any other client, watchdog, tip, bump, LiDAR guard | tars_motor refuses our next `D` (`ERR held …` / `ERR …`). The app calls `Brain.server_stop()`, which drops the move/stream **without** restarting it |
+| speed | every pet `D` is clamped to `pet_max_speed` |
+| wiggle amplitude | every body segment ≤ `pet_max_seg_ms` (the trick spin is one calibrated 360°) |
+| approach distance | `come` ≤ `pet_come_max_ms` per command at ≤ `pet_come_max_fwd` |
+| watchdog | while streaming, `D` every `pet_send_ms` (100 ms < 500 ms); body segments resend every `resend_ms` |
+
+`VIS` reports `pet:<state>` so tars_motor's `STATUS` shows what the pet is doing.
