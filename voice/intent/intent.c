@@ -519,6 +519,25 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *d)
         add_line(d, "BEEP 2", 0);
         return;
     }
+    if (!strcmp(name, "memory")) {          /* one-sentence summary; tars_voice beeps once per object */
+        d->action = INTENT_ACT_COMMAND; d->why = "classifier";
+        add_line(d, INTENT_GOTO_PREFIX "MEMORY SAY", 0);
+        return;
+    }
+    if (!strcmp(name, "recall")) {          /* "go back to where the bin was": map-guided, any instance */
+        const char *obj = intent_find_object(toks, nt);
+        if (!obj) {
+            d->action = INTENT_ACT_REJECT; d->why = "no_object";
+            add_line(d, "LED no", 0);
+            add_line(d, "BEEP 3", 0);
+            return;
+        }
+        d->action = INTENT_ACT_COMMAND; d->why = "classifier"; d->object = obj;
+        if (d->n_lines < INTENT_MAX_LINES)
+            snprintf(d->lines[d->n_lines++], INTENT_LINE_LEN, INTENT_GOTO_PREFIX "RECALL %s", obj);
+        add_line(d, "BEEP 1", 0);
+        return;
+    }
     if (!strcmp(name, "goto")) {
         const char *obj = intent_find_object(toks, nt);
         if (!obj) {

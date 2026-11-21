@@ -115,6 +115,11 @@ def test_units(m: I.Model) -> None:
         "tars scan": "SCAN", "tars take a look around": "SCAN",
         "tars forget everything": "FORGET", "tars clear your memory": "FORGET",
         "tars forget the bin": "FORGET trash can", "tars forget where the chair is": "FORGET chair",
+        "tars what do you remember": "MEMORY SAY", "tars what's in your memory": "MEMORY SAY",
+        "tars tell me what you remember": "MEMORY SAY",
+        "tars go back to where the bin was": "RECALL trash can", "tars go back to the chair": "RECALL chair",
+        "tars return to the trash can": "RECALL trash can", "tars go to where the backpack was": "RECALL backpack",
+        "tars go back to where the giraffe was": "LED no",
     }
     for text, want in slot_cases.items():
         d = I.decide(m, text)
@@ -156,7 +161,7 @@ def evaluate(m: I.Model, rows) -> None:
         row = sum(conf[i])
         lines.append(f"| {name} | {row} | {tp / col if col else 0:.2f} | {tp / row if row else 0:.2f} |")
     lines.append(f"| **all** | **{n}** | | **accuracy {acc:.3f}** |")
-    short = ["fwd", "back", "left", "right", "around", "stop", "goto", "spin", "status", "scan", "forget", "unk"]
+    short = ["fwd", "back", "left", "right", "around", "stop", "goto", "spin", "status", "scan", "forget", "mem", "recall", "unk"]
     cm = ["| true \\ predicted | " + " | ".join(short) + " |", "|---" * (K + 1) + "|"]
     for i in range(K):
         cm.append(f"| **{short[i]}** | " + " | ".join(str(conf[i][j]) if conf[i][j] else "·" for j in range(K)) + " |")

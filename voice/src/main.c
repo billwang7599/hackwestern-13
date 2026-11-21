@@ -21,10 +21,13 @@
  *   [heard] "TARS, turn left." vad=1.42s stt=212ms -> command left 0.97 (classifier): TURN -30 | BEEP 1
  * Runs at normal priority (whisper must never starve tars_motor's SCHED_RR loop).
  */
+#include <arpa/inet.h>
 #include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -50,7 +53,8 @@
 
 typedef struct {
     char input[256], model[256], host[128], save_dir[256], prompt[512];
-    char goto_host[128];
+    char goto_host[128], say_host[128];
+    int say_port, say_ms;
     int port, goto_port, goto_reply_ms, threads, audio_ctx, require_wake, dry, led_ms, wake_carry_ms;
     int button_talk;
     vad_cfg_t vad;
@@ -82,6 +86,7 @@ static int set_kv(cfg_t *c, const char *k, const char *v)
 #define F(name, field) if (!strcmp(k, name)) { c->field = (float)atof(v); return 0; }
     S("input", input) S("model", model) S("host", host) S("save_dir", save_dir) S("prompt", prompt)
     S("goto_host", goto_host) I("goto_port", goto_port) I("goto_reply_ms", goto_reply_ms)
+    S("say_host", say_host) I("say_port", say_port) I("say_ms", say_ms)
     I("wake_carry_ms", wake_carry_ms) I("button_talk", button_talk)
     I("port", port) I("threads", threads) I("audio_ctx", audio_ctx) I("require_wake", require_wake)
     I("dry", dry) I("led_ms", led_ms)
@@ -261,11 +266,86 @@ static void link_send_log(link_t *l, const char *line)
     fflush(stdout);
 }
 
+/* ---- speech to the phone (TCP 5573, "SAY <text>"): the robot has no speaker. Best effort:
+ * non-blocking connect bounded by say_ms, one line, close; any failure is ignored. Only
+ * called for informational replies (memory), never on the stop path. */
+static const char *g_say_host = "127.0.0.1";
+static int g_say_port, g_say_ms = 150;
+
+/* line = a full protocol line without the newline: "SAY <text>" or the urgent JSON form */
+static void say_line(const char *line_in)
+{
+    if (g_say_port <= 0 || !line_in || !*line_in) return;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short)g_say_port);
+    if (inet_pton(AF_INET, g_say_host, &a.sin_addr) != 1) return;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) { close(fd); return; }
+    int ok = connect(fd, (struct sockaddr *)&a, sizeof a) == 0;
+    if (!ok && errno == EINPROGRESS) {
+        struct pollfd p = { fd, POLLOUT, 0 };
+        int err = 0;
+        socklen_t el = sizeof err;
+        ok = poll(&p, 1, g_say_ms) == 1 && getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && err == 0;
+    }
+    if (ok) {
+        char line[1024];
+        int n = snprintf(line, sizeof line, "%s\n", line_in);
+        if (n > 0 && n < (int)sizeof line) {
+#ifdef MSG_NOSIGNAL
+            send(fd, line, (size_t)n, MSG_NOSIGNAL);
+#else
+            send(fd, line, (size_t)n, 0);
+#endif
+        }
+    }
+    close(fd);
+}
+
+/* "SAY <text>", text cut to the phone's 300-char limit, one line */
+static void say_phone(const char *text)
+{
+    char line[320];
+    snprintf(line, sizeof line, "SAY %.300s", text ? text : "");
+    for (char *p = line; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
+    say_line(line);
+}
+
+/* "@goto MEMORY SAY" -> goto replies "OK n=<k> <sentence>": print it, BEEP min(k,4) (one per
+ * remembered object; LED no for none), and hand the sentence to the phone to speak. */
+static void memory_say(link_t *motor, link_t *go)
+{
+    char reply[1024], line[16];
+    if (link_cmd(go, "MEMORY SAY", reply, sizeof reply) < 0 || strncmp(reply, "OK n=", 5)) {
+        printf("[memory] no answer from goto (%s)\n", reply);
+        fflush(stdout);
+        link_send_log(motor, "LED no");
+        return;
+    }
+    int k = atoi(reply + 5);
+    const char *text = strchr(reply + 5, ' ');
+    text = text ? text + 1 : "";
+    printf("[memory] %s\n", text);
+    fflush(stdout);
+    if (k > 0) {
+        snprintf(line, sizeof line, "BEEP %d", k < 4 ? k : 4);
+        link_send_log(motor, line);
+    } else {
+        link_send_log(motor, "LED no");
+    }
+    say_phone(text);
+}
+
 /* Route one decision line: "@goto X" -> go-to controller, else tars_motor. */
 static void route(link_t *motor, link_t *go, const char *line)
 {
     size_t pl = strlen(INTENT_GOTO_PREFIX);
-    if (!strncmp(line, INTENT_GOTO_PREFIX, pl)) link_send_log(go, line + pl);
+    if (!strcmp(line, INTENT_GOTO_PREFIX "MEMORY SAY")) memory_say(motor, go);
+    else if (!strncmp(line, INTENT_GOTO_PREFIX, pl)) link_send_log(go, line + pl);
     else link_send_log(motor, line);
 }
 
@@ -293,7 +373,8 @@ int main(int argc, char **argv)
     snprintf(c.model, sizeof c.model, "models/ggml-tiny.en-q5_1.bin");
     snprintf(c.host, sizeof c.host, "127.0.0.1");
     snprintf(c.goto_host, sizeof c.goto_host, "127.0.0.1");
-    c.goto_port = 5570; c.goto_reply_ms = 300; c.wake_carry_ms = 4000; c.button_talk = 1;
+    c.goto_port = 5570; c.goto_reply_ms = 300;
+    snprintf(c.say_host, sizeof c.say_host, "127.0.0.1"); c.say_port = 5573; c.say_ms = 150; c.wake_carry_ms = 4000; c.button_talk = 1;
     snprintf(c.prompt, sizeof c.prompt, "%s", DEFAULT_PROMPT);
     c.port = 5555; c.threads = 2; c.audio_ctx = 0; c.require_wake = 1; c.led_ms = 1500;
     vad_defaults(&c.vad);
@@ -340,6 +421,9 @@ int main(int argc, char **argv)
         char r[64];
         link_cmd(&link, "WHO voice", r, sizeof r);
     }
+    g_say_host = c.say_host;
+    g_say_port = c.dry ? 0 : c.say_port;
+    g_say_ms = c.say_ms > 0 && c.say_ms <= 1000 ? c.say_ms : 150;
     link_t kalink = { -1, 0, c.host, "motor-keepalive", c.port, c.dry, 1000, 0 };
     pthread_t ka_tid;
     int ka_started = !c.dry && pthread_create(&ka_tid, NULL, ka_thread, &kalink) == 0;
@@ -396,6 +480,8 @@ int main(int argc, char **argv)
             fflush(stdout);
             for (int i = 0; i < d.n_lines; i++) route(&link, &golink, d.lines[i]);
             if (d.action == INTENT_ACT_STOP) link_send_log(&link, "BEEP 1");
+            /* only now (S and CANCEL already sent): tell the phone, urgent = cut any speech */
+            if (d.action == INTENT_ACT_STOP) say_line("{\"type\":\"say\",\"text\":\"Stopping.\",\"priority\":\"urgent\"}");
             if (d.action == INTENT_ACT_REJECT) led_off_at = now_ms() + c.led_ms;
         }
         if (done) break;

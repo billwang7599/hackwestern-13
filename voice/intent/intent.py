@@ -21,7 +21,7 @@ import os
 from dataclasses import dataclass, field
 
 INTENTS = ["forward", "back", "left", "right", "turn_around", "stop",
-           "goto", "spin", "status", "scan", "forget", "unknown"]
+           "goto", "spin", "status", "scan", "forget", "memory", "recall", "unknown"]
 GOTO_PREFIX = "@goto "              # lines for the go-to controller (TCP 5570), not tars_motor
 N_FEAT = 4096                       # hashed feature bins (power of two)
 
@@ -472,6 +472,13 @@ def decide(model: Model, text: str, require_wake: bool = True) -> Decision:
         obj = find_object(model.objects, rest)
         line = f"{GOTO_PREFIX}FORGET {obj}" if obj else f"{GOTO_PREFIX}FORGET"
         return Decision("command", intent, p[k], wake, "classifier", [line, "BEEP 2"])
+    if intent == "memory":              # one-sentence summary from goto/ memory; voice beeps per object
+        return Decision("command", intent, p[k], wake, "classifier", [f"{GOTO_PREFIX}MEMORY SAY"])
+    if intent == "recall":              # "go back to where the bin was": map-guided, any remembered instance
+        obj = find_object(model.objects, rest)
+        if obj is None:
+            return Decision("reject", intent, p[k], wake, "no_object", ["LED no", "BEEP 3"])
+        return Decision("command", intent, p[k], wake, "classifier", [f"{GOTO_PREFIX}RECALL {obj}", "BEEP 1"])
     if intent == "goto":
         obj = find_object(model.objects, rest)
         if obj is None:

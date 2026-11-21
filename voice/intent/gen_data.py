@@ -25,7 +25,7 @@ import os
 
 PHRASES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phrases.txt")
 INTENT_NAMES = ["forward", "back", "left", "right", "turn_around", "stop",
-                "goto", "spin", "status", "scan", "forget", "unknown"]
+                "goto", "spin", "status", "scan", "forget", "memory", "recall", "unknown"]
 # goto templates: {o} is filled with an alias from objects.txt (most of the
 # time) or with a thing that's NOT in the list (still intent goto; the robot then
 # says "don't know that object" with LED no + BEEP 3).

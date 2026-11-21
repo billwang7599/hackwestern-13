@@ -188,6 +188,10 @@ int  goto_mem_save(goto_mem *m, const char *path, double wall);
 int  goto_mem_load(goto_mem *m, const char *path);
 /* one line: "n=2 pose=x,y,h; trash can#1 fresh x=.. y=.. ...; chair#1 ..." */
 void goto_mem_describe(const goto_mem *m, double wall, char *out, size_t len);
+/* One short spoken-style sentence, one line, for a robot with no speaker (voice prints it,
+ * the phone may speak it): "I remember 2 things: a trash can about 1.2 m to my left, and a
+ * chair behind me." Gone instances are left out. Returns how many objects it mentions. */
+int  goto_mem_say(const goto_mem *m, double wall, double max_age, char *out, size_t len);
 /* canonical name for a detector label ("dining table" -> "table"), else the normalized label */
 void goto_mem_label(const goto_objects *o, const char *raw, char *out, size_t len);
 

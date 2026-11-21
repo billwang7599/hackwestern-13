@@ -11,7 +11,8 @@ USB mic ─► io-audio (libasound snd_pcm, 16 kHz mono)          src/audio.c
              1. normalise   2. wake word "TARS"   3. SAFETY STOP pass
              4. classifier  5. slots: amount ("ninety", "half a metre"), object ("the bin" → trash can)
         ─► TCP 5555 tars_motor:  S · MOVE ±mm · TURN ±deg · STATUS · LED · BEEP
-        ─► TCP 5570 go-to:       GOTO <object> · CANCEL                       src/main.c
+        ─► TCP 5570 go-to:       GOTO · RECALL <object> · SCAN · FORGET · MEMORY SAY · CANCEL   src/main.c
+        ─► TCP 5573 phone:       SAY <sentence> (best effort; urgent "Stopping." after S + CANCEL)
 ```
 
 Python is only used off the robot: training (`intent/train.py`), `intent/try.py` and the tests.
@@ -23,10 +24,19 @@ Python is only used off the robot: training (`intent/train.py`), `intent/try.py`
 | "TARS, turn left" / "…turn right ninety" / "…hang a left" | `TURN -30` / `TURN 90` / `TURN -30` |
 | "TARS, turn around" / "…do a spin" | `TURN 180` / `TURN 360` |
 | "TARS, go to the trash can" / "…find the door" / "…head over to that bin" | `GOTO trash can` / `GOTO door` / `GOTO trash can` → 5570 |
+| "TARS, go back to where the bin was" / "…return to the chair" | `RECALL trash can` / `RECALL chair` → 5570 (map-guided, uses the stored position) + `BEEP 1` |
+| "TARS, look around" / "…what do you see" | `SCAN` → 5570 |
+| "TARS, forget everything" / "…forget the bin" | `FORGET` / `FORGET trash can` → 5570, `BEEP 2` |
+| "TARS, what do you remember" / "…what's in your memory" | `MEMORY SAY` → 5570; prints `[memory] I remember 2 things: …`, `BEEP n` (one per object, max 4; `LED no` for none), `SAY <sentence>` → phone 5573 |
 | "TARS, status" | `STATUS` (logged) + `BEEP 2` |
 | **"Stop" / "halt" / "freeze" / "whoa"** (no wake word needed) · "TARS, no / wait / hold on" | **`S` to tars_motor, then `CANCEL` to go-to** |
 | anything else after "TARS" / unknown object ("go to the kitchen") | nothing moves; `LED no` + `BEEP 3` |
 | speech without "TARS" | ignored |
+
+**Exact-move keepalive:** `tars_motor` on main aborts a `MOVE`/`TURN` after 500 ms without a
+command, so a small thread in `tars_voice` PINGs (on its own connection) while a voice move runs.
+**Speech link:** `say_host`/`say_port`/`say_ms` in `voice.conf` (127.0.0.1:5573, 150 ms connect
+timeout, `say_port = 0` = off). Failures are ignored.
 
 Defaults: 30° and 300 mm. A manual move (`MOVE`/`TURN`) first sends `CANCEL` to the go-to
 controller, so its steering doesn't fight the move. A recognised command gets `BEEP 1`.

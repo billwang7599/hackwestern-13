@@ -1,7 +1,7 @@
 # TARS voice: training phrases for the intent classifier.
 #
 # Format: one phrase per line,   intent<TAB>phrase
-#   - intents: forward back left right turn_around stop goto spin status scan forget unknown
+#   - intents: forward back left right turn_around stop goto spin status scan forget memory recall unknown
 #   - write it the way a person says it, WITHOUT the wake word ("TARS, ..." is added automatically)
 #   - lowercase, no punctuation needed; train.py adds capitals, punctuation and whisper mistakes
 #   - {n} = a turn amount ("90", "forty five degrees", "a bit" ...)
@@ -461,6 +461,75 @@ forget	erase everything
 forget	forget all of it
 forget	memory reset
 forget	clear what you remember
+
+# whisper writes "two" as "to": these are BACK, not recall
+back	go back to meters
+back	go back to steps
+back	back up to meters
+back	move back to meters
+back	go back to feet
+
+# ---------------------------------------------------------------- memory -> @goto MEMORY SAY (one sentence printed, BEEP 1 per object up to 4)
+memory	what do you remember
+memory	what do you remember seeing
+memory	what did you see
+memory	what have you seen
+memory	what's in your memory
+memory	what is in your memory
+memory	tell me what you remember
+memory	list what you remember
+memory	list your memory
+memory	show me your memory
+memory	read your memory
+memory	memory
+memory	memory check
+memory	check your memory
+memory	what objects do you remember
+memory	what things do you remember
+memory	what do you know about the room
+memory	where is everything
+memory	where are things
+memory	what's around here that you remember
+memory	what did you find
+memory	what have you found
+memory	remind me what you saw
+memory	what do you have in memory
+memory	what's stored in your memory
+memory	recap what you saw
+memory	tell me what you saw
+memory	do you remember anything
+memory	what can you remember
+memory	what do you recall
+
+# ---------------------------------------------------------------- recall -> @goto RECALL <object> + BEEP 1 (go to where it WAS, over the map)
+recall	go back to where the {o} was
+recall	go back to the {o}
+recall	go back to that {o}
+recall	head back to the {o}
+recall	return to the {o}
+recall	return to where the {o} was
+recall	go to where the {o} was
+recall	go where the {o} was
+recall	take me back to the {o}
+recall	back to the {o}
+recall	go back to where you saw the {o}
+recall	go back to the {o} from before
+recall	remember the {o} go there
+recall	where was the {o} go there
+recall	drive back to the {o}
+recall	go back over to the {o}
+recall	go back to where the {o} is
+recall	revisit the {o}
+recall	return to the {o} you saw
+recall	go back to the last {o}
+recall	go to the last place you saw the {o}
+recall	please return to the {o}
+recall	return back to the {o}
+recall	return to the {o} please
+recall	go and return to the {o}
+recall	return to that {o}
+recall	go back where the {o} was
+recall	back to where the {o} was
 
 # ---------------------------------------------------------------- unknown -> nothing (LED no + BEEP 3 if the wake word was heard)
 # Chit-chat, crowd noise and whisper's favourite hallucinations on silence.

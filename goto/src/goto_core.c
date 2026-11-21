@@ -848,6 +848,53 @@ void goto_mem_describe(const goto_mem *m, double wall, char *out, size_t len)
     }
 }
 
+static const char *say_dir(double b)          /* relative bearing, + = right */
+{
+    double a = fabs(b);
+    if (a <= 20) return "ahead of me";
+    if (a <= 65) return b > 0 ? "ahead on my right" : "ahead on my left";
+    if (a <= 115) return b > 0 ? "to my right" : "to my left";
+    if (a <= 160) return b > 0 ? "behind me on the right" : "behind me on the left";
+    return "behind me";
+}
+
+int goto_mem_say(const goto_mem *m, double wall, double max_age, char *out, size_t len)
+{
+    int idx[GOTO_MEM_MAX], n = 0;
+    for (int i = 0; i < m->n; i++) {
+        double age = wall - m->e[i].last_seen;
+        if (m->e[i].status != MEM_GONE && age <= max_age) idx[n++] = i;
+    }
+    if (!n) { snprintf(out, len, "I don't remember anything yet."); return 0; }
+    for (int i = 1; i < n; i++)                     /* nearest first */
+        for (int j = i; j > 0; j--) {
+            double dj = 0, dk = 0;
+            if (m->have_pose) { goto_mem_relative(m, idx[j], NULL, &dj); goto_mem_relative(m, idx[j - 1], NULL, &dk); }
+            if (dj >= dk) break;
+            int t = idx[j]; idx[j] = idx[j - 1]; idx[j - 1] = t;
+        }
+    int said = n < 4 ? n : 4;
+    size_t o = (size_t)snprintf(out, len, "I remember %d thing%s: ", n, n == 1 ? "" : "s");
+    for (int k = 0; k < said && o < len; k++) {
+        const goto_mem_entry *e = &m->e[idx[k]];
+        const char *sep = k == 0 ? "" : (k == said - 1 && said == n) ? ", and " : ", ";
+        const char *art = strchr("aeiou", e->label[0]) ? "an" : "a";
+        if (m->have_pose) {
+            double b, d;
+            goto_mem_relative(m, idx[k], &b, &d);
+            o += (size_t)snprintf(out + o, len - o, "%s%s %s%s about %.1f m %s", sep, art, e->label,
+                                  e->status == MEM_STALE ? " (not sure)" : "", d / 1000.0, say_dir(b));
+        } else {
+            o += (size_t)snprintf(out + o, len - o, "%s%s %s", sep, art, e->label);
+        }
+    }
+    if (o < len) {
+        if (n > said) snprintf(out + o, len - o, ", and %d more.", n - said);
+        else snprintf(out + o, len - o, ".");
+    }
+    return n;
+}
+
 /* ========================================================= state machine */
 const char *goto_state_name(goto_state s)
 {

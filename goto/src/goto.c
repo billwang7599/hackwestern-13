@@ -13,6 +13,7 @@
  *              SCAN                  stand still, 12 x TURN 30, remember everything seen
  *                                    -> EVENT "scanned trash can,chair" at the end
  *              MEMORY                "OK n=.. pose=x,y,h; <label>#<id> <fresh|stale|gone> x=.. ..."
+ *              MEMORY SAY            "OK n=<k> I remember 2 things: a trash can about 1.2 m to my left, ..."
  *              FORGET [object[#n]]   forget an object (all its instances, or #n), or everything
  *              WATCH                 this connection also gets "EVENT <what> <object>"
  *                                    lines (searching/remembered/not_there/arrived/lost/
@@ -470,6 +471,11 @@ static void handle_ctl(conn *c, char *line)
         logf_("SCAN");
         send_str(c->fd, "OK scan\n");
         run_actions();
+    } else if (!strcasecmp(cmd, "MEMORY") && !strcasecmp(arg, "SAY")) {
+        char d[600];
+        int k = goto_mem_say(&mem, sm.wall_base + now_s(), cfg.memory_max_age_s, d, sizeof d);
+        snprintf(reply, sizeof reply, "OK n=%d %s\n", k, d);
+        send_str(c->fd, reply);
     } else if (!strcasecmp(cmd, "MEMORY")) {
         char d[3900];
         goto_mem_describe(&mem, sm.wall_base + now_s(), d, sizeof d);

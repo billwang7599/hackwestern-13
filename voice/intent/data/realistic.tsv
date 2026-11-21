@@ -110,3 +110,8 @@ TARS, find the elephant.	reject	-
 TARS, go to the left.	left	TURN -30
 TARS, gesture mode.	reject	-
 TARS, learn a new gesture.	reject	-
+Tars, what do you remember?	memory	MEMORY SAY
+TARS. What did you see?	memory	MEMORY SAY
+Tars, go back to where the bin was.	recall	RECALL trash can
+Tars, go back to the chair.	recall	RECALL chair
+Tars, return to the backpack.	recall	RECALL backpack

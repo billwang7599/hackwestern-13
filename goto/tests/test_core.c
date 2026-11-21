@@ -1130,6 +1130,31 @@ static void test_map_fallbacks(void)
           "navw map position round-trips");
 }
 
+static void test_memory_say(void)
+{
+    goto_mem m;
+    goto_mem_init(&m);
+    char out[600];
+    CHECK(goto_mem_say(&m, 1000, 1800, out, sizeof out) == 0 && !strcmp(out, "I don't remember anything yet."), "%s", out);
+    goto_mem_motor_pose(&m, 1, 0, 0, 0);
+    goto_mem_sight(&m, &C, "trash can", 0, -1200, -90, 1200, 0.8, 1000);     /* 1.2 m to the left */
+    goto_mem_sight(&m, &C, "chair", -2000, 0, 180, 2000, 0.8, 1000);        /* behind */
+    int i = goto_mem_sight(&m, &C, "cup", 1000, 0, 0, 1000, 0.8, 1000);
+    m.e[i].status = MEM_GONE;
+    int n = goto_mem_say(&m, 1000, 1800, out, sizeof out);
+    CHECK(n == 2 && !strcmp(out, "I remember 2 things: a trash can about 1.2 m to my left, and a chair about 2.0 m behind me."),
+          "MEMORY SAY sentence: %s", out);
+    CHECK(!strchr(out, '\n'), "one line");
+    for (int k = 0; k < 6; k++) goto_mem_sight(&m, &C, "box", 3000 + k * 1000, 3000, 45, 4000, 0.8, 1000);
+    n = goto_mem_say(&m, 1000, 1800, out, sizeof out);
+    char want[32];
+    snprintf(want, sizeof want, "and %d more.", n - 4);
+    CHECK(n > 4 && strstr(out, want), "caps at 4 named + 'and N more' (%s)", out);
+    goto_mem_sight(&m, &C, "apple", 0, 500, 90, 500, 0.8, 1000);
+    goto_mem_say(&m, 1000, 1800, out, sizeof out);
+    CHECK(strstr(out, "an apple about 0.5 m to my right"), "'an' before a vowel, nearest first (%s)", out);
+}
+
 static void test_describe(void)
 {
     reset_sm();
@@ -1166,6 +1191,7 @@ int main(void)
     test_map_guard_and_replan();
     test_leased_approach();
     test_map_fallbacks();
+    test_memory_say();
     printf("%d/%d checks passed\n", passed, passed + failed);
     return failed ? 1 : 0;
 }
