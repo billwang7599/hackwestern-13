@@ -504,6 +504,21 @@ void intent_decide(const char *text, int require_wake, intent_decision_t *d)
         add_line(d, "BEEP 3", 0);
         return;
     }
+    if (!strcmp(name, "scan")) {            /* look around, remember everything (goto/ memory) */
+        d->action = INTENT_ACT_COMMAND; d->why = "classifier";
+        add_line(d, INTENT_GOTO_PREFIX "SCAN", 0);
+        return;
+    }
+    if (!strcmp(name, "forget")) {          /* "forget the bin" -> one object, else everything */
+        const char *obj = intent_find_object(toks, nt);
+        d->action = INTENT_ACT_COMMAND; d->why = "classifier"; d->object = obj;
+        if (obj && d->n_lines < INTENT_MAX_LINES)
+            snprintf(d->lines[d->n_lines++], INTENT_LINE_LEN, INTENT_GOTO_PREFIX "FORGET %s", obj);
+        else
+            add_line(d, INTENT_GOTO_PREFIX "FORGET", 0);
+        add_line(d, "BEEP 2", 0);
+        return;
+    }
     if (!strcmp(name, "goto")) {
         const char *obj = intent_find_object(toks, nt);
         if (!obj) {

@@ -39,11 +39,27 @@ CANCEL|STOP|S   -> OK                 (S goes to tars_motor first, even when idl
 STATUS          -> OK state=approach target=trash_can result=running seen=1 bearing=-3.2 h=0.31 searched=0 fps=7.9 ...
 OBJECTS         -> OK trash can,chair,person,...
 RESOLVE <words> -> OK trash can | ERR unknown object
-WATCH           -> OK, then async "EVENT searching|arrived|lost|cancelled|failed:<why> <object>" lines
+SCAN            -> OK scan; 12 x TURN 30, then "EVENT scanned trash can,chair" (or "scanned nothing")
+MEMORY          -> OK n=2 pose=x,y,hdg; trash can#1 fresh x=.. y=.. rel_bearing=.. rel_dist=.. est_dist=.. age=.. seen=.. conf=..; ...
+FORGET [obj[#n]]-> OK forgot N        (no argument = everything; "trash can" = all its instances; "trash can#2" = one)
+WATCH           -> OK, then async "EVENT searching|remembered <obj> #n|not_there <obj> #n|arrived|lost|cancelled|failed:<why>|scanning|scanned ..." lines
 PING            -> OK PONG
 ```
 
 **For the voice app:** on intent `goto` + object, send `GOTO <object words>` to 5557 and speak or beep based on the `EVENT` lines. On "stop", send `S` to 5555 (the fastest path). `goto` notices it by itself.
+
+## Object memory
+
+`goto` remembers where it has seen things, so the next `GOTO` turns straight at the object instead of searching 30° at a time.
+
+- **Pose.** There are no encoders, but the 28BYJ-48 wheels move what they're told to. `tars_motor` integrates the motion that actually ran: the slewed `D` output every tick, plus each `MOVE`/`TURN` when the Uno reports `DONE`/`ABORT` with the amount done. That includes WASD teleop and voice moves. It's in `STATUS` as `pose=x,y,hdg pose_epoch=` and in `POSE`. Axes: x forward from where `tars_motor` started, y right, hdg + = clockwise. `goto` polls it at 4 Hz, even when idle. **Drift is unknown**: skipped steps, slip and being picked up are invisible to it.
+- **What's stored.** Every detection frame updates the memory, for every label, not just the target (`memory_min_conf` 0.40). Each entry is an **instance**: `label#id`, world x/y, the world bearing of the last sighting, an estimated distance, conf, times seen, last seen (wall clock), and a status of **fresh / stale / gone**. A sighting merges into an instance of the same label if it's within `memory_merge_mm` (500), or on the same ray within the range noise. Otherwise it becomes a new instance (`trash can#2`). Two boxes of one label in one frame are two instances. Nothing is remembered while an exact move runs or the robot is spinning (the pose lags then).
+- **Distance** comes from where the box bottom meets the floor, for a level camera at `cam_height_mm` (120). If the bottom edge is cut off by the frame, it falls back to box height vs `arrive_dist_mm`. In the sim it reads 2.1 m for a can 2.0 m away. **It hasn't been checked with the real C270 mount.**
+- **GOTO with memory.** It picks the best usable instance: fresh before stale, then nearest. It skips gone instances and anything older than `memory_max_age_s` (30 min). It does one exact `TURN` to the instance's bearing from the current pose, then LOOKs. If it sees the target, it aligns and approaches as usual. If not, it optionally does `MOVE` up to `memory_drive_mm` toward the spot (default **0 = off**), then marks the instance (fresh → stale → gone), tries the next instance (up to `memory_tries`), and falls back to the normal 360° search starting toward the remembered side. Arriving rewrites the instance's position from 0.55 m in front of the robot.
+- **Saved** atomically (`.tmp` + fsync + rename) to `memory_path` (default `memory.txt` next to `goto.conf`, or `-M file`, or `-` for RAM only), at most every `memory_save_s` (2 s) when something changed, and on exit. It's loaded at startup. The file is text (`v 2`, one `pose` line, `inst` lines), and bad lines are skipped.
+- **Restarts.** The file keeps `tars_motor`'s `pose_epoch` and the world↔motor offset. If only `goto` restarted (same epoch), nothing changes. If `tars_motor` restarted (new epoch, pose back to 0), the memory re-bases: it assumes the robot is still where it last knew. **If you carried the robot somewhere else, run `FORGET`** ("TARS, forget everything"). `POSE RESET` on 5555 also triggers a re-base.
+- **Voice:** "TARS, look around" / "what do you see" → `SCAN`. "TARS, forget everything" → `FORGET`. "TARS, forget the bin" → `FORGET trash can`.
+- **Adding states** (e.g. a lidar OCCLUDED check, or DETOUR around a wall): what happens after a failed LOOK is decided in one place, `look_failed()` in `goto_core.c`, in order (drive closer → next instance → search). New exact-move states go in `goto_sm_wants_status()` and in the turn branch of `goto_sm_tick()`. A lidar can set `MEM_GONE` or feed `dist` through `goto_mem_sight()`.
 
 ## Run order on the Pi
 
@@ -144,7 +160,9 @@ Results on the Mac (2026-11-21), host builds only:
 
 | Suite | Result |
 |---|---|
-| `test_core` (C state machine, parser, aliases, config) | 92/92. It also passes under ASan/UBSan. The JSON parser was fuzzed with 300k mutated lines under ASan/UBSan, and one UB was found and fixed (huge `w`/`h`). |
+| `test_core` with object memory (instances, fresh/stale/gone, next-instance retry, SCAN, file round-trip, corrupt/truncated files, epoch re-base) | 185/185, also under ASan/UBSan (object-memory branch). |
+| memory vs blind, 16 random scenes (SCAN, then a teleop TURN + MOVE 300, then GOTO; the fake motor's pose drifts like dead reckoning: ±3% turns, ±2% wheels) | memory 16/16 arrived, median **39 s / 1 turn**; blind 16/16, median 44 s / 3 turns. Driving at 4 cm/s dominates, so the gain is modest. |
+| `test_core` before memory (C state machine, parser, aliases, config) | 92/92. It also passes under ASan/UBSan. The JSON parser was fuzzed with 300k mutated lines under ASan/UBSan, and one UB was found and fixed (huge `w`/`h`). |
 | `test_yolo` (pre/post-processing, JSON contract) | 25/25 |
 | `test_nav` (grid, A*, line of sight, pose rule, LDR1 parser + fuzz) | 84/84, also under ASan/UBSan with 1M fuzzed LDR1 packets |
 | `nav_parity.py` (C `nav_plan` vs `mapping.py` `Map._plan`) | 1560/1560 identical over 5 seeds (12 hand fixtures + 300 random each; ~74% routed, the rest error cases) |

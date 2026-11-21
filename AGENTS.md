@@ -35,17 +35,19 @@ The sensor-fusion design, state machine and port map are in [docs/ARCHITECTURE.m
 **Clients → `tars_motor` (TCP 5555, one line per command):**
 `D <l> <r>` drive fraction −1..1 (must be repeated, watchdog) · `S` stop · `MOVE <mm>` · `TURN <deg>` (+ = right)
 · `LED <teach|rec|ok|no|forget|off>` · `BEEP <1-4>` · `STATUS` (includes `btn_teach=` `btn_forget=` counters) · `PING` · `STATUS` also has `stops=` (S received from anyone)
-· `WHO <name>` (label the client) · `MODE <gesture|follow|toggle|teach>` (request for the vision app).
+· `WHO <name>` (label the client) · `MODE <gesture|follow|toggle|teach>` (request for the vision app)
+· `POSE` → `OK <x_mm> <y_mm> <hdg_deg> <epoch> <moving>` · `POSE RESET`. `STATUS` also has `pose=x,y,hdg pose_epoch=`. The pose is dead-reckoned from the motion that ran (D output, MOVE/TURN DONE/ABORT amounts): x forward, y right, hdg + = clockwise. The epoch changes on restart or `POSE RESET`.
 Unsupported → `ERR`, with no change to motor state.
 Several clients at once: `S` from any client stops everything and holds other clients' non-zero `D` for 1.5 s (`ERR held`); a disconnect only stops a drive or move that client started.
 
-**voice → go-to controller (TCP 5557, one line each, reply optional):** `GOTO <canonical object>` (e.g. `GOTO trash can`) · `CANCEL` (on every stop, and before any manual `MOVE`/`TURN`).
+**voice → go-to controller (TCP 5557, one line each, reply optional):** `GOTO <canonical object>` (e.g. `GOTO trash can`) · `CANCEL` (on every stop, and before any manual `MOVE`/`TURN`) · `SCAN` ("look around") · `FORGET [object]` ("forget everything" / "forget the bin").
 
 **`tars_motor` → Uno (USB serial 115200):** `D l r`, `M <mm>`, `R <deg>`, `S`, `K diam track`, `L <0-3>`, `B <n>`.
 **Uno → `tars_motor`:** `READY`, `DONE M|R <n>`, `ABORT …`, `T <deg>` tipped, `B <mg>` bump, `BTN TEACH`, `BTN FORGET`.
 The full spec is in the header comment of `uno/tars/tars.ino`.
 
-**Clients → `goto` (TCP 5557):** `GOTO <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `WATCH` (async `EVENT arrived|lost|failed:… <object>`) · `PING`.
+**Clients → `goto` (TCP 5557):** `GOTO <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.
+Object memory (`goto/README.md`) stores instances (`trash can#1`, `#2`) with status fresh/stale/gone in `memory.txt` next to `goto.conf`. **Port note:** the teammate's stack on main (23c8a36) also uses 5557/5558, so expect a port change when merging.
 **Detectors → `goto` (UDP/TCP 127.0.0.1:5558):** one JSON line per frame, `{"w","h","dets":[{"label","conf","box":[x1,y1,x2,y2]}]}`. See `goto/DETECTIONS.md`.
 
 ## Before you commit

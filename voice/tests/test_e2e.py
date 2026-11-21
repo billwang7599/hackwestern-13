@@ -161,7 +161,7 @@ class FakeGoto:
 def run_condition(name: str, wav: str, marks) -> dict:
     port = free_port()
     go = FakeGoto()
-    motor = subprocess.Popen([MOTOR_BIN, "-b", "stub", "-p", str(port), "-r", "1", "-w", "60000"],
+    motor = subprocess.Popen([MOTOR_BIN, "-b", "stub", "-p", str(port), "-r", "1", "-w", "5000"],
                              stderr=subprocess.PIPE, text=True)
     time.sleep(0.3)
     t0 = time.monotonic()
@@ -228,7 +228,7 @@ def test_talk_button(voice: str) -> None:
     press (SIM BTN TEACH on the stub) -> the next command works without it."""
     print("talk button: real-time raw stdin, SIM BTN TEACH")
     port, go = free_port(), FakeGoto()
-    motor = subprocess.Popen([MOTOR_BIN, "-b", "stub", "-p", str(port), "-r", "1", "-w", "60000"],
+    motor = subprocess.Popen([MOTOR_BIN, "-b", "stub", "-p", str(port), "-r", "1", "-w", "5000"],
                              stderr=subprocess.PIPE, text=True)
     time.sleep(0.3)
     v = subprocess.Popen([VOICE_BIN, "--input", "raw:-", "--model", MODEL, "--port", str(port),

@@ -21,7 +21,7 @@ import os
 from dataclasses import dataclass, field
 
 INTENTS = ["forward", "back", "left", "right", "turn_around", "stop",
-           "goto", "spin", "status", "unknown"]
+           "goto", "spin", "status", "scan", "forget", "unknown"]
 GOTO_PREFIX = "@goto "              # lines for the go-to controller (TCP 5557), not tars_motor
 N_FEAT = 4096                       # hashed feature bins (power of two)
 
@@ -466,6 +466,12 @@ def decide(model: Model, text: str, require_wake: bool = True) -> Decision:
     if intent == "unknown" or p[k] < model.threshold:
         return Decision("reject", intent, p[k], wake, "unknown" if intent == "unknown" else "low_conf",
                         ["LED no", "BEEP 3"])
+    if intent == "scan":                # look around and remember everything (goto/ memory)
+        return Decision("command", intent, p[k], wake, "classifier", [f"{GOTO_PREFIX}SCAN"])
+    if intent == "forget":              # "forget the bin" -> one object; else everything
+        obj = find_object(model.objects, rest)
+        line = f"{GOTO_PREFIX}FORGET {obj}" if obj else f"{GOTO_PREFIX}FORGET"
+        return Decision("command", intent, p[k], wake, "classifier", [line, "BEEP 2"])
     if intent == "goto":
         obj = find_object(model.objects, rest)
         if obj is None:

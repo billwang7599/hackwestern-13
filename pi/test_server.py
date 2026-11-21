@@ -663,6 +663,12 @@ def test_uno_moves() -> None:
         time.sleep(0.1)
         st = c.status()
         check(st["move"] == "done" and st["move_done"] == "50.0", f"replace accounting {st}")
+        p = c.cmd("POSE").split()
+        # DONE M 100, ABORT R -12.3, then (at -12.3 deg) the replaced move's 5.0 + DONE M 50
+        import math as _m
+        ex, ey = 100 + 55 * _m.cos(_m.radians(-12.3)), 55 * _m.sin(_m.radians(-12.3))
+        check(p[0] == "OK" and abs(float(p[1]) - ex) <= 1 and abs(float(p[2]) - ey) <= 1
+              and p[3] == "-12.3", f"pose from DONE/ABORT amounts, incl. the replaced move's {p} (want {ex:.0f} {ey:.0f} -12.3)")
         uno.send("DONE M 7.0\r\nDONE X 1\r\nABORT M\r\n")
         time.sleep(0.1)
         check(c.status()["move_done"] == "50.0" and srv.wait_log(r"stray DONE"), "stray/junk DONE ignored")
@@ -845,11 +851,170 @@ def test_multi_client() -> None:
     check(rc == 0, f"clean exit {rc}")
 
 
+def pose(c: Client) -> tuple[float, float, float, str, int]:
+    r = c.cmd("POSE").split()
+    assert r[0] == "OK" and len(r) == 6, r
+    return float(r[1]), float(r[2]), float(r[3]), r[4], int(r[5])
+
+
+def test_pose() -> None:
+    print("stub: dead-reckoned pose (POSE, STATUS pose=, POSE RESET)")
+    srv = Server("-b", "stub", "-w", "300")
+    c = Client(srv.port)
+    try:
+        x, y, h, ep, mv = pose(c)
+        check((x, y, h, mv) == (0, 0, 0, 0) and ep.isdigit() and ep != "0", f"boot pose 0,0,0 epoch {ep}")
+        st = c.status()
+        check(st["pose"] == "0,0,0.0" and st["pose_epoch"] == ep, f"STATUS pose= {st['pose']} epoch {st['pose_epoch']}")
+        time.sleep(0.3)
+        check(pose(c)[:3] == (0, 0, 0), "watchdog-stopped robot doesn't drift")
+
+        drive_for(c, 1, 1, 2.0)
+        c.cmd("S")
+        x, y, h, _, _ = pose(c)
+        # 12 RPM x pi x 65 mm = 40.8 mm/s; ~2 s minus the 0.25 s slew ramp
+        check(70 < x < 86 and abs(y) < 1 and abs(h) < 0.2, f"D 1 1 for 2 s -> x {x} y {y} h {h} (~78 mm)")
+        time.sleep(0.3)
+        check(pose(c)[:3] == (x, y, h), "S: pose stops changing at once")
+        st = c.status()
+        check(st["l"] == 0.0 and 0 <= int(st["stop_ms"]) <= 25, f"S still stops within one tick ({st['stop_ms']} ms)")
+
+        drive_for(c, 0.5, -0.5, 1.0)
+        c.cmd("S")
+        _, _, h2, _, _ = pose(c)
+        # spin: (vl - vr) / track = 40.8 / 100 rad/s = 23.4 deg/s, ~1 s minus ramp
+        check(15 < h2 - h < 26, f"D 0.5 -0.5 for 1 s spins right {h2 - h:.1f} deg (~21)")
+        x0, y0, _, _, _ = pose(c)
+        check(abs(x0 - x) < 1.5 and abs(y0 - y) < 1.5, "spin in place doesn't translate")
+
+        c.cmd("POSE RESET")
+        r = c.cmd("TURN 30")
+        keepalive_for(c, 0.2)               # exact moves need the deadman lease
+        x, y, h, _, mv = pose(c)
+        check(mv == 1 and h == 0, f"exact TURN running: moving=1, pose not yet updated ({h})")
+        keepalive_for(c, int(r.split()[2]) / 1000 + 0.2)
+        x, y, h, _, mv = pose(c)
+        check(mv == 0 and h == 30.0, f"TURN 30 done -> hdg 30.0 ({h})")
+        r = c.cmd("MOVE 100")
+        keepalive_for(c, int(r.split()[2]) / 1000 + 0.2)
+        x, y, h, _, _ = pose(c)
+        check(abs(x - 86.6) <= 1 and abs(y - 50) <= 1 and h == 30.0, f"MOVE 100 at hdg 30 -> {x},{y} (86.6,50)")
+        c.cmd("TURN 90")
+        keepalive_for(c, 0.8)
+        c.cmd("S")
+        time.sleep(0.15)
+        st = c.status()
+        done = float(st["move_done"])
+        x, y, h, _, _ = pose(c)
+        check(st["move"] == "aborted" and 5 < done < 85 and abs(h - (30 + done)) <= 0.15,
+              f"TURN 90 stopped part-way: pose adds the {done} deg done ({h})")
+        c.cmd("TURN -270")
+        keepalive_for(c, 0.3)
+        drive_for(c, 0.3, 0.3, 0.2)                    # D takes over: ABORT drive, partial
+        c.cmd("S")
+        time.sleep(0.15)
+        st = c.status()
+        check(st["move_why"] == "drive", f"D aborts the turn ({st['move_why']})")
+
+        ep0 = pose(c)[3]
+        check(c.cmd("POSE RESET").startswith("OK 0 0 0.0 "), "POSE RESET -> 0 0 0")
+        ep1 = pose(c)[3]
+        check(ep1 != ep0, f"POSE RESET changes the epoch ({ep0} -> {ep1})")
+        check(c.cmd("POSE FOO").startswith("ERR usage"), "POSE FOO rejected")
+        for _ in range(3):
+            c.cmd("POSE RESET")
+            check(c.cmd("PING") == "OK PONG", "POSE doesn't upset the protocol")
+    finally:
+        c.close()
+        srv.stop()
+    srv2 = Server("-b", "stub")
+    c2 = Client(srv2.port)
+    try:
+        check(pose(c2)[3] != ep1, "new server process -> new epoch")
+    finally:
+        c2.close()
+        srv2.stop()
+
+
 def test_pico_still_builds() -> None:
     print("pico backend still selectable")
     srv = Server("-b", "pico", "-d", "/nonexistent")
     srv.proc.wait(3)
     check(srv.proc.returncode == 1 and srv.wait_log(r"\[pico\] open /nonexistent"), "pico backend present")
+
+
+class GuardSender:
+    """Plays lidar_guard: GAT1 + host CLOCK_MONOTONIC us (BE u64) + permit byte, UDP 50 Hz."""
+
+    def __init__(self, port: int):
+        import socket as _s
+        self.sock = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+        self.port, self.permit, self._run = port, 1, True
+        self._t = threading.Thread(target=self._loop, daemon=True)
+        self._t.start()
+
+    def _loop(self) -> None:
+        while self._run:
+            us = int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6)
+            pkt = b"GAT1" + us.to_bytes(8, "big") + bytes([self.permit])
+            try:
+                self.sock.sendto(pkt, ("127.0.0.1", self.port))
+            except OSError:
+                pass
+            time.sleep(0.02)
+
+    def stop(self) -> None:
+        self._run = False
+        self._t.join(1)
+        self.sock.close()
+
+
+def test_guard_gate() -> None:
+    print("stub: lidar_guard gate (UDP GAT1) stops goto-style drive, bumps the DL epoch")
+    gport = free_port()
+    g = GuardSender(gport)
+    srv = Server("-b", "stub", "-g", str(gport))
+    c = Client(srv.port)
+    try:
+        time.sleep(0.2)
+        st = c.status()
+        check(st["guard_enabled"] == "1" and st["guard_permit"] == "1", f"guard CLEAR permits ({st['guard_reason']})")
+        check("pose" in st and "pose_epoch" in st, "STATUS still has pose= with the guard on")
+        ep = st["guard_epoch"]
+        r = drive_for(c, 0.5, 0.5, 0.4)
+        check(all(x == "OK" for x in r) and c.status()["l"] > 0.2, "D drives while clear (goto approach)")
+        r = [c.cmd(f"DL {ep} 0.5 0.5") for _ in range(3)]
+        check(all(x == "OK" for x in r), f"DL with current epoch accepted ({r[0]})")
+        g.permit = 0
+        time.sleep(0.15)
+        st = c.status()
+        check(float(st["l"]) == 0.0 and st["estop"] == 1 and st["guard_permit"] == "0",
+              f"guard denial stops the wheels at once ({st['l']} {st['estop_why'] if 'estop_why' in st else st.get('why')})")
+        check(st["guard_epoch"] != ep, f"denial bumps the epoch ({ep} -> {st['guard_epoch']})")
+        check(c.cmd("D 0.5 0.5").startswith("ERR"), "plain D refused while denied")
+        check(c.cmd("MOVE 100").startswith("ERR"), "MOVE refused while denied")
+        g.permit = 1
+        time.sleep(0.15)
+        check(c.status()["guard_permit"] == "1", "CLEAR again")
+        r = c.cmd(f"DL {ep} 0.5 0.5")
+        check(r.startswith("ERR guard epoch"), f"old-epoch DL fails after a denial: leg must re-plan ({r})")
+        ep2 = c.status()["guard_epoch"]
+        check(c.cmd(f"DL {ep2} 0.5 0.5") == "OK", "new-epoch DL accepted")
+        c.cmd("S")
+        r = c.cmd("TURN 30")
+        keepalive_for(c, 0.2)
+        g.permit = 0
+        time.sleep(0.15)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "lidar_guard", f"denial aborts an exact TURN ({st['move_why']})")
+        g.stop()
+        time.sleep(0.3)
+        st = c.status()
+        check(st["guard_permit"] == "0" and st["guard_reason"] == "guard_stale", f"silent guard -> stale -> deny ({st['guard_reason']})")
+    finally:
+        g.stop() if g._run else None
+        c.close()
+        srv.stop()
 
 
 if __name__ == "__main__":
@@ -860,6 +1025,8 @@ if __name__ == "__main__":
     test_uno_moves()
     test_uno_reconnect()
     test_multi_client()
+    test_pose()
+    test_guard_gate()
     test_pico_still_builds()
     print(f"{checks - failures}/{checks} checks passed ({time.monotonic() - t0:.1f} s)")
     sys.exit(1 if failures else 0)

@@ -33,6 +33,17 @@
  *   WHO <name>           label this client in logs/STATUS (voice, vision, teleop...)
  *   SIM T|B|READY [n]    stub backend only: inject a co-processor event (tests)
  *   SIM BTN TEACH|FORGET stub backend only: inject a button press
+ *   POSE                 -> "OK <x_mm> <y_mm> <hdg_deg> <epoch> <moving>" dead-reckoned pose
+ *   POSE RESET           pose back to 0,0,0 and a new epoch (goto/ re-bases its memory)
+ *
+ * Pose (best effort, no encoders): the 28BYJ-48 wheels move what they're told,
+ * so the pose is integrated from the motion that actually ran: the slewed D
+ * output every tick (fraction x max wheel speed), plus each exact MOVE/TURN when
+ * the Uno reports DONE/ABORT with the amount done. x is forward from where the
+ * server started, y to the right, hdg + = clockwise (like TURN). moving=1 while
+ * an exact move runs (its motion is only added when it ends). pose_epoch changes
+ * when the server restarts or on POSE RESET. Skipped steps, wheel slip and being
+ * carried are invisible to it. Pose never touches the stop path.
  *
  * STATUS also has move=idle|running|done|aborted move_id= move_kind=MOVE|TURN|-
  * move_req= move_done= move_why= move_est_ms= wheel_d= wheel_t= and the on-robot
@@ -74,6 +85,10 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #include "gesture.h"
 #include "motor.h"
@@ -164,6 +179,10 @@ static int   req_wheelcal;
 static int   led_pattern = -1, req_led = -1, req_beep = -1;
 static int   btn_teach, btn_forget;
 static int   uno_pending;                 /* moves sent to the device, not yet answered */
+/* dead-reckoned pose (under `lock`), see the header comment */
+static double pose_x, pose_y, pose_h;     /* mm, mm, deg (+ = clockwise), h in (-180, 180] */
+static unsigned pose_epoch;
+static long long pose_last_ms;
 
 static volatile sig_atomic_t running = 1;
 static const motor_backend_t *motor;
@@ -183,6 +202,44 @@ static long ms_since(const struct timespec *t)
 }
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static double wrap180(double d)
+{
+    d = fmod(d, 360.0);
+    if (d > 180.0) d -= 360.0;
+    if (d <= -180.0) d += 360.0;
+    return d;
+}
+
+/* Called with `lock` held. Differential drive, midpoint heading. */
+static void pose_advance_locked(double dist_mm, double dhdg_deg)
+{
+    double mid = (pose_h + dhdg_deg / 2.0) * M_PI / 180.0;
+    pose_x += dist_mm * cos(mid);
+    pose_y += dist_mm * sin(mid);
+    pose_h = wrap180(pose_h + dhdg_deg);
+}
+
+/* Called with `lock` held: wheel fractions l, r ran for dt_s seconds. */
+static void pose_drive_locked(float l, float r, double dt_s)
+{
+    if (fabsf(l) < 0.03f) l = 0;              /* the Uno's DRIVE_DEADBAND */
+    if (fabsf(r) < 0.03f) r = 0;
+    if (l == 0 && r == 0) return;
+    double vmax = WHEEL_MAX_RPM / 60.0 * M_PI * wheel_d;      /* mm/s at fraction 1 */
+    double vl = l * vmax, vr = r * vmax;
+    pose_advance_locked((vl + vr) / 2.0 * dt_s, (vl - vr) / wheel_t * dt_s * 180.0 / M_PI);
+}
+
+static unsigned new_epoch(void)
+{
+    struct timespec a, b;
+    clock_gettime(CLOCK_REALTIME, &a);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    unsigned e = (unsigned)(a.tv_nsec ^ (a.tv_sec * 2654435761u) ^ (b.tv_nsec * 40503u) ^ ((unsigned)getpid() << 16));
+    e %= 1000000000u;
+    return e ? e : 1;
+}
 
 static float slew(float cur, float tgt)
 {
@@ -321,6 +378,12 @@ static void ctl_event(const motor_event_t *ev, long long now)
     case MOTOR_EV_MOVE_DONE:
     case MOTOR_EV_MOVE_ABORT: {
         int ok = ev->kind == MOTOR_EV_MOVE_DONE;
+        if (uno_pending > 0 && isfinite(ev->amount)) {   /* the wheels really did this much */
+            pthread_mutex_lock(&lock);
+            if (ev->what == 'M') pose_advance_locked(ev->amount, 0);
+            else if (ev->what == 'R') pose_advance_locked(0, ev->amount);
+            pthread_mutex_unlock(&lock);
+        }
         if (uno_pending <= 0) {
             fprintf(stderr, "[ctl] stray %s %c %.1f ignored\n", ok ? "DONE" : "ABORT", ev->what, ev->amount);
             break;
@@ -457,6 +520,12 @@ static void *control_thread(void *arg)
         out_r = (estop || hard) ? tr : slew(out_r, tr);
         float l = out_l, r = out_r;
         int is_tipped = tipped;
+        /* pose: what we're about to send runs until the next tick */
+        if (pose_last_ms) {
+            long long el = now - pose_last_ms;
+            if (el > 0 && el < 200) pose_drive_locked(l, r, el / 1000.0);
+        }
+        pose_last_ms = now;
         pthread_mutex_unlock(&lock);
 
         if (strcmp(estop_why, was_why) && strcmp(estop_why, "none"))
@@ -779,7 +848,8 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
                  "stop_ms=%ld vis=%s vis_fps=%.1f vis_cam_ms=%d vis_stop_ms=%d vis_see=%s "
                  "vis_age_ms=%lld move=%s move_id=%d move_kind=%s move_req=%.1f move_done=%.1f "
                  "move_why=%s move_est_ms=%d wheel_d=%.1f wheel_t=%.1f btn_teach=%d btn_forget=%d "
-                 "led=%d guard_enabled=%d guard_permit=%d guard_age_ms=%ld guard_reason=%s guard_epoch=%llu clients=%d hold_ms=%lld mode_req=%s mode_seq=%d stops=%d\n",
+                 "led=%d guard_enabled=%d guard_permit=%d guard_age_ms=%ld guard_reason=%s guard_epoch=%llu clients=%d hold_ms=%lld mode_req=%s mode_seq=%d stops=%d "
+                 "pose=%.0f,%.0f,%.1f pose_epoch=%u\n",
                  out_l, out_r, ms_since(&last_cmd), last_dist, estop, estop_why,
                  arm_pos[0], arm_pos[1], arm_tgt[0], arm_tgt[1], gesture_name,
                  tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name,
@@ -789,7 +859,22 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
                  mv_req, mv_done, mv_why, mv_est_ms, wheel_d, wheel_t, btn_teach, btn_forget,
                  led_pattern, cfg_guard_port != 0, guard_permit, guard_age, guard_reason, guard_epoch, n_clients,
                  hold_cid && now_ms() < hold_until_ms ? hold_until_ms - now_ms() : 0LL,
-                 mode_req, mode_seq, stop_count);
+                 mode_req, mode_seq, stop_count, pose_x, pose_y, pose_h, pose_epoch);
+        pthread_mutex_unlock(&lock);
+    } else if (!strcasecmp(cmd, "POSE")) {
+        char sub[16] = "";
+        sscanf(line, "%*s %15s", sub);
+        if (sub[0] && strcasecmp(sub, "RESET")) { snprintf(reply, rlen, "ERR usage: POSE [RESET]\n"); return; }
+        pthread_mutex_lock(&lock);
+        if (sub[0]) {
+            pose_x = pose_y = pose_h = 0;
+            unsigned e;
+            do e = new_epoch(); while (e == pose_epoch);
+            pose_epoch = e;
+            fprintf(stderr, "[net] client %d: POSE RESET (epoch %u)\n", cid, e);
+        }
+        snprintf(reply, rlen, "OK %.0f %.0f %.1f %u %d\n", pose_x, pose_y, pose_h, pose_epoch,
+                 mv_state == MV_RUNNING);
         pthread_mutex_unlock(&lock);
     } else if (!strcasecmp(cmd, "VIS")) {
         char m[16], see[24];
@@ -919,7 +1004,10 @@ int main(int argc, char **argv)
         }
     }
 
-    if (cfg_port < 1 || cfg_port > 65535 || cfg_guard_port < 0 || cfg_guard_port > 65535 || cfg_wd_ms < 50 || cfg_wd_ms > 5000) return 2;
+    if (cfg_port < 1 || cfg_port > 65535 || cfg_guard_port < 0 || cfg_guard_port > 65535 || cfg_wd_ms < 50 || cfg_wd_ms > 5000) {
+        fprintf(stderr, "bad -p/-g port or -w watchdog (50..5000 ms)\n");
+        return 2;
+    }
     if (guard_gate_init(cfg_guard_port) != 0) { perror("guard UDP bind"); return 1; }
     guard_permit = cfg_guard_port == 0;
     for (size_t i = 0; i < sizeof motor_backends / sizeof *motor_backends; i++)
@@ -939,6 +1027,7 @@ int main(int argc, char **argv)
 
     clock_gettime(CLOCK_MONOTONIC, &last_cmd);
     last_cmd.tv_sec -= 10;              /* start in watchdog-stop state */
+    pose_epoch = new_epoch();
 
     /* Real-time control thread. */
     pthread_attr_t attr;

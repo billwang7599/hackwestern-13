@@ -59,3 +59,7 @@ voice/tests/clips/
 # goto
 goto/build/
 goto/models/
+
+# goto object memory (written on the robot / by tests)
+goto/memory.txt
+goto/memory.txt.tmp

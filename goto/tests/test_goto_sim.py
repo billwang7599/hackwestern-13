@@ -7,6 +7,8 @@ Pieces (stdlib only):
   FakeMotor   a tars_motor stand-in on TCP: D / S / TURN / MOVE / STATUS / PING /
               BEEP / LED, 500 ms watchdog, stops= counter, and differential-drive
               kinematics of the 28BYJ-48 rover (12 RPM, 65 mm wheels, 100 mm track).
+              STATUS pose= is DEAD-RECKONED from the commands like the real one, so
+              it drifts from the true pose (turn_err, drive_err).
   SimCamera   pinhole camera (60 deg HFOV, 640x480, mounted 12 cm up) looking at
               cylinders in the world; sends goto/DETECTIONS.md JSON lines over UDP
               with latency, jitter, missed detections and motion blur.
@@ -22,6 +24,7 @@ import json
 import math
 import os
 import random
+import re
 import socket
 import subprocess
 import sys
@@ -71,10 +74,16 @@ def move_secs(kind: str, amount: float, speed: float) -> float:
 
 # ---------------------------------------------------------------- fake motor
 class FakeMotor:
-    def __init__(self, scale: float = 1.0, turn_err: float = 0.03, rng: random.Random | None = None):
+    def __init__(self, scale: float = 1.0, turn_err: float = 0.03, rng: random.Random | None = None,
+                 drive_err: float = 0.0):
         self.scale = scale
         self.rng = rng or random.Random(0)
         self.turn_err = turn_err
+        # true wheel speed / commanded (unequal wheels make it curve; odometry doesn't know)
+        self.wl_err = 1.0 + (self.rng.uniform(-drive_err, drive_err) if drive_err else 0.0)
+        self.wr_err = 1.0 + (self.rng.uniform(-drive_err, drive_err) if drive_err else 0.0)
+        self.odo = [0.0, 0.0, 0.0]               # tars_motor pose: mm fwd, mm right, deg clockwise
+        self.epoch = 4242
         self.lock = threading.Lock()
         self.x = self.y = self.th = 0.0          # m, m, rad (th=0 -> +x, + = counter-clockwise)
         self.tl = self.tr = 0.0                  # target wheel fractions
@@ -121,6 +130,8 @@ class FakeMotor:
         self.t_last = t
         if dt <= 0:
             return
+        if self.move and t - self.last_cmd > 0.5:   # deadman: exact moves need keepalive (main 23c8a36)
+            self._abort_move("watchdog")
         if self.move:
             m = self.move
             frac = min(1.0, (t - m["start"]) / m["dur"])
@@ -133,6 +144,7 @@ class FakeMotor:
                 self.y = m["y0"] + d * math.sin(self.th)
             m["done"] = frac
             if frac >= 1.0:
+                self._odo_move(m, 1.0)
                 self.move_state = "done"
                 self.move = None
             return
@@ -141,12 +153,36 @@ class FakeMotor:
         acc = 2.0 * dt                          # fraction/s slew (stepper ramp)
         self.vl += max(-acc, min(acc, self.tl - self.vl))
         self.vr += max(-acc, min(acc, self.tr - self.vr))
-        vl, vr = self.vl * V_MAX, self.vr * V_MAX
+        self._odo_drive(self.vl * V_MAX * 1000, self.vr * V_MAX * 1000, dt)
+        vl, vr = self.vl * V_MAX * self.wl_err, self.vr * V_MAX * self.wr_err
         v = (vl + vr) / 2.0
         w = (vr - vl) / (TRACK / 1000.0)
         self.x += v * math.cos(self.th) * dt
         self.y += v * math.sin(self.th) * dt
         self.th += w * dt
+
+    def _odo_advance(self, d_mm: float, dh_deg: float) -> None:
+        mid = math.radians(self.odo[2] + dh_deg / 2)
+        self.odo[0] += d_mm * math.cos(mid)
+        self.odo[1] += d_mm * math.sin(mid)
+        self.odo[2] = (self.odo[2] + dh_deg + 180) % 360 - 180
+
+    def _odo_drive(self, vl: float, vr: float, dt: float) -> None:
+        if abs(vl) > 1e-9 or abs(vr) > 1e-9:
+            self._odo_advance((vl + vr) / 2 * dt, math.degrees((vl - vr) / TRACK * dt))
+
+    def _odo_move(self, m: dict, frac: float) -> None:
+        # the Uno reports the COMMANDED steps done, not what the floor did
+        if m["kind"] == "R":
+            self._odo_advance(0, m["cmd"] * frac)
+        else:
+            self._odo_advance(m["cmd"] * frac, 0)
+
+    def restart_pose(self) -> None:
+        # tars_motor restarted: pose back to 0, new epoch; the robot didn't move
+        with self.lock:
+            self.odo = [0.0, 0.0, 0.0]
+            self.epoch += 1
 
     def angular_speed(self) -> float:
         with self.lock:
@@ -164,6 +200,7 @@ class FakeMotor:
 
     def _abort_move(self, why: str) -> None:
         if self.move:
+            self._odo_move(self.move, self.move["done"])
             self.move = None
             self.move_state = "aborted"
             self.move_why = why
@@ -222,7 +259,7 @@ class FakeMotor:
                 self.tl = self.tr = self.vl = self.vr = 0.0
                 self.move = {"kind": kind, "id": self.move_id, "start": t, "dur": max(dur, 1e-3),
                              "total": (math.radians(amt) if kind == "R" else amt / 1000.0) * err,
-                             "th0": self.th, "x0": self.x, "y0": self.y, "done": 0.0}
+                             "th0": self.th, "x0": self.x, "y0": self.y, "done": 0.0, "cmd": amt}
                 self.move_state = "running"
                 self.move_why = "-"
                 return f"OK {self.move_id} {int(dur * 1000)}"
@@ -230,7 +267,8 @@ class FakeMotor:
                 kind = "-"
                 return (f"OK {self.vl:.2f} {self.vr:.2f} {int((t - self.last_cmd) * 1000)} -1.00 0 why=none "
                         f"tipped=0 move={self.move_state} move_id={self.move_id} move_kind={kind} "
-                        f"move_why={self.move_why} stops={self.stops}")
+                        f"move_why={self.move_why} stops={self.stops} "
+                        f"pose={self.odo[0]:.0f},{self.odo[1]:.0f},{self.odo[2]:.1f} pose_epoch={self.epoch}")
             if cmd == "PING":
                 self.last_cmd = t
                 return "OK PONG"
@@ -332,11 +370,17 @@ class SimCamera:
 # ---------------------------------------------------------------- goto proc
 class Goto:
     def __init__(self, exe: str, motor_port: int, scale: float = 1.0, extra: list[str] | None = None,
-                 stdin_pipe: bool = False):
+                 stdin_pipe: bool = False, mem: str | None = None):
         self.ctl_port = free_port()
         self.det_port = free_port()
+        # every goto gets its own memory file (fresh unless `mem` names one to reuse)
+        if mem is None:
+            mem = os.path.join(GOTO_DIR, "build", f"mem_{self.ctl_port}.txt")
+            if os.path.exists(mem):
+                os.remove(mem)
+        self.mem = mem
         args = [exe, "-m", f"127.0.0.1:{motor_port}", "-p", str(self.ctl_port), "-u", str(self.det_port),
-                "-r", "0", "-T", str(scale), "-o", os.path.join(GOTO_DIR, "objects.txt")] + (extra or [])
+                "-r", "0", "-T", str(scale), "-o", os.path.join(GOTO_DIR, "objects.txt"), "-M", mem] + (extra or [])
         self.log_path = os.path.join(GOTO_DIR, "build", f"goto_{self.ctl_port}.log")
         self.logf = open(self.log_path, "w")
         self.p = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=self.logf,
@@ -627,11 +671,210 @@ def test_real_tars_motor(exe: str) -> None:
             gs = g.status()
             check(gs["result"] == "arrived" and st["l"] == 0.0 and st["r"] == 0.0, f"big box -> arrived, wheels 0 ({gs['result']})")
             check(int(st.get("stops", 0)) >= 1, "tars_motor counted the S (stops=)")
+            gs = g.status()
+            check(gs.get("pose", "-") != "-" and abs(float(gs["pose"].split(",")[2]) - 30.0) < 0.5,
+                  f"goto follows tars_motor's dead-reckoned pose (after one TURN 30: {gs.get('pose')})")
+            mem = g.cmd("MEMORY")
+            check(mem.startswith("OK n=1 ") and "; trash can#1 fresh x=" in mem, f"MEMORY has the trash can ({mem[:70]}...)")
         finally:
             g.close()
     finally:
         p.terminate()
         p.wait(2)
+
+
+class Watcher:
+    """second control connection with WATCH: collects EVENT lines"""
+    def __init__(self, port: int):
+        self.s = socket.create_connection(("127.0.0.1", port), timeout=2)
+        self.s.settimeout(None)              # events can be minutes apart
+        self.f = self.s.makefile("rw", encoding="ascii", newline="\n")
+        self.f.write("WATCH\n")
+        self.f.flush()
+        self.events: list[str] = []
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            for line in self.f:
+                if line.startswith("EVENT "):
+                    self.events.append(line[6:].strip())
+        except (OSError, ValueError):
+            pass
+
+    def close(self) -> None:
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+def motor_do(port: int, line: str, scale: float) -> None:
+    """a teleop-style exact move on the (fake) tars_motor; waits for it to finish"""
+    c = socket.create_connection(("127.0.0.1", port))
+    f = c.makefile("rw", encoding="ascii", newline="\n")
+    f.write(line + "\n")
+    f.flush()
+    r = f.readline().split()
+    end = time.monotonic() + int(r[2]) / 1000 / scale + 0.1
+    while time.monotonic() < end:                # keep the move deadman fed, like teleop does
+        f.write("PING\n")
+        f.flush()
+        f.readline()
+        time.sleep(0.1 / scale)
+    f.close()
+    c.close()
+
+
+def wait_idle(g: Goto, m: FakeMotor, timeout: float) -> dict:
+    t0 = m.now()
+    st = g.status()
+    while st["state"] != "idle" and m.now() - t0 < timeout:
+        time.sleep(0.05)
+        st = g.status()
+    return st
+
+
+def memory_scene(exe: str, scale: float, seed: int, dist: float, bearing_deg: float, obj_h: float,
+                 use_memory: bool, turn: float, move_mm: float) -> dict:
+    """SCAN (if use_memory) at the start pose, then a teleop TURN + MOVE, then GOTO trash can (timed)."""
+    rng = random.Random(seed)
+    m = FakeMotor(scale, rng=rng, drive_err=0.02)
+    b = math.radians(bearing_deg)
+    objs = [Obj("trash can", dist * math.cos(b), dist * math.sin(b), 0.15, obj_h)]
+    a = b + math.radians(rng.choice([-1, 1]) * rng.uniform(60, 150))
+    objs.append(Obj("chair", 2.0 * math.cos(a), 2.0 * math.sin(a), 0.25, 0.9))
+    g = Goto(exe, m.port, scale)
+    cam = SimCamera(m, objs, g.det_port, scale, rng)
+    try:
+        if use_memory:
+            g.cmd("SCAN")
+            wait_idle(g, m, 120)
+        motor_do(m.port, f"TURN {turn:.0f}", scale)
+        motor_do(m.port, f"MOVE {move_mm:.0f}", scale)
+        time.sleep(0.4 / scale)
+        n0 = len(m.log)
+        t0 = m.now()
+        g.cmd("GOTO trash can")
+        st = wait_idle(g, m, 260)
+        turns = [l for _, l in m.log[n0:] if l.startswith("TURN")]
+        x, y, _ = m.pose()
+        o = objs[0]
+        return {"result": st.get("result"), "t": m.now() - t0, "turns": len(turns), "mem": st.get("mem"),
+                "dist": math.hypot(o.x - x, o.y - y) - o.r}
+    finally:
+        cam.close()
+        g.close()
+        m.close()
+
+
+def test_memory(exe: str, scale: float) -> None:
+    print(f"object memory: SCAN, MEMORY/FORGET, memory-guided GOTO, persistence (goto -T {scale})")
+    rng = random.Random(21)
+    m = FakeMotor(scale, rng=rng, drive_err=0.02)
+    objs = [Obj("trash can", 2.0 * math.cos(math.radians(150)), 2.0 * math.sin(math.radians(150)), 0.15, 0.6),
+            Obj("chair", 2.0 * math.cos(math.radians(-60)), 2.0 * math.sin(math.radians(-60)), 0.25, 0.9)]
+    g = Goto(exe, m.port, scale)
+    w = Watcher(g.ctl_port)
+    cam = SimCamera(m, objs, g.det_port, scale, rng)
+    mem_file = g.mem
+    try:
+        check(g.cmd("MEMORY").startswith("OK n=0 "), "MEMORY empty at first")
+        n0 = len(m.log)
+        check(g.cmd("SCAN") == "OK scan", "SCAN")
+        st = wait_idle(g, m, 120)
+        turns = [l for _, l in m.log[n0:] if l.startswith("TURN")]
+        check(st["result"].startswith("scanned:") and len(turns) == 12 and all(l.startswith("TURN 30.0") for l in turns),
+              f"SCAN = 12 x TURN 30 ({st['result']}, {len(turns)} turns)")
+        time.sleep(0.1)
+        ev = [e for e in w.events if e.startswith("scanned ")]
+        check(bool(ev) and "trash can" in ev[-1] and "chair" in ev[-1], f"EVENT {ev[-1] if ev else '-'}")
+        mem = g.cmd("MEMORY")
+        check("; trash can#1 fresh " in mem and "; chair#1 fresh " in mem and mem.count("; ") == 2,
+              f"MEMORY: one instance each ({mem[:110]}...)")
+        tc = re.search(r"; trash can#1 fresh x=(-?\d+) y=(-?\d+) rel_bearing=(-?\d+) rel_dist=(\d+)", mem)
+        # sim: 150 deg counter-clockwise = -150 in tars_motor's clockwise convention; 1.85 m to the can's face
+        check(bool(tc) and abs(int(tc.group(3)) + 150) < 15 and 1200 < int(tc.group(4)) < 2600,
+              f"trash can remembered at bearing {tc.group(3) if tc else '?'} (~-150), {tc.group(4) if tc else '?'} mm (~2000 to its centre)")
+        time.sleep(3.0 / scale + 0.3)
+        check(os.path.exists(mem_file) and "trash can" in open(mem_file).read(), "memory saved to the -M file")
+
+        # teleop moves the robot, then GOTO: turns straight to it
+        motor_do(m.port, "TURN 60", scale)
+        motor_do(m.port, "MOVE 300", scale)
+        n0 = len(m.log)
+        g.cmd("GOTO bin")
+        time.sleep(0.3 / scale + 0.05)
+        first = next((l for _, l in m.log[n0:] if l.startswith("TURN")), "")
+        st = wait_idle(g, m, 200)
+        turns = [l for _, l in m.log[n0:] if l.startswith("TURN")]
+        check(st["result"] == "arrived" and len(turns) <= 3,
+              f"memory-guided GOTO after a teleop move: {st['result']}, {len(turns)} turns, first '{first}'")
+        check(bool(first) and abs(float(first.split()[1])) > 150, f"first TURN goes straight to the remembered can ({first})")
+        check(any(e.startswith("remembered trash can #1") for e in w.events), "EVENT remembered trash can #1")
+
+        cam.paused = True
+        time.sleep(0.3)
+        check(g.cmd("FORGET the chair") == "OK forgot 1" and "; chair#" not in g.cmd("MEMORY"), "FORGET chair")
+        w.close()
+        g.close()                                # SIGTERM: saves on exit
+
+        # restart goto with the same file, and tars_motor restarted too (pose 0, new epoch)
+        m.restart_pose()
+        g = Goto(exe, m.port, scale, mem=mem_file)
+        cam.port = g.det_port
+        mem = g.cmd("MEMORY")
+        check(mem.startswith("OK n=1 ") and "; trash can#1 " in mem, f"memory survives a goto restart ({mem[:60]}...)")
+        time.sleep(0.5)                          # first pose poll: re-base on the saved pose
+        motor_do(m.port, "TURN 90", scale)       # then the robot turns away (goto sees it)
+        cam.paused = False
+        n0 = len(m.log)
+        g.cmd("GOTO trash can")
+        st = wait_idle(g, m, 200)
+        turns = [l for _, l in m.log[n0:] if l.startswith("TURN")]
+        first = turns[0] if turns else ""
+        check(st["result"] == "arrived" and bool(first) and abs(abs(float(first.split()[1])) - 90) < 25,
+              f"after a tars_motor restart (re-based on the saved pose): first TURN '{first}' (~90 back), {st['result']}")
+        cam.paused = True
+        time.sleep(0.3)
+        r = g.cmd("FORGET")
+        check(re.fullmatch(r"OK forgot [1-9]\d*", r) is not None and g.cmd("MEMORY").startswith("OK n=0 "), f"FORGET everything ({r})")
+    finally:
+        cam.close()
+        g.close()
+        m.close()
+
+
+def run_memory_trials(exe: str, scale: float, n: int, seed: int, par: int) -> None:
+    print(f"memory vs blind search: {n} random scenes; each: (SCAN), teleop TURN + MOVE 300, GOTO (timed)")
+    rng = random.Random(seed + 77)
+    jobs = [(seed * 1000 + 500 + i, rng.uniform(0.8, 3.0), rng.uniform(-180, 180), rng.choice([0.4, 0.6, 0.8]),
+             rng.choice([-1, 1]) * rng.uniform(30, 180)) for i in range(n)]
+    res: dict = {}
+
+    def worker(idx: int, use: bool) -> None:
+        s, d, b, h, turn = jobs[idx]
+        res[(idx, use)] = memory_scene(exe, scale, s, d, b, h, use, turn, 300)
+
+    tasks = [(i, u) for i in range(n) for u in (False, True)]
+    for i in range(0, len(tasks), par):
+        ts = [threading.Thread(target=worker, args=t) for t in tasks[i:i + par]]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+    out = {}
+    for use in (False, True):
+        rs = [res[(i, use)] for i in range(n)]
+        ok = [r for r in rs if r["result"] == "arrived"]
+        times = sorted(r["t"] for r in ok)
+        turns = sorted(r["turns"] for r in ok)
+        med = times[len(times) // 2] if times else 0
+        out[use] = (len(ok), med, turns[len(turns) // 2] if turns else 0, times[-1] if times else 0)
+        print(f"  {'memory' if use else 'blind '}: arrived {len(ok)}/{n}, time median {med:.0f} s (max {out[use][3]:.0f} s), "
+              f"turns median {out[use][2]}")
+    check(out[True][0] >= 0.9 * n, f"memory-guided GOTO arrives {out[True][0]}/{n} (>= 90%)")
+    check(out[True][1] < out[False][1], f"memory-guided is faster: median {out[True][1]:.0f} s vs blind {out[False][1]:.0f} s")
 
 
 def run_trials(exe: str, scale: float, n: int, seed: int, par: int) -> None:
@@ -676,6 +919,7 @@ def main() -> None:
     ap.add_argument("--scale", type=float, default=8.0)
     ap.add_argument("--par", type=int, default=6)
     ap.add_argument("--quick", action="store_true", help="skip the random trials")
+    ap.add_argument("--mem-trials", type=int, default=16)
     a = ap.parse_args()
     exe = os.path.abspath(a.exe)
     os.makedirs(os.path.join(GOTO_DIR, "build"), exist_ok=True)
@@ -685,8 +929,10 @@ def main() -> None:
     test_cancel_latency(exe)
     test_real_tars_motor(exe)
     test_scenarios(exe, a.scale)
+    test_memory(exe, a.scale)
     if not a.quick:
         run_trials(exe, a.scale, a.trials, a.seed, a.par)
+        run_memory_trials(exe, a.scale, a.mem_trials, a.seed, a.par)
     print(f"{passed}/{passed + failed} checks passed ({time.monotonic() - t0:.0f} s)")
     sys.exit(1 if failed else 0)
 

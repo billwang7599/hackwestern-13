@@ -42,10 +42,24 @@ typedef struct {
     double lost_s;            /* no target for this long while driving -> stop + search */
     double timeout_s;         /* whole GOTO gives up after this */
     double move_timeout_pad_s;/* exact move overdue by est*2 + this -> fail */
+    /* object memory (goto_mem below) */
+    double arrive_dist_mm;    /* camera -> object distance when arrive_h is reached: scales
+                               * the rough box-height distance estimate */
+    double memory_min_conf;   /* detections below this aren't remembered */
+    double memory_max_age_s;  /* GOTO trusts a remembered spot this long */
+    double memory_drive_mm;   /* remembered target not in view after turning to it: MOVE up to
+                               * this far toward it, then look again (0 = off, just search) */
+    double memory_save_s;     /* write the memory file at most this often */
+    double memory_merge_mm;   /* a sighting this close to an instance is that instance */
+    double memory_tries;      /* GOTO tries at most this many remembered instances, then searches */
+    double cam_height_mm;     /* camera lens above the floor (floor-contact distance estimate) */
+    double cam_pitch_deg;     /* camera tilted down by this much (0 = level) */
     /* per-object arrive override, e.g. person is tall: arrive_h.person = 0.85 */
     int    n_arrive_over;
     char   arrive_over_label[16][32];
     double arrive_over_h[16];
+    /* not compared with goto.conf by the tests (strings) */
+    char   memory_path[256];  /* "-" = keep it in RAM only. Relative = next to goto.conf */
 } goto_cfg;
 
 void goto_cfg_defaults(goto_cfg *c);
@@ -89,6 +103,82 @@ typedef struct {
  * Returns 0 on success, -1 if it isn't a valid frame. Extra keys are ignored. */
 int goto_parse_frame(const char *line, goto_frame *f);
 
+/* ------------------------------------------------------- object memory
+ * Every detection frame (all labels, not just the target) updates the memory:
+ * remembered INSTANCES, keyed label + id (trash can #1, trash can #2). A
+ * sighting merges into an instance of the same label whose world x,y is within
+ * memory_merge_mm, or that lies on the same ray from the robot within the
+ * (noisy) range; otherwise it becomes a new instance.
+ * World frame: built on tars_motor's dead-reckoned pose (x forward, y right of
+ * where tars_motor started, mm; headings/bearings deg, + = clockwise like
+ * TURN). tars_motor's pose restarts at 0 when it restarts (new pose_epoch); the
+ * memory then re-bases on the last pose it saw or saved, i.e. it assumes the
+ * robot wasn't moved meanwhile. If you carried it: FORGET (and POSE RESET).
+ *
+ * Status per instance:  FRESH --GOTO looked there, not seen--> STALE --again--> GONE
+ *                       any sighting -> FRESH.   GOTO prefers FRESH, then STALE; never
+ *                       GONE or older than memory_max_age_s.
+ * (A lidar layer can later set GONE / feed distances through the same fields.) */
+#define GOTO_MEM_MAX 32
+typedef enum { MEM_FRESH = 0, MEM_STALE, MEM_GONE } goto_mem_status;
+typedef struct {
+    char   label[32];        /* canonical object name if objects.txt knows it, else the label */
+    int    id;               /* instance number within the label, from 1 */
+    goto_mem_status status;
+    double x, y;             /* world mm (smoothed over recent sightings) */
+    double bearing;          /* world bearing of the last sighting, from where the robot was */
+    double dist;             /* estimated distance of the last sighting, mm */
+    double conf;             /* confidence of the last sighting */
+    int    seen;             /* frames it was seen in */
+    double last_seen;        /* wall clock, s (survives restarts; may jump on a Pi with no RTC) */
+} goto_mem_entry;
+
+typedef struct {
+    int n;
+    goto_mem_entry e[GOTO_MEM_MAX];
+    int have_pose;           /* robot pose known */
+    double px, py, ph;       /* robot pose in the world frame */
+    int have_offset;
+    unsigned epoch;          /* tars_motor pose_epoch the offset belongs to */
+    double ox, oy, oh;       /* world = rot(oh) * motor + (ox, oy) */
+    double spx, spy, sph;    /* pose when last saved (dirty if it moves away from it) */
+    int dirty;
+    int rebased;             /* times it re-based on a new epoch (STATUS / tests) */
+} goto_mem;
+
+void goto_mem_init(goto_mem *m);
+const char *goto_mem_status_name(goto_mem_status st);
+/* tars_motor STATUS pose= / pose_epoch=: re-bases on a new epoch, then updates px/py/ph */
+void goto_mem_motor_pose(goto_mem *m, unsigned epoch, double mx, double my, double mh);
+/* rough distance (mm) to a box: floor contact (level camera at cam_height_mm), else box height */
+double goto_mem_box_dist(const goto_cfg *c, const char *label, const goto_det *d, int fw, int fh);
+/* remember every usable detection in f (needs a pose). Returns how many boxes it used. */
+int  goto_mem_observe(goto_mem *m, const goto_cfg *c, const goto_objects *o, const goto_frame *f, double wall);
+/* merge a sighting at world (x, y) of `label` (or add an instance); returns its index */
+int  goto_mem_sight(goto_mem *m, const goto_cfg *c, const char *label, double x, double y,
+                    double bearing, double dist, double conf, double wall);
+int  goto_mem_find(const goto_mem *m, const char *label);          /* first instance or -1 */
+int  goto_mem_find_id(const goto_mem *m, const char *label, int id);
+int  goto_mem_count(const goto_mem *m, const char *label);
+/* best instance to drive to: FRESH before STALE, then nearest; skips GONE, too old, and
+ * the ids in skip[0..nskip). -1 = none. */
+int  goto_mem_best(const goto_mem *m, const char *label, double wall, double max_age,
+                   const int *skip, int nskip);
+/* looked at instance i and it wasn't there: FRESH -> STALE -> GONE */
+void goto_mem_miss(goto_mem *m, int i);
+/* "trash can" = all its instances, "trash can#2" = one, NULL = everything; returns how many */
+int  goto_mem_forget(goto_mem *m, const char *label);
+/* relative bearing (deg, + = right) and distance (mm) from the robot to entry i */
+void goto_mem_relative(const goto_mem *m, int i, double *bearing, double *dist);
+/* atomic: path.tmp, fsync, rename. 0 ok, -1 error. */
+int  goto_mem_save(goto_mem *m, const char *path, double wall);
+/* 0 ok, 1 ok but some lines were bad (skipped), -1 missing/unreadable (memory left empty) */
+int  goto_mem_load(goto_mem *m, const char *path);
+/* one line: "n=2 pose=x,y,h; trash can#1 fresh x=.. y=.. ...; chair#1 ..." */
+void goto_mem_describe(const goto_mem *m, double wall, char *out, size_t len);
+/* canonical name for a detector label ("dining table" -> "table"), else the normalized label */
+void goto_mem_label(const goto_objects *o, const char *raw, char *out, size_t len);
+
 /* ------------------------------------------------------ state machine */
 typedef enum {
     ST_IDLE = 0,
@@ -96,13 +186,18 @@ typedef enum {
     ST_SEARCH_TURN,   /* exact TURN of one search step running */
     ST_ALIGN_TURN,    /* exact TURN toward the target running */
     ST_APPROACH,      /* closed-loop D l r toward the target */
+    ST_MEM_TURN,      /* exact TURN toward where memory says the target is */
+    ST_MEM_MOVE,      /* exact MOVE toward the remembered spot (memory_drive_mm) */
 } goto_state;
+
+typedef enum { MODE_GOTO = 0, MODE_SCAN } goto_mode;
 
 typedef enum {
     ACT_NONE = 0,
     ACT_DRIVE,        /* D a b */
     ACT_STOP,         /* S */
     ACT_TURN,         /* TURN a [b = speed] -> reply gives move id; call goto_sm_move_started */
+    ACT_MOVE,         /* MOVE a [b = speed], same reply handling as TURN */
     ACT_BEEP,         /* BEEP a */
     ACT_LED,          /* LED text */
     ACT_EVENT,        /* text for control-port watchers: "arrived trash can" */
@@ -111,13 +206,17 @@ typedef enum {
 typedef struct {
     goto_act_kind kind;
     double a, b;
-    char text[64];
+    char text[200];
 } goto_act;
 
 #define GOTO_MAX_ACTS 16
 typedef struct {
     goto_cfg cfg;
     const goto_objects *objs;
+    goto_mem *mem;                    /* NULL = no memory */
+    double wall_base;                 /* wall clock = wall_base + now */
+    int pose_moving;                  /* tars_motor says the robot is turning/moving right now */
+    goto_mode mode;
     goto_state st;
     int target;                       /* canonical index, -1 = none */
     char result[64];                  /* last outcome: arrived / not found / ... */
@@ -145,6 +244,15 @@ typedef struct {
     /* stats for STATUS */
     double fps_ema, last_frame_for_fps;
     int frames, frames_with_target;
+    /* memory-guided GOTO: 0 none, 1 turned toward the remembered spot, 2 drove toward it,
+     * 3 not there -> normal search */
+    int mem_phase;
+    int mem_id;                       /* instance id being tried */
+    int mem_tried[8], n_tried;        /* instance ids already tried in this GOTO */
+    double mem_bearing, mem_dist;     /* relative, when the instance was picked */
+    /* SCAN */
+    int scan_n;
+    char scan_seen[GOTO_MEM_MAX][32];
     /* output queue */
     int n_act;
     goto_act act[GOTO_MAX_ACTS];
@@ -155,6 +263,12 @@ void goto_sm_init(goto_sm *s, const goto_cfg *cfg, const goto_objects *objs);
 /* All take the current monotonic time in seconds. After each call, the caller
  * sends s->act[0..n_act) to tars_motor in order and then clears n_act. */
 void goto_sm_goto(goto_sm *s, double now, int target);
+/* memory: attach (may be NULL). wall clock = wall_base + now. */
+void goto_sm_set_memory(goto_sm *s, goto_mem *m, double wall_base);
+/* pose from tars_motor STATUS. moving = an exact move runs / spinning (skip remembering) */
+void goto_sm_pose(goto_sm *s, double now, unsigned epoch, double mx, double my, double mh, int moving);
+/* stand still, 12 x TURN 30, remember everything seen; EVENT "scanned a,b,c" */
+void goto_sm_scan(goto_sm *s, double now);
 void goto_sm_cancel(goto_sm *s, double now, const char *why);      /* sends S */
 void goto_sm_fail(goto_sm *s, double now, const char *why);        /* S + BEEP 3 + LED no */
 void goto_sm_frame(goto_sm *s, double now, const goto_frame *f);

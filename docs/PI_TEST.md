@@ -371,6 +371,11 @@ Needs Steps 2–5 working. Details are in `goto/README.md`.
    - **Watch:** `printf 'STATUS\n' | nc <pi-ip> 5557` shows `state= h= bearing=`.
    - **If it stops too early or too late:** change `arrive_h_frac` in `goto.conf`. It's the box height ÷ frame height at the spot where you want it to stop.
 6. **Stop test:** during an approach, `printf 'S\n' | nc <pi-ip> 5555`. The wheels stop at once, and goto STATUS shows `result=cancelled:stop`.
+7. **Object memory** (`goto/README.md`, "Object memory"):
+   - `printf 'POSE\n' | nc <pi-ip> 5555` → `OK x y hdg epoch moving`. Drive 1 m with WASD and check `x` says about 1000. Spin 360° and check `hdg` comes back near 0. Write down how far off it is: that's the drift.
+   - `printf 'SCAN\n' | nc <pi-ip> 5557` (or say "TARS, look around"): 12 × 30° turns, then `printf 'MEMORY\n' | nc <pi-ip> 5557` lists e.g. `trash can#1 fresh ... est_dist=`. Compare `est_dist` with a tape measure. If it's way off, set `cam_height_mm` / `cam_pitch_deg` in `goto.conf`.
+   - Turn the robot away by hand with WASD, then `GOTO trash can`: the first move should be one TURN straight toward it, not a 30° search.
+   - It's saved in `/data/home/qnxuser/goto/memory.txt`. **If you carry the robot somewhere else, say "TARS, forget everything" or send `FORGET` to 5557**, because the remembered positions are relative to where it was.
 
 ---
 

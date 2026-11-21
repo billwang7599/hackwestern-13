@@ -10,8 +10,13 @@
  *              STATUS                "OK state=.. target=.. result=.. ..."
  *              OBJECTS               "OK trash can,chair,..."
  *              RESOLVE <words>       "OK <canonical>" or "ERR unknown object"
+ *              SCAN                  stand still, 12 x TURN 30, remember everything seen
+ *                                    -> EVENT "scanned trash can,chair" at the end
+ *              MEMORY                "OK n=.. pose=x,y,h; <label>#<id> <fresh|stale|gone> x=.. ..."
+ *              FORGET [object[#n]]   forget an object (all its instances, or #n), or everything
  *              WATCH                 this connection also gets "EVENT <what> <object>"
- *                                    lines (searching/arrived/lost/cancelled/failed:..)
+ *                                    lines (searching/remembered/not_there/arrived/lost/
+ *                                    cancelled/failed:../scanning/scanned ..)
  *              PING                  "OK PONG"
  *   detect   one JSON object per line/datagram, see goto/DETECTIONS.md:
  *              UDP 127.0.0.1:5558, or TCP 127.0.0.1:5558 (line stream), or stdin (-i)
@@ -21,8 +26,14 @@
  * this process dies the server sees the disconnect and stops the wheels. A
  * stop sent by ANY other client (STATUS stops= goes up) cancels the GOTO.
  *
+ * Memory: every detection frame updates a per-label store (goto_mem in
+ * goto_core.h) placed with tars_motor's dead-reckoned pose (STATUS pose=,
+ * polled at 4 Hz even when idle). Saved atomically to memory_path (goto.conf)
+ * at most every memory_save_s, loaded at startup. GOTO first turns to where
+ * memory says the object is, then looks; if it's not there, normal search.
+ *
  * Usage: goto [-m host:port] [-p ctl_port] [-u det_port] [-i] [-c goto.conf]
- *             [-o objects.txt] [-r rt_prio] [-v] [-T time_scale (tests only)]
+ *             [-o objects.txt] [-M memory.txt|-] [-r rt_prio] [-v] [-T time_scale (tests only)]
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -58,6 +69,9 @@ static int verbose;
 static goto_cfg cfg;
 static goto_objects objs;
 static goto_sm sm;
+static goto_mem mem;
+static char mem_path[300];
+static double next_pose_poll, last_mem_save;
 
 /* ------------------------------------------------------------------ time */
 static double now_s(void)
@@ -218,7 +232,7 @@ static conn detc[MAX_DETC];
 
 static void broadcast_event(const char *text)
 {
-    char line[128];
+    char line[256];
     snprintf(line, sizeof line, "EVENT %s\n", text);
     for (int i = 0; i < MAX_CTL; i++)
         if (ctl[i].fd >= 0 && ctl[i].watch) send_str(ctl[i].fd, line);
@@ -242,6 +256,7 @@ static void run_actions(void)
             case ACT_DRIVE: snprintf(line, sizeof line, "D %.3f %.3f", a->a, a->b); break;
             case ACT_STOP:  snprintf(line, sizeof line, "S"); break;
             case ACT_TURN:  snprintf(line, sizeof line, "TURN %.1f %.2f", a->a, a->b > 0 && a->b <= 1 ? a->b : 1.0); break;
+            case ACT_MOVE:  snprintf(line, sizeof line, "MOVE %.0f %.2f", a->a, a->b > 0 && a->b <= 1 ? a->b : 1.0); break;
             case ACT_BEEP:  snprintf(line, sizeof line, "BEEP %d", (int)a->a); break;
             case ACT_LED:   snprintf(line, sizeof line, "LED %s", a->text); break;
             case ACT_EVENT: broadcast_event(a->text); continue;
@@ -259,7 +274,7 @@ static void run_actions(void)
             }
             if (!strncmp(reply, "ERR", 3)) {
                 /* BEEP/LED unsupported is harmless; motion refused is not */
-                if (a->kind == ACT_DRIVE || a->kind == ACT_TURN) {
+                if (a->kind == ACT_DRIVE || a->kind == ACT_TURN || a->kind == ACT_MOVE) {
                     logf_("motor refused '%s': %s", line, reply);
                     char why[48];
                     snprintf(why, sizeof why, "%.40s", reply + 3 + (reply[3] == ' '));
@@ -268,10 +283,10 @@ static void run_actions(void)
                 }
                 continue;
             }
-            if (a->kind == ACT_TURN) {
+            if (a->kind == ACT_TURN || a->kind == ACT_MOVE) {
                 int id = -1, est = 0;
                 if (sscanf(reply, "OK %d %d", &id, &est) == 2) goto_sm_move_started(&sm, now_s(), id, est / 1000.0);
-                else if (goto_sm_busy(&sm)) fail_now("bad TURN reply");
+                else if (goto_sm_busy(&sm)) fail_now(a->kind == ACT_MOVE ? "bad MOVE reply" : "bad TURN reply");
             }
         }
     }
@@ -291,14 +306,33 @@ static long read_stops(void)
     return atol(v);
 }
 
+/* pose= x,y,hdg and pose_epoch= from a STATUS reply -> memory. Older servers have none. */
+static void apply_pose(const char *reply)
+{
+    char v[64], e[32], mv[16] = "";
+    double x, y, h, l = 0, r = 0;
+    if (kv(reply, "pose", v, sizeof v) < 0 || sscanf(v, "%lf,%lf,%lf", &x, &y, &h) != 3) return;
+    if (kv(reply, "pose_epoch", e, sizeof e) < 0) return;
+    kv(reply, "move", mv, sizeof mv);
+    sscanf(reply, "OK %lf %lf", &l, &r);
+    /* an exact move's motion only lands in the pose when it ends; a fast spin blurs
+     * and the pose is up to one poll old: don't remember things during either */
+    int moving = !strcmp(mv, "running") || fabs(l - r) > 0.1;
+    goto_sm_pose(&sm, now_s(), (unsigned)strtoul(e, NULL, 10), x, y, h, moving);
+}
+
 static void poll_status(void)
 {
     char reply[1024], v[32], move[16] = "", why[32] = "";
+    /* tars_motor's 500 ms deadman now also aborts exact MOVE/TURN (move_why=watchdog):
+     * keep the lease alive while one runs. Polled at 10 Hz in that state. */
+    if (goto_sm_wants_status(&sm)) motor_cmd("PING", reply, sizeof reply);
     if (motor_cmd("STATUS", reply, sizeof reply) < 0) {
         if (goto_sm_busy(&sm)) { fail_now("no motor server"); run_actions(); }
         return;
     }
     if (strncmp(reply, "OK", 2)) return;
+    apply_pose(reply);
     if (stops_baseline >= 0 && kv(reply, "stops", v, sizeof v) == 0 && atol(v) > stops_baseline) {
         logf_("stop from another client (stops=%s) -> cancel", v);
         stops_baseline = atol(v);
@@ -315,9 +349,33 @@ static void poll_status(void)
     }
 }
 
+static void save_memory(const char *why)
+{
+    if (!strcmp(mem_path, "-")) { mem.dirty = 0; return; }
+    if (goto_mem_save(&mem, mem_path, sm.wall_base + now_s()) < 0) {
+        static double last_warn = -1e9;
+        if (now_s() - last_warn > 30 * time_scale) { logf_("memory: can't write %s (%s)", mem_path, strerror(errno)); last_warn = now_s(); }
+    } else if (verbose > 1) {
+        logf_("memory: saved %d objects (%s)", mem.n, why);
+    }
+    last_mem_save = now_s();
+}
+
+/* GOTO and SCAN both need the motor server and a fresh stops= baseline */
+static int motor_ready(conn *c)
+{
+    if (motor_connect() < 0) { send_str(c->fd, "ERR no motor server (is tars_motor running?)\n"); return 0; }
+    long st = read_stops();
+    stops_baseline = st >= 0 ? st : -1;
+    if (st == -2) { send_str(c->fd, "ERR no motor server\n"); return 0; }
+    char reply[1024];
+    if (motor_cmd("STATUS", reply, sizeof reply) == 0) apply_pose(reply);   /* current pose for memory */
+    return 1;
+}
+
 static void handle_ctl(conn *c, char *line)
 {
-    char cmd[16] = "", reply[512];
+    char cmd[16] = "", reply[4096];
     sscanf(line, "%15s", cmd);
     const char *arg = line + strlen(cmd);
     while (*arg == ' ') arg++;
@@ -336,20 +394,49 @@ static void handle_ctl(conn *c, char *line)
             motor_cmd("BEEP 3", r2, sizeof r2);
             return;
         }
-        if (motor_connect() < 0) { send_str(c->fd, "ERR no motor server (is tars_motor running?)\n"); return; }
-        long st = read_stops();
-        stops_baseline = st >= 0 ? st : -1;
-        if (st == -2) { send_str(c->fd, "ERR no motor server\n"); return; }
+        if (!motor_ready(c)) return;
         goto_sm_goto(&sm, now_s(), t);
         logf_("GOTO '%s' -> %s", arg, objs.obj[t]);
         snprintf(reply, sizeof reply, "OK goto %s\n", objs.obj[t]);
         send_str(c->fd, reply);
         run_actions();
+    } else if (!strcasecmp(cmd, "SCAN")) {
+        if (!motor_ready(c)) return;
+        goto_sm_scan(&sm, now_s());
+        logf_("SCAN");
+        send_str(c->fd, "OK scan\n");
+        run_actions();
+    } else if (!strcasecmp(cmd, "MEMORY")) {
+        char d[3900];
+        goto_mem_describe(&mem, sm.wall_base + now_s(), d, sizeof d);
+        snprintf(reply, sizeof reply, "OK %s\n", d);
+        send_str(c->fd, reply);
+    } else if (!strcasecmp(cmd, "FORGET")) {
+        int n;
+        if (!*arg || !strcasecmp(arg, "all") || !strcasecmp(arg, "everything")) n = goto_mem_forget(&mem, NULL);
+        else {                                   /* "trash can", "the bin #2" */
+            char words[128], l[32], key[48];
+            snprintf(words, sizeof words, "%s", arg);
+            char *h = strchr(words, '#');
+            int id = h ? atoi(h + 1) : 0;
+            if (h) *h = '\0';
+            goto_mem_label(&objs, words, l, sizeof l);
+            if (h) snprintf(key, sizeof key, "%s#%d", l, id);
+            else snprintf(key, sizeof key, "%s", l);
+            n = goto_mem_forget(&mem, key);
+        }
+        save_memory("forget");
+        logf_("FORGET %s -> %d", *arg ? arg : "all", n);
+        snprintf(reply, sizeof reply, "OK forgot %d\n", n);
+        send_str(c->fd, reply);
     } else if (!strcasecmp(cmd, "STATUS")) {
-        char d[400];
+        char d[600];
         sm.now = now_s();
         goto_sm_describe(&sm, d, sizeof d);
-        snprintf(reply, sizeof reply, "OK %s motor=%d\n", d, motor_fd >= 0);
+        snprintf(reply, sizeof reply, "OK %s motor=%d memory=%d pose=", d, motor_fd >= 0, mem.n);
+        size_t o = strlen(reply);
+        if (mem.have_pose) snprintf(reply + o, sizeof reply - o, "%.0f,%.0f,%.1f\n", mem.px, mem.py, mem.ph);
+        else snprintf(reply + o, sizeof reply - o, "-\n");
         send_str(c->fd, reply);
     } else if (!strcasecmp(cmd, "OBJECTS")) {
         size_t o = (size_t)snprintf(reply, sizeof reply, "OK ");
@@ -442,6 +529,7 @@ static void usage(const char *argv0)
             "  -p  control port, GOTO/CANCEL/STATUS (default 5557, all interfaces)\n"
             "  -u  detections port, UDP + TCP on 127.0.0.1 (default 5558)\n"
             "  -i  also read detection lines from stdin (detect | goto -i)\n"
+            "  -M  object memory file (default memory_path in goto.conf, next to it; - = RAM only)\n"
             "  -r  SCHED_RR priority (default 20, below tars_motor's 30; 0 = don't)\n"
             "  -T  run the clock T times faster (simulator tests only)\n", argv0);
 }
@@ -451,7 +539,8 @@ int main(int argc, char **argv)
     int ctl_port = 5557, det_port = 5558, use_stdin = 0, rt_prio = 20;
     const char *cfg_path = NULL, *obj_path = NULL;
     int opt;
-    while ((opt = getopt(argc, argv, "m:p:u:ic:o:r:vT:h")) != -1) {
+    const char *mem_opt = NULL;
+    while ((opt = getopt(argc, argv, "m:p:u:ic:o:M:r:vT:h")) != -1) {
         switch (opt) {
         case 'm': {
             char *colon = strrchr(optarg, ':');
@@ -464,6 +553,7 @@ int main(int argc, char **argv)
         case 'i': use_stdin = 1; break;
         case 'c': cfg_path = optarg; break;
         case 'o': obj_path = optarg; break;
+        case 'M': mem_opt = optarg; break;
         case 'r': rt_prio = atoi(optarg); break;
         case 'v': verbose++; break;
         case 'T': time_scale = atof(optarg); if (time_scale <= 0) time_scale = 1; break;
@@ -483,6 +573,24 @@ int main(int argc, char **argv)
     goto_objects_defaults(&objs);
     if (obj_path && goto_objects_load(&objs, obj_path) < 0) { fprintf(stderr, "goto: can't read %s\n", obj_path); return 1; }
     goto_sm_init(&sm, &cfg, &objs);
+
+    /* memory file: -M, else memory_path; relative paths sit next to goto.conf */
+    const char *mp = mem_opt ? mem_opt : cfg.memory_path;
+    const char *slash = cfg_path ? strrchr(cfg_path, '/') : NULL;
+    if (!mem_opt && mp[0] != '/' && strcmp(mp, "-") && slash)
+        snprintf(mem_path, sizeof mem_path, "%.*s/%s", (int)(slash - cfg_path), cfg_path, mp);
+    else
+        snprintf(mem_path, sizeof mem_path, "%s", mp);
+    {
+        struct timespec rt;
+        clock_gettime(CLOCK_REALTIME, &rt);
+        double wall_base = rt.tv_sec + rt.tv_nsec * 1e-9 - now_s();
+        int lr = goto_mem_load(&mem, mem_path);
+        goto_sm_set_memory(&sm, &mem, wall_base);
+        if (lr < 0) fprintf(stderr, "goto: memory %s: none yet\n", mem_path);
+        else fprintf(stderr, "goto: memory %s: %d objects%s%s\n", mem_path, mem.n,
+                     mem.have_offset ? ", pose saved" : "", lr == 1 ? " (some bad lines skipped)" : "");
+    }
 
     if (rt_prio > 0) {
         struct sched_param sp = { .sched_priority = rt_prio };
@@ -561,7 +669,13 @@ int main(int argc, char **argv)
         if (goto_sm_busy(&sm) && t >= next_status_poll) {
             next_status_poll = t + (goto_sm_wants_status(&sm) ? 0.1 : 0.25);
             poll_status();
+        } else if (!goto_sm_busy(&sm) && t >= next_pose_poll && motor_fd >= 0) {
+            /* idle: only the pose, so frames still land in memory (no stop logic here) */
+            char reply[1024];
+            if (motor_cmd("STATUS", reply, sizeof reply) == 0 && !strncmp(reply, "OK", 2)) apply_pose(reply);
         }
+        if (t >= next_pose_poll) next_pose_poll = t + 0.25;
+        if (mem.dirty && t - last_mem_save >= cfg.memory_save_s) save_memory("periodic");
         /* keep the motor link up so GOTO starts instantly */
         if (motor_fd < 0) motor_connect();
         else {
@@ -576,6 +690,7 @@ int main(int argc, char **argv)
     }
     /* leaving: stop the wheels if we were driving them */
     if (goto_sm_busy(&sm)) { goto_sm_cancel(&sm, now_s(), "exit"); run_actions(); }
+    if (mem.dirty) save_memory("exit");
     if (motor_fd >= 0) close(motor_fd);
     fprintf(stderr, "goto: bye\n");
     return 0;

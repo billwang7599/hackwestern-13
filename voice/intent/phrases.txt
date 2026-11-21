@@ -1,7 +1,7 @@
 # TARS voice: training phrases for the intent classifier.
 #
 # Format: one phrase per line,   intent<TAB>phrase
-#   - intents: forward back left right turn_around stop goto spin status unknown
+#   - intents: forward back left right turn_around stop goto spin status scan forget unknown
 #   - write it the way a person says it, WITHOUT the wake word ("TARS, ..." is added automatically)
 #   - lowercase, no punctuation needed; train.py adds capitals, punctuation and whisper mistakes
 #   - {n} = a turn amount ("90", "forty five degrees", "a bit" ...)
@@ -390,6 +390,78 @@ status	report status
 status	are you ready
 status	you good
 
+# ---------------------------------------------------------------- scan -> @goto SCAN (12 x TURN 30, remember what it sees)
+scan	scan
+scan	look around
+scan	look around you
+scan	look around the room
+scan	have a look around
+scan	take a look around
+scan	scan the room
+scan	scan around
+scan	do a scan
+scan	scan the area
+scan	what do you see
+scan	what can you see
+scan	tell me what you see
+scan	what's around you
+scan	what is around you
+scan	what's in the room
+scan	what's here
+scan	check your surroundings
+scan	survey the room
+scan	explore the room
+scan	map the room
+scan	memorize the room
+scan	learn the room
+scan	look at everything
+scan	find everything
+scan	what objects do you see
+scan	see what's around
+scan	look around and remember
+scan	look all around
+scan	scan your surroundings
+scan	scan everything
+scan	start a scan
+scan	run a scan
+scan	what do you see around you
+scan	what can you see around here
+scan	what's over there
+scan	look around for things
+scan	do a lap and look
+scan	survey the area
+scan	check the room
+
+# ---------------------------------------------------------------- forget -> @goto FORGET [object] + BEEP 2
+forget	forget everything
+forget	forget it all
+forget	forget all
+forget	forget all objects
+forget	forget what you saw
+forget	forget what you've seen
+forget	clear your memory
+forget	clear memory
+forget	wipe your memory
+forget	wipe memory
+forget	erase your memory
+forget	reset your memory
+forget	reset memory
+forget	delete your memory
+forget	forget the room
+forget	start fresh
+forget	forget the {o}
+forget	forget where the {o} is
+forget	forget about the {o}
+forget	the {o} is gone
+forget	forget your memory
+forget	forget everything you saw
+forget	clear the memory
+forget	wipe it all
+forget	erase everything
+forget	forget all of it
+forget	memory reset
+forget	clear what you remember
+
 # ---------------------------------------------------------------- unknown -> nothing (LED no + BEEP 3 if the wake word was heard)
 # Chit-chat, crowd noise and whisper's favourite hallucinations on silence.
 unknown	hello
@@ -489,3 +561,5 @@ unknown	how long did this take
 unknown	can i take a picture
 unknown	good job guys
 unknown	what model is that
+unknown	forget it
+unknown	never mind that

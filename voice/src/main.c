@@ -25,6 +25,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -200,11 +201,61 @@ static int link_cmd(link_t *l, const char *line, char *reply, int rlen)
     return -1;
 }
 
+/* ---- exact-move keepalive. tars_motor's 500 ms deadman aborts a MOVE/TURN
+ * (move_why=watchdog) unless some client keeps commanding. A voice move is a
+ * one-shot line and whisper can block the main loop for longer than that, so a
+ * small thread on its own connection PINGs while the move runs (STATUS
+ * move=running), and gives up at the move's own deadline. S clears it. */
+static pthread_mutex_t ka_lock = PTHREAD_MUTEX_INITIALIZER;
+static long long ka_until_ms;              /* 0 = no move to keep alive */
+static int ka_move_id;
+
+static void ka_arm(const char *line, const char *reply)
+{
+    int id = 0, est = 0;
+    pthread_mutex_lock(&ka_lock);
+    if (!strcmp(line, "S")) ka_until_ms = 0;
+    else if ((!strncmp(line, "MOVE", 4) || !strncmp(line, "TURN", 4)) &&
+             sscanf(reply, "OK %d %d", &id, &est) == 2 && est >= 0) {
+        ka_move_id = id;
+        ka_until_ms = now_ms() + 2LL * est + 2000;   /* tars_motor's own move timeout */
+    }
+    pthread_mutex_unlock(&ka_lock);
+}
+
+static void *ka_thread(void *arg)
+{
+    link_t *l = arg;
+    while (running) {
+        struct timespec ts = { 0, 150 * 1000000L };
+        nanosleep(&ts, NULL);
+        pthread_mutex_lock(&ka_lock);
+        long long until = ka_until_ms;
+        int id = ka_move_id;
+        pthread_mutex_unlock(&ka_lock);
+        if (!until) continue;
+        char st[1024], r[64];
+        int done = now_ms() > until;
+        if (!done && link_cmd(l, "STATUS", st, sizeof st) == 0) {
+            const char *m = strstr(st, " move="), *mi = strstr(st, " move_id=");
+            done = !m || strncmp(m + 6, "running", 7) || !mi || atoi(mi + 9) != id;
+            if (!done) link_cmd(l, "PING", r, sizeof r);
+        }
+        if (done) {
+            pthread_mutex_lock(&ka_lock);
+            if (ka_until_ms == until) ka_until_ms = 0;
+            pthread_mutex_unlock(&ka_lock);
+        }
+    }
+    return NULL;
+}
+
 static void link_send_log(link_t *l, const char *line)
 {
     char reply[1024];
     long long t0 = now_ms();
     link_cmd(l, line, reply, sizeof reply);
+    if (!l->reply_optional) ka_arm(line, reply);
     if (!strcmp(line, "STATUS")) fprintf(stderr, "[status] %s\n", reply);
     else printf("[%s] %-16s -> %s (%lld ms)\n", l->name, line, reply, now_ms() - t0);
     fflush(stdout);
@@ -289,6 +340,9 @@ int main(int argc, char **argv)
         char r[64];
         link_cmd(&link, "WHO voice", r, sizeof r);
     }
+    link_t kalink = { -1, 0, c.host, "motor-keepalive", c.port, c.dry, 1000, 0 };
+    pthread_t ka_tid;
+    int ka_started = !c.dry && pthread_create(&ka_tid, NULL, ka_thread, &kalink) == 0;
 
     int16_t frame[VAD_FRAME];
     int fill = 0, nseg = 0;
@@ -370,6 +424,8 @@ int main(int argc, char **argv)
             if (golink.fd < 0) link_up(&golink);
         }
     }
+    running = 0;
+    if (ka_started) pthread_join(ka_tid, NULL);
     if (led_off_at) link_send_log(&link, "LED off");
     fprintf(stderr, "[voice] %d segments, %.1f s of audio, noise floor %.1f dBFS\n", nseg,
             (double)samples / AUDIO_RATE, vad_noise_dbfs(&vad));
