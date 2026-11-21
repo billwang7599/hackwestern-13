@@ -107,7 +107,7 @@ Andrew's stack: 5555 (`tars_motor`) and 5557–5569 (`iter2-autonomy/edge-ai/REA
 
 ## Next up
 
-- Iteration 2 on hardware: have the phone (or Andrew's service) send a copy of its LDR1 packets to `goto` on 5572, check the frame/yaw signs with `NAV`, and talk to Andrew about the pivot-while-BLOCKED rule in `tars_motor` (`iter2-autonomy/goto/README.md` assumption 7).
+- Iteration 2 on hardware: have the phone (or Andrew's service) send a copy of its LDR1 packets to `goto` on 5572, check the frame/yaw signs with `NAV`, and get Andrew's sign-off on the pivot-while-BLOCKED rule in `tars_motor`, now limited to 0.40 speed / 180° (`iter2-autonomy/goto/README.md` assumption 7). The sideways sweep is still unguarded: measure the SM11 + phone-mount swing radius against the 0.35 m inflation.
 
 - Merge `voice-stt` once its tests pass, with the `goto <object>` intent added.
 - `iter2-autonomy/goto/`: build ONNX Runtime for QNX (qnx-ports, Linux/Docker host), cross-compile `goto` + `detect`, test camapi with the C270 (`detect --nomodel`), then tune `arrive_h_frac` on the real camera mount.

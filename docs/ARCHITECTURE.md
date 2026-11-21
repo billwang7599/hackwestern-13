@@ -177,7 +177,7 @@ The floor lives in `tars_motor`'s 50 Hz loop and pre-empts every `goto` state. `
 | Trigger | What `tars_motor` does | What `goto` does |
 |---|---|---|
 | `S` from any client (voice "stop", teleop, phone) | zero wheels, abort MOVE/TURN, hold others' `D` 1.5 s | sees `stops=` rise → IDLE |
-| guard deny (BLOCKED in 0.6 m corridor, UNKNOWN, STALE > 150 ms, gate heartbeat > 100 ms) | zero wheels, abort MOVE (`ABORT lidar_guard`), `guard_epoch++`. **As built:** an in-place `TURN` still runs/is accepted while the reason is a fresh `guard_blocked` (never when stale/missing/invalid) | FOLLOW_PATH: re-plan once CLEAR (or after 3× the wait while BLOCKED: the new route starts with a pivot). Face turn refused → LOOK. APPROACH: the leg ends; target centred and big → arrived, else LOOK again. Old `DL` refused. |
+| guard deny (BLOCKED in 0.6 m corridor, UNKNOWN, STALE > 150 ms, gate heartbeat > 100 ms) | zero wheels, abort MOVE (`ABORT lidar_guard`), `guard_epoch++`. **As built:** an in-place `TURN` still runs/is accepted while the reason is a fresh `guard_blocked` (never when stale/missing/invalid), limited to speed ≤ 0.40 (higher is clamped) and |deg| ≤ 180 (more → `ERR guard_blocked pivot>180`); a TURN already running when the guard turns BLOCKED continues only if it fits both, else it aborts (`lidar_guard`) | FOLLOW_PATH: re-plan once CLEAR (or after 3× the wait while BLOCKED: the new route starts with a pivot). Face turn refused → LOOK. APPROACH: the leg ends; target centred and big → arrived, else LOOK again. Old `DL` refused. |
 | 500 ms watchdog | zero, abort exact move | `goto` keeps feeding it (`D` at 10 Hz, `PING` during exact moves) |
 | tip latch | zero, latched until `RESET` | FAILED, `BEEP 3` |
 | bump | zero, refuse drive 1 s | FAILED, `BEEP 3` |
@@ -186,7 +186,7 @@ The floor lives in `tars_motor`'s 50 Hz loop and pre-empts every `goto` state. `
 
 **Leased drive (built).** APPROACH sends `DL <guard_epoch> l r` with the epoch read from `STATUS` and fixed for the leg. A guard denial bumps the epoch, so a stale drive from before the obstacle stays refused even after the guard clears. The leg ends, and a new one starts only after a fresh LOOK. Path legs are exact `TURN`/`MOVE` (aborted by the guard directly).
 
-The guard checks a **forward** corridor only. Pivots and reverse are not covered, so the map's inflation (35 cm robot radius, kept) is what keeps `TURN` legs clear, and `goto` never plans a reverse `MOVE`. Because the 0.35 m inflation is smaller than the ~0.6 m stop zone, legs can end facing something inside the zone. That's why pivots are allowed under a fresh BLOCKED (see `iter2-autonomy/goto/README.md` assumption 7; **to agree with Andrew**).
+The guard checks a **forward** corridor only. Pivots and reverse are not covered, so the map's inflation (35 cm robot radius, kept) is what keeps `TURN` legs clear, and `goto` never plans a reverse `MOVE`. Because the 0.35 m inflation is smaller than the ~0.6 m stop zone, legs can end facing something inside the zone. That's why pivots are allowed under a fresh BLOCKED (see `iter2-autonomy/goto/README.md` assumption 7). They're limited (option B): **speed ≤ 0.40** (clamped) and **|deg| ≤ 180** (refused above), and `goto` turns at 0.40 so a turn started while CLEAR survives the guard flipping to BLOCKED. The sideways/behind sweep is still unguarded and relies on the 0.35 m inflation; the swing radius of the Kuman SM11 chassis + phone mount must be measured on the floor to check it fits. **Andrew still needs to sign off.**
 
 **Pure visual GOTO stays the fallback.** With no phone, no map, or no pose, `goto` behaves exactly as it does on `main` today: memory turn (if any), LOOK, SEARCH, ALIGN, APPROACH. The guard gate is then disabled only if `tars_motor` was started without `-g` (bench mode).
 
@@ -268,14 +268,14 @@ ML at normal priority means a stop can never be starved, whatever the fps.
 
 **Run on the real Pi/QNX (Andrew's side, per `iter2-autonomy/edge-ai/README.md`):** YOLOX + MiDaS on QNX ONNX Runtime 1.24.4, `lidar_guard` with synthetic LiDAR, guard → `tars_motor` stub stop tests, live phone feeds to the Pi, a 1500-point mapping benchmark. **No physical drive** has been sent to the wheels.
 
-**Mac only (our side, iteration 2 as built):** `tars_motor` 313/313 (guard gate, DL epoch, pivot-while-BLOCKED, pose), `goto` C unit 247/247 incl. ASan/UBSan, `nav` 84/84 + 1M-packet fuzz under ASan/UBSan, parity vs `mapping.py` 212/212, goto 2D sim 52/52, **scripted full-stack sim 27/27** (real `tars_motor_host` + `goto` + `tars_voice`/whisper; fake phone LDR1, fake YOLO, fake lidar_guard, fake phone speech: obstacle, occlusion → detour, moved object, STOP mid-route, visual-only, voice memory + recall), voice 149/149 (stop recall 1131/1131) and e2e 52/52, Uno 237/259/216/213, teleop 36/36. `detect` with ONNX Runtime on macOS only.
+**Mac only (our side, iteration 2 as built):** `tars_motor` 313/313 + guard gate 19/19 (DL epoch, limited pivot-while-BLOCKED, pose), `goto` C unit 247/247 incl. ASan/UBSan, `nav` 84/84 + 1M-packet fuzz under ASan/UBSan, parity vs `mapping.py` 212/212, goto 2D sim 52/52, **scripted full-stack sim 27/27** (real `tars_motor_host` + `goto` + `tars_voice`/whisper; fake phone LDR1, fake YOLO, fake lidar_guard, fake phone speech: obstacle, occlusion → detour, moved object, STOP mid-route, visual-only, voice memory + recall), voice 149/149 (stop recall 1131/1131) and e2e 52/52, Uno 237/259/216/213, teleop 36/36. `detect` with ONNX Runtime on macOS only.
 
 **Never run on the Pi/QNX/iPhone:** `goto`, `detect` (camapi never compiled), `tars_voice`, the object memory, `iter2-autonomy/goto/nav.c`, map-guided GOTO, the 5572 feed (no phone sends to it yet), the 5573 speech from voice. The blocker is still our `qcc` toolchain (Docker + SDP 8.0 in `~/qnx800`); Andrew builds with native QNX clang on the Pi, which may be the quicker route.
 
 **Open items**
 - Andrew's sign-off on the port move (§5).
 - Who sends LDR1 to 5572 on the robot (the phone directly, or Andrew's service teeing 5562).
-- The pivot-while-BLOCKED change in `tars_motor` (§3.4): agree it with Andrew.
+- The pivot-while-BLOCKED change in `tars_motor` (§3.4), now limited to 0.40 speed / 180°: agree it with Andrew, and measure the SM11 + phone-mount swing radius against the 0.35 m inflation.
 - Frame/yaw signs on the real phone mount (`NAV` shows the pose).
 - Phone-to-robot extrinsics, `arrive_h_frac` and `cam_height_mm` on the real mount.
 - Repo hygiene, to raise with Andrew, not blocking: ~90 MB of committed model blobs (`iter2-autonomy/edge-ai/models/*.onnx` 87 MB, `iter2-autonomy/iphone/Models/YOLOv3TinyFP16.mlmodel`) and `.idea/` are in history.
