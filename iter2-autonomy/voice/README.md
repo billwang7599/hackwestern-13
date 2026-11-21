@@ -45,8 +45,13 @@ timeout, `say_port = 0` = off). Failures are ignored.
 working at the same time. Tests: `make test-net` (25 checks). `build/stt_cli MODEL FILE.wav` (host only)
 prints just the transcript, for the laptop's `--laptop-stt`.
 
-Defaults: 30° and 300 mm. A manual move (`MOVE`/`TURN`) first sends `CANCEL` to the go-to
-controller, so its steering doesn't fight the move. A recognised command gets `BEEP 1`.
+Defaults: 30° and 300 mm. Before a manual move (`MOVE`/`TURN`) voice asks the go-to controller
+`STATUS`: if it's not `state=idle`, it sends `CANCEL` and waits up to 1.5 s for the `OK` (goto sends
+its `S` to `tars_motor` before replying), so its steering doesn't fight the move. An idle go-to gets no
+`CANCEL`, because goto answers every `CANCEL` with an `S` that could land after the move and abort it.
+Any go-to reply that misses `goto_reply_ms` drops and reopens the link, so a late reply is never read as
+the answer to the next line. A recognised command gets `BEEP 1`. Test: `make test-goto-link` (the real
+goto + `tars_motor`, including a goto stalled for 0.8 s).
 
 ## Quick start
 

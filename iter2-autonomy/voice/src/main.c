@@ -5,7 +5,9 @@
  *     -> lines to tars_motor (TCP 5555): S | MOVE | TURN | STATUS, + LED/BEEP
  *     -> "GOTO <object>" / "CANCEL" to the go-to controller (TCP 5570, iter2-autonomy/goto/)
  *   stop  = S to tars_motor FIRST, then CANCEL to the go-to controller
- *   move  = CANCEL to go-to, then MOVE/TURN to tars_motor (manual beats go-to)
+ *   move  = go-to STATUS; if it isn't idle, CANCEL and wait for its OK (goto's S goes
+ *           out before it replies), then MOVE/TURN to tars_motor (manual beats go-to).
+ *           An idle go-to gets no CANCEL: its S could land after the move and abort it.
  * Talk button (button_talk=1): a short press of the Uno button (STATUS
  * btn_teach= counter, polled every 250 ms) beeps once and arms listening
  * for wake_carry_ms with NO wake word needed. Best fix for a noisy room.
@@ -237,10 +239,15 @@ static int link_up(link_t *l)
     return 1;
 }
 
-/* Send one line, read one reply line into reply. Returns 0 on OK/ERR reply, -1 if no link. */
-static int link_cmd(link_t *l, const char *line, char *reply, int rlen)
+/* Send one line, read one reply line into reply, waiting up to wait_ms (<= 0: the link's
+ * reply_ms). Returns 0 on OK/ERR reply (or no reply on a reply_optional link), -1 if no link.
+ * No reply in time on a reply_optional link drops the link: the late reply would otherwise be
+ * read as the answer to the NEXT line (that desync made every later voice move get cut by
+ * goto's late S to tars_motor). */
+static int link_cmd_ms(link_t *l, const char *line, char *reply, int rlen, int wait_ms)
 {
     if (l->dry) { snprintf(reply, (size_t)rlen, "(dry)"); return 0; }
+    if (wait_ms <= 0) wait_ms = l->reply_ms;
     for (int attempt = 0; attempt < 2; attempt++) {
         if (!link_up(l)) {
             /* S / CANCEL are worth one immediate retry */
@@ -248,6 +255,8 @@ static int link_cmd(link_t *l, const char *line, char *reply, int rlen)
             snprintf(reply, (size_t)rlen, "(no link)");
             return -1;
         }
+        struct timeval tv = { wait_ms / 1000, (wait_ms % 1000) * 1000 };
+        setsockopt(l->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         char out[96];
         int n = snprintf(out, sizeof out, "%s\n", line);
         if (send(l->fd, out, (size_t)n, 0) != n) { link_drop(l, strerror(errno)); l->next_try = 0; continue; }
@@ -263,13 +272,23 @@ static int link_cmd(link_t *l, const char *line, char *reply, int rlen)
             if (ch == '\n') break;
             reply[o++] = ch;
         }
-        if (o == -2) { snprintf(reply, (size_t)rlen, "(sent, no reply)"); return 0; }
+        if (o == -2) {
+            link_drop(l, "no reply in time (reconnect, so a late reply can't answer the next line)");
+            l->next_try = 0;
+            snprintf(reply, (size_t)rlen, "(sent, no reply)");
+            return 0;
+        }
         if (o < 0) { l->next_try = 0; continue; }
         reply[o] = '\0';
         return 0;
     }
     snprintf(reply, (size_t)rlen, "(no link)");
     return -1;
+}
+
+static int link_cmd(link_t *l, const char *line, char *reply, int rlen)
+{
+    return link_cmd_ms(l, line, reply, rlen, 0);
 }
 
 /* ---- exact-move keepalive. tars_motor's 500 ms deadman aborts a MOVE/TURN
@@ -423,6 +442,37 @@ static void route(link_t *motor, link_t *go, const char *line)
     else link_send_log(motor, line);
 }
 
+/* Manual move (MOVE/TURN): cancel the go-to only if it's doing something. goto answers
+ * CANCEL with S to tars_motor even when idle, and an S that lands after our MOVE/TURN aborts
+ * it. So ask STATUS first: "state=idle" -> no CANCEL, no S. Busy, or no answer -> CANCEL and
+ * wait for its OK (goto sends the S before replying) for up to GOTO_CANCEL_WAIT_MS, so the S
+ * is already at tars_motor when the move goes out. tars_motor's S-hold covers only D, not
+ * MOVE/TURN. The stop path doesn't use this: S first, then CANCEL, as always. */
+#define GOTO_CANCEL_WAIT_MS 1500
+static void cancel_goto_for_move(link_t *go)
+{
+    char st[4096];                         /* goto's STATUS is long; read it whole */
+    long long t0 = now_ms();
+    if (!go->dry && link_cmd(go, "STATUS", st, sizeof st) == 0 &&
+        (!strncmp(st, "OK state=idle ", 14) || !strcmp(st, "OK state=idle"))) {
+        printf("[goto] go-to idle: no CANCEL before the move (%lld ms)\n", now_ms() - t0);
+        fflush(stdout);
+        return;
+    }
+    char reply[1024];
+    t0 = now_ms();
+    link_cmd_ms(go, "CANCEL", reply, sizeof reply, GOTO_CANCEL_WAIT_MS);
+    long long ms = now_ms() - t0;
+    printf("[%s] %-16s -> %s (%lld ms)%s\n", go->name, "CANCEL", reply, ms,
+           strncmp(reply, "OK", 2) && !go->dry ? "  (no OK: its S may still cut this move)" : "");
+    fflush(stdout);
+    char qr[1100], j[1300];
+    json_str(qr, sizeof qr, reply);
+    snprintf(j, sizeof j, "{\"type\":\"sent\",\"to\":\"%s\",\"line\":\"CANCEL\",\"reply\":%s,\"ms\":%lld}",
+             go->name, qr, ms);
+    ev_send(j);
+}
+
 static long long led_off_at;               /* act_lock: "LED off" due (after a reject) */
 static int g_led_ms = 1500;
 
@@ -459,7 +509,10 @@ static void act_decision(link_t *motor, link_t *go, const char *src, const char 
         ev_send(j);
     }
     if (d->action != INTENT_ACT_STOP)
-        for (int i = 0; i < d->n_lines; i++) route(motor, go, d->lines[i]);
+        for (int i = 0; i < d->n_lines; i++) {
+            if (!strcmp(d->lines[i], INTENT_GOTO_PREFIX "CANCEL")) cancel_goto_for_move(go);
+            else route(motor, go, d->lines[i]);
+        }
     if (d->action == INTENT_ACT_STOP) link_send_log(motor, "BEEP 1");
     /* only now (S and CANCEL already sent): tell the phone, urgent = cut any speech */
     if (d->action == INTENT_ACT_STOP) {
