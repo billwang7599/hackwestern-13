@@ -27,8 +27,7 @@ down what you see.
 
 ```sh
 git clone https://github.com/billwang7599/hackwestern-13.git
-cd hackwestern-13
-git checkout kothar/stepper-wheels      # or whatever branch the lead tells you
+cd hackwestern-13                       # everything is on main; no branch switch needed
 ```
 
 You need:
