@@ -177,3 +177,44 @@ stream, for the car plugin with the stub car), `BENCH_CAR_KIND` (`virtual` | `st
 The 2D panel (`world2d`) is a course editor: place boxes, walls, people and goto objects, drag,
 rotate (`[` `]`), delete, save/load layouts. A fixed **SIM** badge is always on the page. Room
 format, world control (5592) and world state (5593): `bench/world/README.md`.
+
+## Robot link, drive, status, scenarios, recorder
+
+**Run it against a stub stack** (no car, no phone):
+```sh
+make -C iter1-wasd/pi host && make -C iter2-autonomy/goto host
+iter1-wasd/pi/build/tars_motor_host -b stub -p 5555 -r 0 &
+iter2-autonomy/goto/build/goto_host -m 127.0.0.1:5555 -p 5570 -r 0 -M - -o iter2-autonomy/goto/objects.txt &
+python3 bench/bench.py            # http://127.0.0.1:8770
+# real Pi: python3 bench/bench.py --target pi --relay <pi-ip> --key <MISSION_KEY>
+```
+Tests: `python3 bench/tests/test_ui.py` (needs the host builds above + `make -C iter2-autonomy/mission host`; free ports).
+
+- **`plugins/robot.py`**: the only robot connection. sim/usb: direct TCP (`WHO bench`); pi:
+  `mission.py`'s `RelayLink` (MOTOR/GOTO/VOICE/WATCH). Replies are matched FIFO on OK/ERR lines
+  (tars_voice's JSON event lines go to `listen("voice", fn)`). `send(dest, line, data=b"",
+  timeout=None, src=)`: `data` is written right after the line (`AUDIO <n>` + n bytes of 16 kHz
+  PCM or WAV, as mission.py does; the relay's VOICE channel is a byte pipe, ≤ 1 MB up); the
+  `cmd` event carries `bytes: n`, never the payload. STATUS polled at 10 Hz (`status`), goto
+  STATUS ~3 Hz + WATCH EVENTs (`goto`). Polls and move keepalives are not `cmd` events.
+  Keepalive: STATUS doesn't feed tars_motor's watchdog, so while a MOVE/TURN **we** started runs,
+  the poller sends PING. Manual MOVE/TURN: CANCEL goto first **only if goto is busy** (goto answers
+  CANCEL with S, which would abort the move), then wait for that S to land.
+- **Drive**: hold W A S D / arrows → `POST /api/robot/keys` (teleop.py's `HoldDrive` on the
+  server, D at 20 Hz, S on release; the tab refreshes held keys every 100 ms and the server sends
+  S if it stops for 0.35 s). Tab hidden/blurred → release. Chart: commanded l/r, tars_motor
+  out_l/out_r, and the virtual car's `wl`/`wr` (topic `car`, m/s ÷ `dc_mm_s`) when present.
+- **Status**: every STATUS field grouped; changes flash; "STALE" after 1 s without STATUS.
+- **Scenarios** (`plugins/scenarios.py`, one decorated function each): link, move_1000, turn_90,
+  turn_-90, turn_slow, stop_latency, watchdog, stop_mid_move, wheel_direction, speedcal_move /
+  _spin / _slow (wheel_cal.py's flow, asks before saving), tip, bump, goto_trash. Mapped to
+  `docs/PI_TEST.md` §2b / Step 5 in the panel. `c.where` = `sim-car` (car truth flowing:
+  measures against truth), `stub` (only command/safety paths; tip/bump via the stub's `SIM`
+  lines, which tests tars_motor, not the firmware), `real` (measurements are prompts). What
+  can't run there SKIPs with the reason. STOP aborts a run; every run ends with `S`.
+  Car faults: `car` plugin's `control(msg)` / `send_control(msg)` if it has one, else UDP JSON
+  to the car control port (5591, or the plugin's `CONTROL_PORT`).
+- **Recorder**: every event (`bench.tap`) → `bench/recordings/*.jsonl` (gitignored), on from
+  start. Replay re-publishes with timing, data tagged `_replay: true`; **it never sends to the
+  robot** (only `bench.publish`; the test spies the wire), pauses the live status/goto publish,
+  isn't re-recorded, and shows a banner. Stop the sim first for clean replays of other parts' topics.
