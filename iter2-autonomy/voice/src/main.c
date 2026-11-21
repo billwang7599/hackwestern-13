@@ -53,8 +53,8 @@
 
 typedef struct {
     char input[256], model[256], host[128], save_dir[256], prompt[512];
-    char goto_host[128], say_host[128];
-    int say_port, say_ms;
+    char goto_host[128], say_host[128], net_host[64];
+    int say_port, say_ms, net_port;
     int port, goto_port, goto_reply_ms, threads, audio_ctx, require_wake, dry, led_ms, wake_carry_ms;
     int button_talk;
     vad_cfg_t vad;
@@ -87,6 +87,7 @@ static int set_kv(cfg_t *c, const char *k, const char *v)
     S("input", input) S("model", model) S("host", host) S("save_dir", save_dir) S("prompt", prompt)
     S("goto_host", goto_host) I("goto_port", goto_port) I("goto_reply_ms", goto_reply_ms)
     S("say_host", say_host) I("say_port", say_port) I("say_ms", say_ms)
+    S("net_host", net_host) I("net_port", net_port)
     I("wake_carry_ms", wake_carry_ms) I("button_talk", button_talk)
     I("port", port) I("threads", threads) I("audio_ctx", audio_ctx) I("require_wake", require_wake)
     I("dry", dry) I("led_ms", led_ms)
@@ -120,6 +121,71 @@ static int load_conf(cfg_t *c, const char *path)
     }
     fclose(f);
     return 0;
+}
+
+/* ------------------------------------------------------------------ threads
+ * The mic loop (main thread) and the network input (net_thread: laptop text / push-to-talk
+ * clips via the mission relay) share the links and the classifier.
+ *   act_lock: intent_decide + every link send + the [heard] log. Held for a few ms only, so
+ *             a typed "stop" never waits for whisper.
+ *   stt_lock: the whisper context (not thread safe). */
+static pthread_mutex_t act_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t stt_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* ---- events for watchers on the net port (one JSON object per line, best effort) */
+#define NET_MAX 4
+#define NET_AUDIO_MAX (15 * AUDIO_RATE * 2 + 4096)    /* 15 s of 16-bit mono + a WAV header */
+typedef struct {
+    int fd, watch, dead;
+    char line[1024];
+    size_t used;
+    unsigned char *audio;     /* AUDIO <n>: payload being received */
+    size_t audio_n, audio_got;
+} netc_t;
+static netc_t netc[NET_MAX];
+static pthread_mutex_t ev_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void json_str(char *out, size_t cap, const char *s)
+{
+    size_t o = 0;
+    if (cap < 3) { if (cap) out[0] = '\0'; return; }
+    out[o++] = '"';
+    for (; s && *s && o + 8 < cap; s++) {
+        unsigned char ch = (unsigned char)*s;
+        if (ch == '"' || ch == '\\') { out[o++] = '\\'; out[o++] = (char)ch; }
+        else if (ch < 0x20) o += (size_t)snprintf(out + o, cap - o, "\\u%04x", ch);
+        else out[o++] = (char)ch;
+    }
+    out[o++] = '"';
+    out[o] = '\0';
+}
+
+/* send one JSON line to every WATCH client; a client that can't take it whole is dropped
+ * (never blocks the mic loop or a stop) */
+static void ev_send(const char *json)
+{
+    char line[2200];
+    int n = snprintf(line, sizeof line, "%s\n", json);
+    if (n <= 0 || n >= (int)sizeof line) return;
+    pthread_mutex_lock(&ev_lock);
+    for (int i = 0; i < NET_MAX; i++) {
+        if (netc[i].fd < 0 || !netc[i].watch || netc[i].dead) continue;
+#ifdef MSG_NOSIGNAL
+        ssize_t s = send(netc[i].fd, line, (size_t)n, MSG_DONTWAIT | MSG_NOSIGNAL);
+#else
+        ssize_t s = send(netc[i].fd, line, (size_t)n, MSG_DONTWAIT);
+#endif
+        if (s != n) netc[i].dead = 1;
+    }
+    pthread_mutex_unlock(&ev_lock);
+}
+
+static void ev_text(const char *type, const char *key, const char *text)
+{
+    char q[1100], j[1200];
+    json_str(q, sizeof q, text);
+    snprintf(j, sizeof j, "{\"type\":\"%s\",\"%s\":%s}", type, key, q);
+    ev_send(j);
 }
 
 /* ------------------------------------------------------------------ tars_motor link */
@@ -261,9 +327,15 @@ static void link_send_log(link_t *l, const char *line)
     long long t0 = now_ms();
     link_cmd(l, line, reply, sizeof reply);
     if (!l->reply_optional) ka_arm(line, reply);
+    long long ms = now_ms() - t0;
     if (!strcmp(line, "STATUS")) fprintf(stderr, "[status] %s\n", reply);
-    else printf("[%s] %-16s -> %s (%lld ms)\n", l->name, line, reply, now_ms() - t0);
+    else printf("[%s] %-16s -> %s (%lld ms)\n", l->name, line, reply, ms);
     fflush(stdout);
+    char ql[200], qr[1100], j[1400];
+    json_str(ql, sizeof ql, line);
+    json_str(qr, sizeof qr, reply);
+    snprintf(j, sizeof j, "{\"type\":\"sent\",\"to\":\"%s\",\"line\":%s,\"reply\":%s,\"ms\":%lld}", l->name, ql, qr, ms);
+    ev_send(j);
 }
 
 /* ---- speech to the phone (TCP 5573, "SAY <text>"): the robot has no speaker. Best effort:
@@ -312,6 +384,7 @@ static void say_phone(const char *text)
     char line[320];
     snprintf(line, sizeof line, "SAY %.300s", text ? text : "");
     for (char *p = line; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
+    ev_text("say", "text", line + 4);
     say_line(line);
 }
 
@@ -331,6 +404,7 @@ static void memory_say(link_t *motor, link_t *go)
     text = text ? text + 1 : "";
     printf("[memory] %s\n", text);
     fflush(stdout);
+    ev_text("memory", "text", text);
     if (k > 0) {
         snprintf(line, sizeof line, "BEEP %d", k < 4 ? k : 4);
         link_send_log(motor, line);
@@ -347,6 +421,316 @@ static void route(link_t *motor, link_t *go, const char *line)
     if (!strcmp(line, INTENT_GOTO_PREFIX "MEMORY SAY")) memory_say(motor, go);
     else if (!strncmp(line, INTENT_GOTO_PREFIX, pl)) link_send_log(go, line + pl);
     else link_send_log(motor, line);
+}
+
+static long long led_off_at;               /* act_lock: "LED off" due (after a reject) */
+static int g_led_ms = 1500;
+
+/* Log one decision and carry it out: the same path for the mic and the net input.
+ * where = "at=1.20s len=0.80s stt=212ms" (mic) or "src=net-text stt=0ms" (net).
+ * Caller holds act_lock. Order is the decision's: S first, then CANCEL, then the rest. */
+static void act_decision(link_t *motor, link_t *go, const char *src, const char *where,
+                         const char *text, long long stt_ms, const intent_decision_t *d)
+{
+    static const char *act[] = { "ignore", "stop", "command", "reject" };
+    printf("[heard] \"%s\" %s -> %s %s %.2f (%s)", text, where, act[d->action], d->intent,
+           d->prob, d->why ? d->why : "");
+    for (int i = 0; i < d->n_lines; i++) printf("%s%s", i ? " | " : ": ", d->lines[i]);
+    printf("\n");
+    fflush(stdout);
+    if (d->action == INTENT_ACT_STOP) {                 /* stop: act before telling anyone */
+        for (int i = 0; i < d->n_lines; i++) route(motor, go, d->lines[i]);
+    }
+    {
+        char qt[1100], qi[64], qw[64], ls[700], j[2100];
+        json_str(qt, sizeof qt, text);
+        json_str(qi, sizeof qi, d->intent);
+        json_str(qw, sizeof qw, d->why ? d->why : "");
+        size_t o = (size_t)snprintf(ls, sizeof ls, "[");
+        for (int i = 0; i < d->n_lines && o < sizeof ls - 80; i++) {
+            char q[80];
+            json_str(q, sizeof q, d->lines[i]);
+            o += (size_t)snprintf(ls + o, sizeof ls - o, "%s%s", i ? "," : "", q);
+        }
+        snprintf(ls + o, sizeof ls - o, "]");
+        snprintf(j, sizeof j, "{\"type\":\"heard\",\"src\":\"%s\",\"text\":%s,\"action\":\"%s\",\"intent\":%s,"
+                 "\"prob\":%.3f,\"why\":%s,\"lines\":%s,\"stt_ms\":%lld}",
+                 src, qt, act[d->action], qi, d->prob, qw, ls, stt_ms);
+        ev_send(j);
+    }
+    if (d->action != INTENT_ACT_STOP)
+        for (int i = 0; i < d->n_lines; i++) route(motor, go, d->lines[i]);
+    if (d->action == INTENT_ACT_STOP) link_send_log(motor, "BEEP 1");
+    /* only now (S and CANCEL already sent): tell the phone, urgent = cut any speech */
+    if (d->action == INTENT_ACT_STOP) {
+        ev_text("say", "text", "Stopping.");
+        say_line("{\"type\":\"say\",\"text\":\"Stopping.\",\"priority\":\"urgent\"}");
+    }
+    if (d->action == INTENT_ACT_REJECT) led_off_at = now_ms() + g_led_ms;
+}
+
+/* ------------------------------------------------------------------ net input
+ * TCP net_host:net_port (default 127.0.0.1:5574; the laptop reaches it through the mission
+ * relay, iter2-autonomy/mission/). One command per line:
+ *   HEAR <text>     a transcript (typed, or speech-to-text done on the laptop): the same
+ *                   intent_decide() as the mic, stop words first. No wake word needed
+ *                   (it's push-to-talk). -> "OK heard <action> <intent> <prob>"
+ *   AUDIO <bytes>   then <bytes> of 16 kHz mono s16le PCM, or a WAV file (16 kHz mono 16-bit),
+ *                   <= 15 s: whisper + the same path. -> "OK heard <action> <intent> <prob> <text>"
+ *   WATCH           this connection also gets the event lines (JSON): heard / sent / memory / say
+ *   PING            -> "OK PONG"
+ * The mic keeps working at the same time. */
+typedef struct { int lfd; link_t *motor, *go; stt_t *stt; } net_ctx_t;
+
+static void net_reply(netc_t *c, const char *s)
+{
+    size_t n = strlen(s);
+    pthread_mutex_lock(&ev_lock);
+#ifdef MSG_NOSIGNAL
+    if (send(c->fd, s, n, MSG_DONTWAIT | MSG_NOSIGNAL) != (ssize_t)n) c->dead = 1;
+#else
+    if (send(c->fd, s, n, MSG_DONTWAIT) != (ssize_t)n) c->dead = 1;
+#endif
+    pthread_mutex_unlock(&ev_lock);
+}
+
+/* reply on a raw fd (audio jobs reply on their own dup of the client fd) */
+static void fd_reply(int fd, const char *s)
+{
+#ifdef MSG_NOSIGNAL
+    send(fd, s, strlen(s), MSG_DONTWAIT | MSG_NOSIGNAL);
+#else
+    send(fd, s, strlen(s), MSG_DONTWAIT);
+#endif
+}
+
+static void net_act(net_ctx_t *x, int fd, const char *src, const char *text, long long stt_ms)
+{
+    intent_decision_t d;
+    char where[64], reply[700];
+    static const char *act[] = { "ignore", "stop", "command", "reject" };
+    snprintf(where, sizeof where, "src=%s stt=%lldms", src, stt_ms);
+    pthread_mutex_lock(&act_lock);
+    intent_decide(text, 0, &d);
+    act_decision(x->motor, x->go, src, where, text, stt_ms, &d);
+    pthread_mutex_unlock(&act_lock);
+    snprintf(reply, sizeof reply, "OK heard %s %s %.2f %s\n", act[d.action], d.intent, d.prob, text);
+    for (char *p = reply; p[1]; p++) if (*p == '\n' || *p == '\r') *p = ' ';
+    fd_reply(fd, reply);
+}
+
+/* WAV (16 kHz mono 16-bit PCM) or raw s16le -> samples (points into buf). -1 = bad format. */
+static int pcm_of(const unsigned char *b, size_t n, const int16_t **pcm, int *ns)
+{
+    if (n >= 12 && !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WAVE", 4)) {
+        size_t o = 12;
+        int fmt_ok = 0;
+        while (o + 8 <= n) {
+            size_t len = (size_t)b[o + 4] | (size_t)b[o + 5] << 8 | (size_t)b[o + 6] << 16 | (size_t)b[o + 7] << 24;
+            if (!memcmp(b + o, "fmt ", 4) && len >= 16 && o + 8 + 16 <= n) {
+                const unsigned char *f = b + o + 8;
+                unsigned fmt = f[0] | f[1] << 8, ch = f[2] | f[3] << 8, bits = f[14] | f[15] << 8;
+                unsigned rate = f[4] | f[5] << 8 | f[6] << 16 | (unsigned)f[7] << 24;
+                fmt_ok = fmt == 1 && ch == 1 && bits == 16 && rate == AUDIO_RATE;
+                if (!fmt_ok) return -1;
+            } else if (!memcmp(b + o, "data", 4)) {
+                if (!fmt_ok) return -1;
+                if (len > n - o - 8) len = n - o - 8;
+                *pcm = (const int16_t *)(const void *)(b + o + 8);
+                *ns = (int)(len / 2);
+                return 0;
+            }
+            o += 8 + len + (len & 1);
+        }
+        return -1;
+    }
+    *pcm = (const int16_t *)(const void *)b;
+    *ns = (int)(n / 2);
+    return 0;
+}
+
+/* A push-to-talk clip is transcribed on its own thread, one at a time, so the net thread
+ * (typed text, a typed "stop") never waits for whisper. */
+typedef struct { net_ctx_t *x; int fd; unsigned char *buf; size_t n; } audio_job_t;
+static pthread_mutex_t job_lock = PTHREAD_MUTEX_INITIALIZER;
+static int job_busy;
+
+static void *audio_job(void *arg)
+{
+    audio_job_t *j = arg;
+    const int16_t *pcm;
+    int ns;
+    char text[512];
+    if (pcm_of(j->buf, j->n, &pcm, &ns) < 0) fd_reply(j->fd, "ERR audio must be 16 kHz mono 16-bit\n");
+    else if (ns < AUDIO_RATE / 10) fd_reply(j->fd, "ERR audio shorter than 0.1 s\n");
+    else {
+        int16_t *copy = malloc((size_t)ns * sizeof *copy);   /* aligned copy for whisper */
+        if (!copy) fd_reply(j->fd, "ERR out of memory\n");
+        else {
+            memcpy(copy, pcm, (size_t)ns * sizeof *copy);
+            long long t0 = now_ms();
+            pthread_mutex_lock(&stt_lock);
+            int r = stt_run(j->x->stt, copy, ns, text, sizeof text);
+            pthread_mutex_unlock(&stt_lock);
+            free(copy);
+            if (r != 0) fd_reply(j->fd, "ERR whisper failed\n");
+            else if (running) net_act(j->x, j->fd, "net-audio", text, now_ms() - t0);
+        }
+    }
+    close(j->fd);
+    free(j->buf);
+    free(j);
+    pthread_mutex_lock(&job_lock);
+    job_busy = 0;
+    pthread_mutex_unlock(&job_lock);
+    return NULL;
+}
+
+/* the whole clip arrived: hand it to a job thread (takes ownership of c->audio) */
+static void net_audio(net_ctx_t *x, netc_t *c)
+{
+    pthread_mutex_lock(&job_lock);
+    int busy = job_busy;
+    if (!busy) job_busy = 1;
+    pthread_mutex_unlock(&job_lock);
+    if (busy) { net_reply(c, "ERR busy: still transcribing the last clip\n"); return; }
+    audio_job_t *j = malloc(sizeof *j);
+    int fd = j ? dup(c->fd) : -1;
+    pthread_t t;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (fd >= 0) {
+        *j = (audio_job_t){ x, fd, c->audio, c->audio_got };
+        if (pthread_create(&t, &at, audio_job, j) == 0) { c->audio = NULL; pthread_attr_destroy(&at); return; }
+        close(fd);
+    }
+    pthread_attr_destroy(&at);
+    free(j);
+    pthread_mutex_lock(&job_lock);
+    job_busy = 0;
+    pthread_mutex_unlock(&job_lock);
+    net_reply(c, "ERR can't start the transcription\n");
+}
+
+static void net_close(netc_t *c)
+{
+    pthread_mutex_lock(&ev_lock);
+    if (c->fd >= 0) close(c->fd);
+    c->fd = -1;
+    c->watch = c->dead = 0;
+    c->used = 0;
+    free(c->audio);
+    c->audio = NULL;
+    c->audio_n = c->audio_got = 0;
+    pthread_mutex_unlock(&ev_lock);
+}
+
+/* one complete line from a net client (no newline) */
+static void net_line(net_ctx_t *x, netc_t *c, char *line)
+{
+    size_t l = strlen(line);
+    if (l && line[l - 1] == '\r') line[--l] = '\0';
+    if (!strncasecmp(line, "HEAR ", 5)) {
+        const char *t = line + 5;
+        while (*t == ' ') t++;
+        if (!*t) net_reply(c, "ERR usage: HEAR <text>\n");
+        else net_act(x, c->fd, "net-text", t, 0);
+    } else if (!strncasecmp(line, "AUDIO ", 6)) {
+        long n = atol(line + 6);
+        if (n <= 0 || n > NET_AUDIO_MAX) { net_reply(c, "ERR usage: AUDIO <bytes> (1..15 s of 16 kHz mono 16-bit)\n"); return; }
+        c->audio = malloc((size_t)n);
+        if (!c->audio) { net_reply(c, "ERR out of memory\n"); return; }
+        c->audio_n = (size_t)n;
+        c->audio_got = 0;
+    } else if (!strcasecmp(line, "WATCH")) {
+        pthread_mutex_lock(&ev_lock);
+        c->watch = 1;
+        pthread_mutex_unlock(&ev_lock);
+        net_reply(c, "OK watch\n");
+    } else if (!strcasecmp(line, "PING")) {
+        net_reply(c, "OK PONG\n");
+    } else if (l) {
+        net_reply(c, "ERR unknown command (HEAR <text> | AUDIO <bytes> | WATCH | PING)\n");
+    }
+}
+
+static void *net_thread(void *arg)
+{
+    net_ctx_t *x = arg;
+    while (running) {
+        struct pollfd p[1 + NET_MAX];
+        int map[1 + NET_MAX], n = 0;
+        p[n].fd = x->lfd; p[n].events = POLLIN; map[n++] = -1;
+        for (int i = 0; i < NET_MAX; i++) {
+            if (netc[i].fd >= 0 && netc[i].dead) net_close(&netc[i]);
+            if (netc[i].fd >= 0) { p[n].fd = netc[i].fd; p[n].events = POLLIN; map[n++] = i; }
+        }
+        if (poll(p, (nfds_t)n, 200) <= 0) continue;
+        for (int k = 0; k < n; k++) {
+            if (!(p[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            if (map[k] < 0) {
+                int fd = accept(x->lfd, NULL, NULL);
+                if (fd < 0) continue;
+                int slot = -1;
+                for (int i = 0; i < NET_MAX && slot < 0; i++) if (netc[i].fd < 0) slot = i;
+                if (slot < 0) { send(fd, "ERR busy\n", 9, MSG_DONTWAIT); close(fd); continue; }
+                int one = 1;
+                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+#ifdef SO_NOSIGPIPE
+                setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+                pthread_mutex_lock(&ev_lock);
+                netc[slot].fd = fd;
+                netc[slot].watch = netc[slot].dead = 0;
+                netc[slot].used = 0;
+                pthread_mutex_unlock(&ev_lock);
+                continue;
+            }
+            netc_t *c = &netc[map[k]];
+            unsigned char buf[8192];
+            ssize_t r = recv(c->fd, buf, sizeof buf, 0);
+            if (r <= 0) { net_close(c); continue; }
+            size_t o = 0;
+            while (o < (size_t)r && c->fd >= 0 && !c->dead) {
+                if (c->audio) {                          /* AUDIO payload */
+                    size_t take = c->audio_n - c->audio_got;
+                    if (take > (size_t)r - o) take = (size_t)r - o;
+                    memcpy(c->audio + c->audio_got, buf + o, take);
+                    c->audio_got += take;
+                    o += take;
+                    if (c->audio_got == c->audio_n) {
+                        net_audio(x, c);
+                        free(c->audio);
+                        c->audio = NULL;
+                        c->audio_n = c->audio_got = 0;
+                    }
+                    continue;
+                }
+                char ch = (char)buf[o++];
+                if (ch == '\n') { c->line[c->used] = '\0'; c->used = 0; net_line(x, c, c->line); continue; }
+                if (c->used < sizeof c->line - 1) c->line[c->used++] = ch;
+                else { net_reply(c, "ERR line too long\n"); c->dead = 1; }
+            }
+        }
+    }
+    for (int i = 0; i < NET_MAX; i++) net_close(&netc[i]);
+    return NULL;
+}
+
+static int net_listen(const char *host, int port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short)port);
+    if (inet_pton(AF_INET, host, &a.sin_addr) != 1 || bind(fd, (struct sockaddr *)&a, sizeof a) < 0 ||
+        listen(fd, 4) < 0) { close(fd); return -1; }
+    return fd;
 }
 
 /* ------------------------------------------------------------------ main */
@@ -374,7 +758,8 @@ int main(int argc, char **argv)
     snprintf(c.host, sizeof c.host, "127.0.0.1");
     snprintf(c.goto_host, sizeof c.goto_host, "127.0.0.1");
     c.goto_port = 5570; c.goto_reply_ms = 300;
-    snprintf(c.say_host, sizeof c.say_host, "127.0.0.1"); c.say_port = 5573; c.say_ms = 150; c.wake_carry_ms = 4000; c.button_talk = 1;
+    snprintf(c.say_host, sizeof c.say_host, "127.0.0.1"); c.say_port = 5573; c.say_ms = 150;
+    snprintf(c.net_host, sizeof c.net_host, "127.0.0.1"); c.net_port = 5574; c.wake_carry_ms = 4000; c.button_talk = 1;
     snprintf(c.prompt, sizeof c.prompt, "%s", DEFAULT_PROMPT);
     c.port = 5555; c.threads = 2; c.audio_ctx = 0; c.require_wake = 1; c.led_ms = 1500;
     vad_defaults(&c.vad);
@@ -427,10 +812,24 @@ int main(int argc, char **argv)
     link_t kalink = { -1, 0, c.host, "motor-keepalive", c.port, c.dry, 1000, 0 };
     pthread_t ka_tid;
     int ka_started = !c.dry && pthread_create(&ka_tid, NULL, ka_thread, &kalink) == 0;
+    g_led_ms = c.led_ms;
+    for (int i = 0; i < NET_MAX; i++) netc[i].fd = -1;
+    net_ctx_t nctx = { -1, &link, &golink, stt };
+    pthread_t net_tid;
+    int net_started = 0;
+    if (c.net_port > 0) {
+        nctx.lfd = net_listen(c.net_host, c.net_port);
+        if (nctx.lfd < 0) fprintf(stderr, "[voice] net input %s:%d: can't listen (%s); mic only\n",
+                                  c.net_host, c.net_port, strerror(errno));
+        else {
+            net_started = pthread_create(&net_tid, NULL, net_thread, &nctx) == 0;
+            fprintf(stderr, "[voice] net input on %s:%d (HEAR <text> | AUDIO <bytes> | WATCH)\n", c.net_host, c.net_port);
+        }
+    }
 
     int16_t frame[VAD_FRAME];
     int fill = 0, nseg = 0;
-    long long led_off_at = 0, samples = 0, last_ping = 0;
+    long long samples = 0, last_ping = 0;
     long long wake_until = -1;             /* sample count until which a bare "TARS" arms the next segment */
     long long talk_until_ms = 0, last_btn_poll = 0;   /* talk button: wall clock */
     int btn_seen = -1;
@@ -459,9 +858,13 @@ int main(int argc, char **argv)
             }
             char text[512];
             long long ts = now_ms();
-            if (stt_run(stt, seg, segn, text, sizeof text) != 0) { fprintf(stderr, "[voice] whisper failed\n"); continue; }
+            pthread_mutex_lock(&stt_lock);
+            int sr = stt_run(stt, seg, segn, text, sizeof text);
+            pthread_mutex_unlock(&stt_lock);
+            if (sr != 0) { fprintf(stderr, "[voice] whisper failed\n"); continue; }
             long long stt_ms = now_ms() - ts;
             intent_decision_t d;
+            pthread_mutex_lock(&act_lock);
             int armed = (wake_until >= 0 && samples - segn <= wake_until) || now_ms() < talk_until_ms;
             intent_decide(text, c.require_wake && !armed, &d);
             if (d.action == INTENT_ACT_IGNORE && d.wake && d.why && !strcmp(d.why, "empty")) {
@@ -471,21 +874,15 @@ int main(int argc, char **argv)
                 wake_until = -1;
                 talk_until_ms = 0;
             }
-            static const char *act[] = { "ignore", "stop", "command", "reject" };
-            printf("[heard] \"%s\" at=%.2fs len=%.2fs stt=%lldms -> %s %s %.2f (%s)", text,
-                   (double)samples / AUDIO_RATE, (double)segn / AUDIO_RATE, stt_ms, act[d.action], d.intent,
-                   d.prob, d.why ? d.why : "");
-            for (int i = 0; i < d.n_lines; i++) printf("%s%s", i ? " | " : ": ", d.lines[i]);
-            printf("\n");
-            fflush(stdout);
-            for (int i = 0; i < d.n_lines; i++) route(&link, &golink, d.lines[i]);
-            if (d.action == INTENT_ACT_STOP) link_send_log(&link, "BEEP 1");
-            /* only now (S and CANCEL already sent): tell the phone, urgent = cut any speech */
-            if (d.action == INTENT_ACT_STOP) say_line("{\"type\":\"say\",\"text\":\"Stopping.\",\"priority\":\"urgent\"}");
-            if (d.action == INTENT_ACT_REJECT) led_off_at = now_ms() + c.led_ms;
+            char where[96];
+            snprintf(where, sizeof where, "at=%.2fs len=%.2fs stt=%lldms", (double)samples / AUDIO_RATE,
+                     (double)segn / AUDIO_RATE, stt_ms);
+            act_decision(&link, &golink, "mic", where, text, stt_ms, &d);
+            pthread_mutex_unlock(&act_lock);
         }
         if (done) break;
     housekeeping:
+        pthread_mutex_lock(&act_lock);
         if (led_off_at && now_ms() >= led_off_at) { link_send_log(&link, "LED off"); led_off_at = 0; }
         if (c.button_talk && !c.dry && link.fd >= 0 && now_ms() - last_btn_poll >= 250) {
             last_btn_poll = now_ms();
@@ -509,9 +906,20 @@ int main(int argc, char **argv)
             if (link.fd < 0) link_up(&link);
             if (golink.fd < 0) link_up(&golink);
         }
+        pthread_mutex_unlock(&act_lock);
     }
     running = 0;
     if (ka_started) pthread_join(ka_tid, NULL);
+    if (net_started) pthread_join(net_tid, NULL);
+    for (int i = 0; i < 1000; i++) {                 /* a clip job still uses whisper: let it finish */
+        pthread_mutex_lock(&job_lock);
+        int busy = job_busy;
+        pthread_mutex_unlock(&job_lock);
+        if (!busy) break;
+        struct timespec ts = { 0, 10 * 1000000L };
+        nanosleep(&ts, NULL);
+    }
+    if (nctx.lfd >= 0) close(nctx.lfd);
     if (led_off_at) link_send_log(&link, "LED off");
     fprintf(stderr, "[voice] %d segments, %.1f s of audio, noise floor %.1f dBFS\n", nseg,
             (double)samples / AUDIO_RATE, vad_noise_dbfs(&vad));

@@ -1,8 +1,9 @@
 # TARS voice: whisper.cpp speech -> intent classifier -> tars_motor.
 #
-#   make host          Mac/Linux build: build/tars_voice_host, build/intent_cli
+#   make host          Mac/Linux build: build/tars_voice_host, build/intent_cli, build/stt_cli (laptop)
 #   make test          intent tests + end-to-end (say -> WAV -> whisper -> fake tars_motor)
 #   make test-intent   only the classifier tests (no whisper / model needed)
+#   make test-net      HEAR / AUDIO / WATCH network input (mission control)
 #   make               QNX aarch64 build (in docker/run.sh): build/qnx/tars_voice, build/qnx/mic_test
 #   make mic_test      QNX mic check only (no whisper; small, build this first)
 #   make deploy PI_HOST=qnxuser@<pi-ip>
@@ -31,7 +32,7 @@ ifeq ($(UNAME),Darwin)
 HOST_LIBS := -framework Accelerate -framework Foundation
 endif
 
-.PHONY: all host test test-intent e2e qnx mic_test deploy clean fetch model
+.PHONY: all host test test-intent test-net e2e qnx mic_test deploy clean fetch model
 
 all: qnx
 
@@ -59,7 +60,12 @@ build/tars_voice_host: $(SRCS) src/*.h intent/*.h $(WLIBS_H)
 	cc $(CFLAGS) $(INC) -c intent/intent.c -o build/intent.o
 	c++ -o $@ build/main.o build/audio.o build/vad.o build/stt.o build/intent.o $(WLIBS_H) $(HOST_LIBS) -lpthread -lm
 
-host: build/intent_cli build/tars_voice_host
+# laptop-only: transcript of one WAV (mission control --laptop-stt), no classifier
+build/stt_cli: src/stt_cli.c src/stt.c src/audio.c src/*.h $(WLIBS_H)
+	cc $(CFLAGS) $(INC) -c src/stt_cli.c -o build/stt_cli.o
+	c++ -o $@ build/stt_cli.o build/audio.o build/stt.o $(WLIBS_H) $(HOST_LIBS) -lpthread -lm
+
+host: build/intent_cli build/tars_voice_host build/stt_cli
 
 test-intent: build/intent_cli
 	python3 tests/test_intent.py
@@ -68,7 +74,12 @@ e2e: host
 	@test -f models/ggml-tiny.en-q5_1.bin || ./get_model.sh
 	python3 tests/test_e2e.py
 
-test: test-intent e2e
+# network input (HEAR / AUDIO / WATCH, mission control) against the real tars_motor stub
+test-net: host
+	@test -f models/ggml-tiny.en-q5_1.bin || ./get_model.sh
+	python3 tests/test_net.py
+
+test: test-intent e2e test-net
 
 # ---------------------------------------------------------------- QNX (aarch64)
 ifneq ($(shell command -v qcc 2>/dev/null),)
@@ -112,4 +123,4 @@ deploy:
 	    scp models/ggml-tiny.en-q5_1.bin $(PI_HOST):$(PI_DIR)/models/
 
 clean:
-	rm -rf build/main.o build/audio.o build/vad.o build/stt.o build/intent.o build/tars_voice_host build/intent_cli build/qnx
+	rm -rf build/main.o build/audio.o build/vad.o build/stt.o build/intent.o build/stt_cli.o build/tars_voice_host build/intent_cli build/stt_cli build/qnx
