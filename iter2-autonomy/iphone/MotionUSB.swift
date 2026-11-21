@@ -276,12 +276,18 @@ final class PiStatusServer: ObservableObject {
             ["id": "3", "label": "backpack", "position": [1.0, 0.4, 5.0], "confidence": 0.71, "age_s": 42.0, "currently_seen": false]]
         var grid = Array(repeating: Character("0"), count: 200 * 200)
         for z in 85..<120 { for x in 85..<115 { grid[z * 200 + x] = (z == 115 && x > 100) ? "2" : "1" } }
+        // Plain loops (same points, same order) instead of nested flatMap
+        // closures inside the [String: Any] literal: those exceeded the Swift
+        // type-checker's limit and broke every Debug build (Xcode 26.1.1).
+        var points3d: [[Double]] = []
+        for z in 1...5 { for x in -10...10 { for y in 0...5 { points3d.append([Double(x) * 0.12, Double(y) * 0.16, Double(z)]) } } }
+        var estimated3d: [[Double]] = []
+        for x in -10...10 { for y in 0...10 { estimated3d.append([Double(x) * 0.15, Double(y) * 0.15, 4.5]) } }
         surroundings = ["session": "fixture", "live": true, "tracking_live": true, "tracking": "normal", "floor_ready": true,
                         "floor_assumed": false, "floor_y": 0.0, "pose": [0.0, 0.8, 0.0, 0.0],
                         "size": 200, "resolution": 0.1, "origin": [-10.0, -10.0], "grid": String(grid),
                         "objects": fixtureObjects, "frames": 1188, "voxels": 5400, "selected": "1",
-                        "points3d": (1...5).flatMap { z in (-10...10).flatMap { x in (0...5).map { y in [Double(x)*0.12, Double(y)*0.16, Double(z)] } } },
-                        "estimated3d": (-10...10).flatMap { x in (0...10).map { y in [Double(x)*0.15, Double(y)*0.15, 4.5] } }]
+                        "points3d": points3d, "estimated3d": estimated3d]
         let args = ProcessInfo.processInfo.arguments
         let inferredStop = args.contains("--inferred-stop")
         let blocked = args.contains("--blocked") || inferredStop, clear = args.contains("--clear"), unknown = args.contains("--unknown")
