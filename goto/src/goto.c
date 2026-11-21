@@ -18,8 +18,21 @@
  *                                    lines (searching/remembered/not_there/arrived/lost/
  *                                    cancelled/failed:../scanning/scanned ..)
  *              PING                  "OK PONG"
+ *              RECALL <object words> "go back to where the X was": any remembered instance
+ *                                    (even stale/gone/old) over the map, YOLO confirms
+ *              NAV                   "OK pose=src,x,z,yaw free=.. occ=.. version=.. feed_age=.."
  *   detect   one JSON object per line/datagram, see goto/DETECTIONS.md:
  *              UDP 127.0.0.1:5571, or TCP 127.0.0.1:5571 (line stream), or stdin (-i)
+ *              goto/detect (YOLO-World) is the ONLY detector that feeds goto.
+ *   nav      LDR1 packets (pi/edge-ai/README.md "5562" format, with or without the 4-byte
+ *              length prefix): UDP 127.0.0.1:5572 one per datagram, or TCP 127.0.0.1:5572
+ *              length-prefixed stream. Builds the nav.c grid and the ARKit pose. Not 5562:
+ *              that one belongs to lidar_guard. No feed = visual-only GOTO, unchanged.
+ *
+ * Pose rule: ARKit pose from the 5572 feed while tracking is OK and the last such packet
+ * is < nav_pose_fresh_s old; else tars_motor's dead-reckoned STATUS pose= carried into the
+ * ARKit frame from the last good moment (nav_note_dr / nav_get_pose in nav.h).
+ * Approach drives are leased: "DL <guard_epoch> l r" when tars_motor reports guard_epoch=.
  *
  * Safety: S always goes out first; D is resent at tick_hz (>= 5 Hz) while
  * driving so tars_motor's 500 ms watchdog never trips mid-approach, and if
@@ -57,6 +70,7 @@
 #include <unistd.h>
 
 #include "goto_core.h"
+#include "nav.h"
 
 #define MAX_CTL 8
 #define MAX_DETC 4
@@ -72,6 +86,10 @@ static goto_sm sm;
 static goto_mem mem;
 static char mem_path[300];
 static double next_pose_poll, last_mem_save;
+static nav_t *nav;
+static double nav_last_pose = -1, nav_last_pkt = -1;   /* last tracking-OK pose packet, any packet */
+static int nav_ark_live;
+static long nav_pkts, nav_bad;
 
 /* ------------------------------------------------------------------ time */
 static double now_s(void)
@@ -253,7 +271,10 @@ static void run_actions(void)
             goto_act *a = &acts[i];
             char line[96], reply[256];
             switch (a->kind) {
-            case ACT_DRIVE: snprintf(line, sizeof line, "D %.3f %.3f", a->a, a->b); break;
+            case ACT_DRIVE:
+                if (a->text[0]) snprintf(line, sizeof line, "DL %s %.3f %.3f", a->text, a->a, a->b);
+                else snprintf(line, sizeof line, "D %.3f %.3f", a->a, a->b);
+                break;
             case ACT_STOP:  snprintf(line, sizeof line, "S"); break;
             case ACT_TURN:  snprintf(line, sizeof line, "TURN %.1f %.2f", a->a, a->b > 0 && a->b <= 1 ? a->b : 1.0); break;
             case ACT_MOVE:  snprintf(line, sizeof line, "MOVE %.0f %.2f", a->a, a->b > 0 && a->b <= 1 ? a->b : 1.0); break;
@@ -274,6 +295,17 @@ static void run_actions(void)
             }
             if (!strncmp(reply, "ERR", 3)) {
                 /* BEEP/LED unsupported is harmless; motion refused is not */
+                if (a->kind == ACT_DRIVE && strstr(reply, "guard")) {
+                    /* leased drive refused (guard denied since the leg began, or denying now):
+                     * the leg is over; the state machine decides (docked / look again) */
+                    logf_("motor refused '%s': %s", line, reply);
+                    goto_sm_drive_refused(&sm, now_s(), reply + 4);
+                    continue;
+                }
+                if ((a->kind == ACT_TURN || a->kind == ACT_MOVE) && strstr(reply, "guard")) {
+                    logf_("motor refused '%s': %s", line, reply);
+                    if (goto_sm_move_refused(&sm, now_s(), reply + 4)) continue;
+                }
                 if (a->kind == ACT_DRIVE || a->kind == ACT_TURN || a->kind == ACT_MOVE) {
                     logf_("motor refused '%s': %s", line, reply);
                     char why[48];
@@ -319,6 +351,9 @@ static void apply_pose(const char *reply)
      * and the pose is up to one poll old: don't remember things during either */
     int moving = !strcmp(mv, "running") || fabs(l - r) > 0.1;
     goto_sm_pose(&sm, now_s(), (unsigned)strtoul(e, NULL, 10), x, y, h, moving);
+    /* tars_motor: x forward, y right, hdg + = clockwise (mm, deg). nav DR frame: forward =
+     * (sin yaw, cos yaw), + yaw = left, metres -> x_dr = -y, z_dr = x, yaw = -hdg. */
+    if (nav) nav_note_dr(nav, (float)(-y / 1000.0), (float)(x / 1000.0), (float)(-h * M_PI / 180.0));
 }
 
 static void poll_status(void)
@@ -333,6 +368,13 @@ static void poll_status(void)
     }
     if (strncmp(reply, "OK", 2)) return;
     apply_pose(reply);
+    if (kv(reply, "guard_epoch", v, sizeof v) == 0) {
+        char gp[8] = "1";
+        kv(reply, "guard_permit", gp, sizeof gp);
+        goto_sm_guard(&sm, now_s(), atoi(gp) != 0, strtoull(v, NULL, 10));
+        run_actions();
+        if (!goto_sm_busy(&sm)) return;
+    }
     if (stops_baseline >= 0 && kv(reply, "stops", v, sizeof v) == 0 && atol(v) > stops_baseline) {
         logf_("stop from another client (stops=%s) -> cancel", v);
         stops_baseline = atol(v);
@@ -400,6 +442,28 @@ static void handle_ctl(conn *c, char *line)
         snprintf(reply, sizeof reply, "OK goto %s\n", objs.obj[t]);
         send_str(c->fd, reply);
         run_actions();
+    } else if (!strcasecmp(cmd, "RECALL")) {
+        int t = goto_objects_resolve(&objs, arg);
+        if (t < 0) {
+            snprintf(reply, sizeof reply, "ERR unknown object '%s' (try OBJECTS)\n", arg);
+            send_str(c->fd, reply);
+            return;
+        }
+        if (!motor_ready(c)) return;
+        goto_sm_recall(&sm, now_s(), t);
+        logf_("RECALL '%s' -> %s", arg, objs.obj[t]);
+        snprintf(reply, sizeof reply, "%s recall %s\n", goto_sm_busy(&sm) ? "OK" : "ERR not remembered:", objs.obj[t]);
+        send_str(c->fd, reply);
+        run_actions();
+    } else if (!strcasecmp(cmd, "NAV")) {
+        float x = 0, z = 0, yaw = 0;
+        int src = nav ? nav_get_pose(nav, &x, &z, &yaw) : NAV_POSE_NONE;
+        static const char *sn[] = {"none", "arkit", "dr", "stale"};
+        snprintf(reply, sizeof reply, "OK pose=%s,%.2f,%.2f,%.1f free=%d occ=%d version=%u packets=%ld bad=%ld feed_age=%.2f\n",
+                 sn[src & 3], x, z, yaw * 180 / M_PI, nav ? nav_count(nav, NAV_FREE) : 0,
+                 nav ? nav_count(nav, NAV_OCC) : 0, nav ? nav_version(nav) : 0, nav_pkts, nav_bad,
+                 nav_last_pkt < 0 ? -1.0 : (now_s() - nav_last_pkt) / time_scale);
+        send_str(c->fd, reply);
     } else if (!strcasecmp(cmd, "SCAN")) {
         if (!motor_ready(c)) return;
         goto_sm_scan(&sm, now_s());
@@ -474,6 +538,54 @@ static void handle_det_line(conn *c, char *line)
     run_actions();
 }
 
+/* -------------------------------------------------------------- nav feed */
+#define NAV_PKT_MAX (4 + NAV_LDR1_MAX_BODY)
+typedef struct { int fd; unsigned char buf[NAV_PKT_MAX]; size_t used; } navconn;
+static navconn navc[2];
+
+static void nav_packet(const unsigned char *b, size_t len)
+{
+    size_t off = len >= 8 && !memcmp(b + 4, "LDR1", 4) ? 4 : 0;   /* optional length prefix */
+    int r = nav_ingest_ldr1(nav, b, len);
+    nav_pkts++;
+    if (r < 0) { nav_bad++; return; }
+    nav_last_pkt = now_s();
+    if (len >= off + 20) {
+        unsigned flags = (unsigned)b[off + 16] << 24 | (unsigned)b[off + 17] << 16 | (unsigned)b[off + 18] << 8 | b[off + 19];
+        if ((flags & (NAV_LDR1_TRACKING | NAV_LDR1_HEADING)) == (NAV_LDR1_TRACKING | NAV_LDR1_HEADING)) {
+            nav_last_pose = now_s();
+            nav_ark_live = 1;
+        }
+    }
+}
+
+/* TCP: 4-byte big-endian length + LDR1 body, back to back */
+static int navconn_read(navconn *c)
+{
+    ssize_t n = recv(c->fd, c->buf + c->used, sizeof c->buf - c->used, 0);
+    if (n <= 0) return -1;
+    c->used += (size_t)n;
+    for (;;) {
+        if (c->used < 4) return 0;
+        size_t body = (size_t)c->buf[0] << 24 | (size_t)c->buf[1] << 16 | (size_t)c->buf[2] << 8 | c->buf[3];
+        if (body < NAV_LDR1_HEADER || body > NAV_LDR1_MAX_BODY) { nav_bad++; return -1; }  /* lost framing */
+        if (c->used < 4 + body) return 0;
+        nav_packet(c->buf, 4 + body);
+        memmove(c->buf, c->buf + 4 + body, c->used - 4 - body);
+        c->used -= 4 + body;
+    }
+}
+
+/* tracking-OK pose packets stopped: ARKit counts as lost, dead reckoning carries on */
+static void nav_check_fresh(void)
+{
+    if (!nav_ark_live || (now_s() - nav_last_pose) / time_scale <= cfg.nav_pose_fresh_s) return;
+    float x, z, yaw;
+    if (nav_get_pose(nav, &x, &z, &yaw) == NAV_POSE_ARKIT) nav_set_pose(nav, x, z, yaw, 0);
+    nav_ark_live = 0;
+    logf_("nav: no ARKit pose for %.1f s -> dead reckoning", cfg.nav_pose_fresh_s);
+}
+
 /* ----------------------------------------------------------------- setup */
 static int listen_tcp(int port, int loopback_only)
 {
@@ -530,17 +642,18 @@ static void usage(const char *argv0)
             "  -u  detections port, UDP + TCP on 127.0.0.1 (default 5571)\n"
             "  -i  also read detection lines from stdin (detect | goto -i)\n"
             "  -M  object memory file (default memory_path in goto.conf, next to it; - = RAM only)\n"
+            "  -n  nav feed port, LDR1 over UDP + TCP on 127.0.0.1 (default 5572, 0 = off)\n"
             "  -r  SCHED_RR priority (default 20, below tars_motor's 30; 0 = don't)\n"
             "  -T  run the clock T times faster (simulator tests only)\n", argv0);
 }
 
 int main(int argc, char **argv)
 {
-    int ctl_port = 5570, det_port = 5571, use_stdin = 0, rt_prio = 20;
+    int ctl_port = 5570, det_port = 5571, nav_port = 5572, use_stdin = 0, rt_prio = 20;
     const char *cfg_path = NULL, *obj_path = NULL;
     int opt;
     const char *mem_opt = NULL;
-    while ((opt = getopt(argc, argv, "m:p:u:ic:o:M:r:vT:h")) != -1) {
+    while ((opt = getopt(argc, argv, "m:p:u:n:ic:o:M:r:vT:h")) != -1) {
         switch (opt) {
         case 'm': {
             char *colon = strrchr(optarg, ':');
@@ -550,6 +663,7 @@ int main(int argc, char **argv)
         }
         case 'p': ctl_port = atoi(optarg); break;
         case 'u': det_port = atoi(optarg); break;
+        case 'n': nav_port = atoi(optarg); break;
         case 'i': use_stdin = 1; break;
         case 'c': cfg_path = optarg; break;
         case 'o': obj_path = optarg; break;
@@ -573,6 +687,9 @@ int main(int argc, char **argv)
     goto_objects_defaults(&objs);
     if (obj_path && goto_objects_load(&objs, obj_path) < 0) { fprintf(stderr, "goto: can't read %s\n", obj_path); return 1; }
     goto_sm_init(&sm, &cfg, &objs);
+    nav = nav_new();
+    if (!nav) { fprintf(stderr, "goto: out of memory for the nav grid\n"); return 1; }
+    goto_sm_set_nav(&sm, nav);
 
     /* memory file: -M, else memory_path; relative paths sit next to goto.conf */
     const char *mp = mem_opt ? mem_opt : cfg.memory_path;
@@ -605,23 +722,38 @@ int main(int argc, char **argv)
         fprintf(stderr, "goto: can't open ports ctl=%d det=%d (%s)\n", ctl_port, det_port, strerror(errno));
         return 1;
     }
+    int lnav = -1, unav = -1;
+    if (nav_port > 0) {
+        lnav = listen_tcp(nav_port, 1);
+        unav = bind_udp(nav_port);
+        if (lnav < 0 || unav < 0) {           /* not fatal: GOTO still works visually without a map */
+            fprintf(stderr, "goto: can't open nav port %d (%s): no map, visual GOTO only\n", nav_port, strerror(errno));
+            if (lnav >= 0) close(lnav);
+            if (unav >= 0) close(unav);
+            lnav = unav = -1;
+        }
+    }
+    for (int i = 0; i < 2; i++) navc[i].fd = -1;
     for (int i = 0; i < MAX_CTL; i++) ctl[i].fd = -1;
     for (int i = 0; i < MAX_DETC; i++) detc[i].fd = -1;
     conn in = { .fd = use_stdin ? STDIN_FILENO : -1 };
 
-    fprintf(stderr, "goto: motor=%s:%d ctl=%d det=udp+tcp:%d%s objects=%d hfov=%.0f rt=%d T=%.1f\n",
-            motor_host, motor_port, ctl_port, det_port, use_stdin ? "+stdin" : "", objs.n_obj,
+    fprintf(stderr, "goto: motor=%s:%d ctl=%d det=udp+tcp:%d%s nav=%d objects=%d hfov=%.0f rt=%d T=%.1f\n",
+            motor_host, motor_port, ctl_port, det_port, use_stdin ? "+stdin" : "", nav_port, objs.n_obj,
             cfg.hfov_deg, rt_prio, time_scale);
     motor_connect();
 
     while (running) {
-        struct pollfd p[4 + MAX_CTL + MAX_DETC];
-        int map[4 + MAX_CTL + MAX_DETC];   /* 0 lctl 1 ldet 2 udet 3 stdin, 10+i ctl, 20+i detc */
+        struct pollfd p[8 + MAX_CTL + MAX_DETC];
+        int map[8 + MAX_CTL + MAX_DETC];   /* 0 lctl 1 ldet 2 udet 3 stdin 4 lnav 5 unav 6+i navc, 10+i ctl, 20+i detc */
         int n = 0;
         p[n] = (struct pollfd){lctl, POLLIN, 0}; map[n++] = 0;
         p[n] = (struct pollfd){ldet, POLLIN, 0}; map[n++] = 1;
         p[n] = (struct pollfd){udet, POLLIN, 0}; map[n++] = 2;
         if (in.fd >= 0) { p[n] = (struct pollfd){in.fd, POLLIN, 0}; map[n++] = 3; }
+        if (lnav >= 0) { p[n] = (struct pollfd){lnav, POLLIN, 0}; map[n++] = 4; }
+        if (unav >= 0) { p[n] = (struct pollfd){unav, POLLIN, 0}; map[n++] = 5; }
+        for (int i = 0; i < 2; i++) if (navc[i].fd >= 0) { p[n] = (struct pollfd){navc[i].fd, POLLIN, 0}; map[n++] = 6 + i; }
         for (int i = 0; i < MAX_CTL; i++) if (ctl[i].fd >= 0) { p[n] = (struct pollfd){ctl[i].fd, POLLIN, 0}; map[n++] = 10 + i; }
         for (int i = 0; i < MAX_DETC; i++) if (detc[i].fd >= 0) { p[n] = (struct pollfd){detc[i].fd, POLLIN, 0}; map[n++] = 20 + i; }
 
@@ -653,6 +785,22 @@ int main(int argc, char **argv)
                 in.used = strlen(start);
                 memmove(in.buf, start, in.used + 1);
                 if (in.used >= sizeof in.buf - 1) in.used = 0;
+            } else if (m == 4) {
+                int fd = accept(lnav, NULL, NULL);
+                if (fd < 0) continue;
+                int i = navc[0].fd < 0 ? 0 : navc[1].fd < 0 ? 1 : -1;
+                if (i < 0) { close(fd); continue; }
+                navc[i].fd = fd;
+                navc[i].used = 0;
+                if (verbose) logf_("nav feed connected (tcp)");
+            } else if (m == 5) {
+                static unsigned char nb[NAV_PKT_MAX + 1];
+                ssize_t len = recv(unav, nb, sizeof nb, 0);
+                if (len > 0 && (size_t)len <= NAV_PKT_MAX) nav_packet(nb, (size_t)len);
+                else if (len > 0) nav_bad++;
+            } else if (m >= 6 && m < 8) {
+                navconn *c = &navc[m - 6];
+                if (navconn_read(c) < 0) { close(c->fd); c->fd = -1; }
             } else if (m >= 20) {
                 conn *c = &detc[m - 20];
                 if (conn_read(c, handle_det_line) < 0) { close(c->fd); c->fd = -1; }
@@ -664,6 +812,7 @@ int main(int argc, char **argv)
 
         /* periodic: tick (D refresh, lost/timeouts) and STATUS polling */
         double t = now_s();
+        if (nav) nav_check_fresh();
         goto_sm_tick(&sm, t);
         run_actions();
         if (goto_sm_busy(&sm) && t >= next_status_poll) {
