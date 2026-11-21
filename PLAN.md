@@ -1,0 +1,80 @@
+# PLAN: TARS rover, Hack Western 13
+
+Shared plan for humans and coding agents. **Read [AGENTS.md](AGENTS.md) before changing code.**
+Update the status table when you finish something.
+
+## The robot
+
+A two-wheel rover that runs **fully on the robot**. No laptop and no internet at runtime.
+
+```
+ USB mic ─┐            ┌─ USB webcam (C270)
+          ▼            ▼
+[Pi 5 · QNX 8.0]  "the brain"
+   voice/   speech → text → intent classifier → command
+   vision/  MediaPipe hand gestures · follow mode · teach-a-gesture
+   yolo     object detection (person / cup / ball …), teammate's code
+        │  each one is a TCP client of ↓  (port 5555, text lines)
+   pi/  tars_motor (C, SCHED_RR): watchdog, tip-over lock, Uno reconnect
+        │  USB serial 115200
+        ▼
+[Arduino Uno]  "the muscles"   uno/tars/tars.ino
+   2× 28BYJ-48 wheel steppers (ULN2003) · ramps · exact M <mm> / R <deg>
+   button D2 · LED D13 · buzzer D12 · accelerometer tip/bump
+```
+
+The Pi decides. The Uno only moves motors and reports events. Nothing on the Pi touches a motor pin.
+
+## CPU budget (Pi 5, 4 cores): pick by mode
+
+Running YOLO, MediaPipe and speech together at full rate won't fit. These are estimates, not measured:
+
+| Mode | MediaPipe Hands | YOLO (nano, small input) | Speech |
+|---|---|---|---|
+| **Gesture** (default) | every frame | off, or ~2 Hz | idle until voice activity |
+| **Follow / seek object** | ~3 Hz, only to catch ✋ stop | every frame | idle until voice activity |
+| **Teach** | every frame | off | off |
+
+Speech uses `threads=2` and only runs on a ≤3 s segment after voice activity detection, so it's nearly free between commands.
+Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") or the Uno button.
+
+## Speech: model and classifier
+
+- **Speech-to-text model:** [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with **`ggml-tiny.en-q5_1.bin`** (~31 MB, English only).
+  It's pure C/C++, so it builds with QNX `qcc`. It's downloaded by `voice/get_model.sh` and not committed.
+  - Fallback if accuracy is poor: `ggml-base.en-q5_1.bin` (~57 MB, roughly 2–3× slower).
+  - The prompt is biased toward the command vocabulary ("TARS, forward, back, left, right, stop, …").
+- **Wake word:** "TARS …" by default, so crowd noise doesn't trigger moves.
+- **Text → control classifier** (`voice/intent/`): whisper's output is noisy ("for word", "turn lift"), so text goes through a small trained classifier instead of exact string matching.
+  1. **Safety pass first:** anything fuzzy-matching *stop / halt / freeze / no* sends `S` immediately. The classifier can't override it.
+  2. **Intent classifier:** character n-gram features with a linear model (logistic regression). It's trained in Python on generated paraphrases plus simulated whisper mistakes, and the weights are exported to a C header, so it runs in microseconds on QNX with no ML runtime.
+     Intents: `forward, back, left, right, turn_around, stop, follow, gestures, teach, spin, status, unknown`.
+  3. **Slots:** a number parser ("ninety", "half a metre", "two steps") turns the intent into `TURN ±deg` or `MOVE ±mm`.
+  4. **Confidence cutoff:** below the threshold the robot does nothing, then `LED no` + `BEEP 3`. A recognised command gets `BEEP 1`.
+
+## Status
+
+| Area | Branch | State |
+|---|---|---|
+| Uno stepper firmware, `tars_motor`, WASD teleop, `docs/PI_TEST.md` | `stepper-wheels` (GitHub) | Mac tests pass. **Not run on hardware yet.** |
+| MediaPipe gestures + follow mode | `stepper-wheels` (GitHub) | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
+| Teach-a-gesture on the spot | `kothar/learn-gesture` (local only) | Mac tests pass. Not merged. |
+| Speech + intent classifier | `kothar/voice-stt` (local, in progress) | Being built. |
+| YOLO | teammate's code, not in repo | Needs to be added as a `tars_motor` client. |
+| Goalie / balancer experiments | `goalie/`, `balancer/` | Parked. Don't touch. |
+
+## Hardware checks that gate everything (do these first)
+
+1. Upload `uno/tars/tars.ino`, then type `M 100` in Serial Monitor. Both wheels should turn.
+2. Build and deploy `tars_motor` (needs Docker + SDP 8.0 in `~/qnx800`). Find the Uno's serial device name.
+3. WASD drive from a laptop (`laptop/teleop.py`).
+4. On the Pi: `apk search mediapipe`, and run the camera test.
+5. On the Pi: `voice/qnx/mic_test` to record 3 s from the USB mic and play it back. **If this fails, voice is off.**
+6. Measure fps with YOLO + MediaPipe running together, then fill in the CPU table above with real numbers.
+
+## Next up
+
+- Merge `learn-gesture` into `stepper-wheels` and switch gesture turns to `TURN ±30` / `MOVE ±mm`.
+- Merge `voice-stt` once its tests pass.
+- Wire YOLO in as a client: send `D l r` steering for follow-object, and `S` when the target is lost.
+- Demo script: wake → "TARS, follow me" → ✋ stop → teach a pose → "TARS, turn around".
