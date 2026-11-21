@@ -422,6 +422,12 @@ class Stack:
         self.goto = Goto(self.motor.port, mem_text, nav)
         self.sens = Sensors(world, self.motor, self.guard_port, self.goto.nav, self.goto.det)
         time.sleep(1.0)                          # guard CLEAR, phone map, first pose polls
+        # ... and tars_motor has actually applied a CLEAR from the fake guard. On a loaded Mac
+        # its control loop could still be on the initial guard_reason=disabled after 1 s, and the
+        # first TURN was refused ("ERR disabled" -> failed:disabled before anything happened).
+        end = time.monotonic() + 10
+        while "guard_reason=clear" not in self.motor.cmd("STATUS") and time.monotonic() < end:
+            time.sleep(0.05)
 
     def close(self):
         self.sens.close()
