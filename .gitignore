@@ -56,6 +56,8 @@ iter2-autonomy/voice/models/*.bin
 iter2-autonomy/voice/models/*.part
 iter2-autonomy/voice/third_party/whisper.cpp/
 iter2-autonomy/voice/tests/clips/
+# mission control (relay build, test scratch)
+iter2-autonomy/mission/build/
 # goto
 iter2-autonomy/goto/build/
 iter2-autonomy/goto/models/
