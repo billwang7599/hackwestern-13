@@ -302,6 +302,20 @@ static int whole_number(char **toks, int n, int i, double *val, int *jout)
     return 0;
 }
 
+/* "the left one", "that one", "which ones": a pronoun, not the number 1 ("tars the left one"
+ * gave TURN -1). A determiner right before, or two before ("the big one"), unless a unit or
+ * a tens/hundred word follows ("the chair one meter", "do the one eighty"). */
+static const char *const DETS[] = { "the", "that", "this", "these", "those", "which", "other",
+    "another", "each", "every", "any", NULL };
+
+static int pronoun_one(char **toks, int n, int i)
+{
+    if (strcmp(toks[i], "one") && strcmp(toks[i], "ones") && strcmp(toks[i], "won")) return 0;
+    if (i + 1 < n && (unit_of(toks[i + 1]) || lookup(TENS, toks[i + 1]) >= 0 || !strcmp(toks[i + 1], "hundred")))
+        return 0;
+    return (i >= 1 && in_list(toks[i - 1], DETS)) || (i >= 2 && in_list(toks[i - 2], DETS));
+}
+
 /* Numbers -> "num" / "n180" / "n360" before featurising (see intent.py feature_tokens). */
 static int feature_tokens(char **toks, int n, char **out, int max)
 {
@@ -310,7 +324,7 @@ static int feature_tokens(char **toks, int n, char **out, int max)
     while (i < n && o < max) {
         double v;
         int j;
-        if (strcmp(toks[i], "oh") && strcmp(toks[i], "zero") && whole_number(toks, n, i, &v, &j)) {
+        if (strcmp(toks[i], "oh") && strcmp(toks[i], "zero") && !pronoun_one(toks, n, i) && whole_number(toks, n, i, &v, &j)) {
             out[o++] = v == 180 ? N180 : v == 360 ? N360 : NUM;
             i = j;
         } else {
@@ -330,6 +344,7 @@ int intent_parse_amount(char **toks, int n, double *out_val, const char **out_un
         }
         int have = 0, j = i;
         double val = 0;
+        if (pronoun_one(toks, n, i)) continue;
         if (whole_number(toks, n, i, &val, &j)) have = 1;
         else if (!strcmp(t, "half") || !strcmp(t, "quarter")) {
             val = t[0] == 'h' ? 0.5 : 0.25; j = i + 1; have = 1;
@@ -389,6 +404,7 @@ static int turn_deg(int have, double val, const char *unit)
     if (!have) return DEFAULT_TURN_DEG;
     if (unit && !strcmp(unit, "small")) return SMALL_DEG;
     if (unit && strcmp(unit, "deg")) return DEFAULT_TURN_DEG;
+    if (!unit && val >= 1 && val < 10) return DEFAULT_TURN_DEG;   /* "turn left one/two": not degrees */
     if (val < 1) val *= 360;
     long d = pyround(val);
     if (d <= 0) return DEFAULT_TURN_DEG;

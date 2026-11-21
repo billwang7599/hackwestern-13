@@ -156,7 +156,36 @@ def test_regressions(m: I.Model) -> list[str]:
     for t, want in still.items():
         d = I.decide(m, t)
         check(first_line(d) == want, f"not bare {t!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f})")
-    return texts + bare + list(still)
+    # 2. "one" as a pronoun is not 1 degree/step ("tars the left one" used to give TURN -1), and a
+    #    bare turn amount under 10 with no unit isn't degrees either; real numbers still parse
+    print("regressions: number words")
+    for t in ("tars the left one", "tars the right one", "tars that one", "tars which one",
+              "tars the big one", "tars go to the left one"):
+        d = I.decide(m, t)
+        check(not any(l.startswith("TURN") and abs(int(l.split()[1])) < 10 for l in d.lines)
+              and not any(l.startswith("MOVE") and abs(int(l.split()[1])) < 100 for l in d.lines),
+              f"pronoun one is not an amount {t!r}: {d.lines}")
+    check(I.parse_amount(I.normalize("the left one")) == (None, None), "parse_amount: the left one")
+    check(I.parse_amount(I.normalize("that big one")) == (None, None), "parse_amount: that big one")
+    check(I.feature_tokens(I.normalize("the left one")) == ["the", "left", "one"], "features keep pronoun one")
+    check(I.feature_tokens(I.normalize("turn left one")) == ["turn", "left", "num"], "features: bare one is num")
+    nums = {
+        "tars turn left one": "TURN -30", "tars right one": "TURN 30", "tars turn right two": "TURN 30",
+        "tars turn left five": "TURN -30", "tars turn left five degrees": "TURN -5",
+        "tars turn right one degree": "TURN 1", "tars turn right ten": "TURN 10",
+        "tars turn right ninety": "TURN 90", "tars turn right one eighty": "TURN 180",
+        "tars do the one eighty": "TURN 180", "tars turn left half a turn": "TURN -180",
+        "tars turn to the left": "TURN -30", "tars turn right to degrees": "TURN 2",
+        "tars go forward for a bit": "MOVE 100", "tars go forward for two meters": "MOVE 1000",
+        "tars go forward a meter": "MOVE 1000", "tars go forward one": "MOVE 100",
+        "tars go forward one step": "MOVE 100", "tars go back one meter": "MOVE -1000",
+        "tars go forward to steps": "MOVE 200", "tars go forward for steps": "MOVE 400",
+        "tars move forward the one meter": "MOVE 1000", "tars turn left a bit": "TURN -15",
+    }
+    for t, want in nums.items():
+        d = I.decide(m, t)
+        check(first_line(d) == want, f"number {t!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f})")
+    return texts + bare + list(still) + list(nums)
 
 
 # ------------------------------------------------------------------ 2. held-out accuracy

@@ -238,6 +238,20 @@ def whole_number(toks: list[str], i: int) -> tuple[float, int] | None:
     return None
 
 
+# "the left one", "that one", "which ones": a pronoun, not the number 1 ("tars the left one" gave
+# TURN -1). A determiner right before, or two before ("the big one"), unless a unit or a
+# tens/hundred word follows ("the chair one meter", "do the one eighty").
+DETS = {"the", "that", "this", "these", "those", "which", "other", "another", "each", "every", "any"}
+
+
+def pronoun_one(toks: list[str], i: int) -> bool:
+    if toks[i] not in ("one", "ones", "won"):
+        return False
+    if i + 1 < len(toks) and (toks[i + 1] in UNITS or toks[i + 1] in TENS or toks[i + 1] == "hundred"):
+        return False
+    return (i >= 1 and toks[i - 1] in DETS) or (i >= 2 and toks[i - 2] in DETS)
+
+
 def feature_tokens(toks: list[str]) -> list[str]:
     """Numbers -> one placeholder before featurising, so "turn right one hundred
     and eighty degrees" looks like "turn right n180 degrees" to the classifier
@@ -245,7 +259,7 @@ def feature_tokens(toks: list[str]) -> list[str]:
     because they mean turn-around / spin; "oh"/"zero" are left alone."""
     out, i, n = [], 0, len(toks)
     while i < n:
-        w = whole_number(toks, i) if toks[i] not in ("oh", "zero") else None
+        w = whole_number(toks, i) if toks[i] not in ("oh", "zero") and not pronoun_one(toks, i) else None
         if w is None:
             out.append(toks[i])
             i += 1
@@ -266,6 +280,9 @@ def parse_amount(toks: list[str]) -> tuple[float | None, str | None]:
         if t in ("bit", "little", "tad", "smidge") and i > 0 and toks[i - 1] in ("a", "little"):
             return 1.0, "small"
         val, j = None, i
+        if pronoun_one(toks, i):
+            i += 1
+            continue
         w = whole_number(toks, i)
         if w is not None:
             val, j = w
@@ -327,6 +344,8 @@ def turn_deg(val: float | None, unit: str | None) -> int:
     if unit == "small":
         return SMALL_DEG
     if unit not in (None, "deg"):
+        return DEFAULT_TURN_DEG
+    if unit is None and 1 <= val < 10:  # "turn left one/two": not plausibly degrees
         return DEFAULT_TURN_DEG
     if val < 1:                        # "half" -> half a turn, "quarter" -> 90
         val = val * 360
