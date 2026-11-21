@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
+from control import log_input
 from keyboard_drive import KeyboardDrive
 
 class HeadlessKeyboard:
@@ -52,6 +53,7 @@ class HeadlessKeyboard:
             self.events += 1
             keys = [name for bit, name in ((1,'W'),(2,'S'),(4,'A'),(8,'D'),(16,'STOP'),(32,'F')) if mask & bit]
             self.last_keys = keys or ['RELEASE']
+            log_input("keyboard", {"keys": self.last_keys, "permitted": bool(permitted)})
             if keys: self.last_press = keys
             self.last_event = now
         if mask == 0:

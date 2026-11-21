@@ -1,10 +1,32 @@
 """USB return channel and leased command bridge to the independently guarded motor server."""
 import json
 import math
+import os
+import sys
+import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 import queue
 import socket
 import threading
 import time
+
+
+_operator_log = logging.getLogger('tars.operator')
+_operator_log.propagate = False
+if sys.platform.startswith('qnx') or os.getenv('TARS_ACTION_DIR'):
+    handler = RotatingFileHandler(Path(os.getenv('TARS_ACTION_DIR', Path.home())) /
+                                  'tars-input-actions.log', maxBytes=8*1024*1024,
+                                  backupCount=1, delay=True)
+    formatter = logging.Formatter('%(asctime)s.%(msecs)03dZ input %(message)s', '%Y-%m-%dT%H:%M:%S')
+    formatter.converter = time.gmtime
+    handler.setFormatter(formatter)
+    _operator_log.addHandler(handler)
+    _operator_log.setLevel(logging.INFO)
+
+
+def log_input(source, value):
+    _operator_log.info('%s %s', source, json.dumps(value, separators=(',', ':')))
 
 
 def parse_command(message):
@@ -67,6 +89,7 @@ class ControlLink:
                             line, buf = buf.split(b'\n', 1)
                             command = parse_command(json.loads(line))
                             # A full queue closes this connection and clears drive intent.
+                            log_input("phone", command)
                             self.commands.put_nowait(command)
             except (OSError, ValueError, queue.Full):
                 pass
@@ -152,7 +175,9 @@ class MotorLink:
                     guard_age_ms=int(values.get('guard_age_ms', '-1')),
                     guard_epoch=int(values.get('guard_epoch', '0')),
                     arduino_ready_count=int(values.get('ready', '0')),
-                    move=values.get('move', 'unknown'))
+                    move=values.get('move', 'unknown'), move_kind=values.get('move_kind', '-'),
+                    move_id=int(values.get('move_id', '0')), move_req=float(values.get('move_req', '0')),
+                    move_why=values.get('move_why', '-'))
 
     def snapshot(self):
         with self.lock:
@@ -180,6 +205,7 @@ class MotorLink:
                             if not response.endswith(b'\n'):
                                 raise ValueError('Missing/oversized motor response')
                             return response.decode('ascii').strip()
+                        last_motion_state = None
                         exchange('S')
                         initial = self.parse_status(exchange('STATUS'))
                         if not initial['guard_enabled']:
@@ -202,6 +228,10 @@ class MotorLink:
                                 if not reply.startswith('OK'):
                                     self.denied_generation = generation
                             status = self.parse_status(exchange('STATUS'))
+                            state = tuple(status[k] for k in ('inhibited', 'reason', 'move_id', 'move', 'move_why'))
+                            if state != last_motion_state:
+                                log_input('motor_status', dict(zip(('inhibited', 'reason', 'move_id', 'move', 'move_why'), state)))
+                                last_motion_state = state
                             if not status['guard_enabled']:
                                 # This integration never drives an unguarded server.
                                 exchange('S')

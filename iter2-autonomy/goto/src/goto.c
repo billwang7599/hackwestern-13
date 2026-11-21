@@ -70,6 +70,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../../../shared/action_log.h"
 #include "goto_core.h"
 #include "nav.h"
 
@@ -255,6 +256,7 @@ static void broadcast_event(const char *text)
     snprintf(line, sizeof line, "EVENT %s\n", text);
     for (int i = 0; i < MAX_CTL; i++)
         if (ctl[i].fd >= 0 && ctl[i].watch) send_str(ctl[i].fd, line);
+    action_log("nav", 0, "event", text);
     logf_("event: %s", text);
 }
 
@@ -286,6 +288,7 @@ static void run_actions(void)
             }
             if (a->kind != ACT_DRIVE && verbose) logf_("-> %s", line);
             int r = motor_cmd(line, reply, sizeof reply);
+            action_log("nav", 0, line, r < 0 ? "no motor reply" : reply);
             if (a->kind == ACT_STOP) {
                 if (r == 0 && stops_baseline >= 0) stops_baseline++;
                 continue;

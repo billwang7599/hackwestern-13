@@ -38,7 +38,7 @@ REPO     := $(abspath ../..)
 all: build/goto
 
 ifneq ($(shell command -v qcc 2>/dev/null),)
-build/goto: $(GOTO_SRC) src/*.h | build
+build/goto: $(GOTO_SRC) src/*.h ../../shared/action_log.h | build
 	$(QCC) $(CFLAGS) -o $@ $(GOTO_SRC) -lsocket -lm
 	@file $@ 2>/dev/null || true
 
@@ -48,7 +48,7 @@ build/detect: $(DET_SRC) $(DET_HDR) | build
 	    -o $@ $(DET_SRC) -L$(ORT_ROOT)/lib -lonnxruntime -lcamapi -lsocket -lm
 	@file $@ 2>/dev/null || true
 else
-build/goto: $(GOTO_SRC) src/*.h
+build/goto: $(GOTO_SRC) src/*.h ../../shared/action_log.h
 	@echo ">> qcc not found, building inside the QNX container"
 	"$(REPO)/docker/run.sh" make -C "$(CURDIR)" build/goto
 build/detect: $(DET_SRC) $(DET_HDR)

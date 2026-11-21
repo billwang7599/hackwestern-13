@@ -31,11 +31,11 @@ REPO     := $(abspath ../..)
 all: build/$(BIN)
 
 ifneq ($(shell command -v qcc 2>/dev/null),)
-build/$(BIN): $(SRCS) src/*.h | build
+build/$(BIN): $(SRCS) src/*.h ../../shared/action_log.h | build
 	$(QCC) $(CFLAGS) -o $@ $(SRCS) $(QNX_LIBS)
 	@file $@ 2>/dev/null || true
 else
-build/$(BIN): $(SRCS) src/*.h
+build/$(BIN): $(SRCS) src/*.h ../../shared/action_log.h
 	@echo ">> qcc not found, building inside the QNX container"
 	$(REPO)/docker/run.sh make -C $(CURDIR) build/$(BIN)
 endif

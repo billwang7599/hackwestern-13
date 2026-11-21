@@ -114,6 +114,7 @@
 
 #include "gesture.h"
 #include "motor.h"
+#include "../../../shared/action_log.h"
 #include "obstacle.h"
 #include "wheels.h"
 #include "guard_gate.h"
@@ -1081,6 +1082,12 @@ static void *client_thread(void *arg)
             if (nl > start && nl[-1] == '\r') nl[-1] = '\0';
             handle_line(cid, start, reply, sizeof reply);
             if (reply[0]) send(fd, reply, strlen(reply), 0);
+            char verb[24] = "";
+            sscanf(start, "%23s", verb);
+            if (*verb && strcasecmp(verb,"STATUS") && strcasecmp(verb,"PING") &&
+                strcasecmp(verb,"VIS") && strcasecmp(verb,"GESTURES") && strcasecmp(verb,"WHO") &&
+                (strcasecmp(verb,"POSE") || strstr(start," ") != NULL))
+                action_log("motor", cid, start, reply);
             start = nl + 1;
         }
         used = strlen(start);
@@ -1099,6 +1106,7 @@ static void *client_thread(void *arg)
     if (hold_cid == cid) hold_cid = 0;
     nc = --n_clients;
     pthread_mutex_unlock(&lock);
+    if (mine || abort_mv) action_log("motor", cid, "stop", "client disconnected");
     if (mine || abort_mv)
         fprintf(stderr, "[net] client %d disconnected -> stop (%d left)\n", cid, nc);
     else
