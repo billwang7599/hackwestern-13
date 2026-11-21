@@ -153,9 +153,9 @@ status/unknown phrasings it has never seen, and they are rejected, not acted on.
 
 | Test | Result |
 |---|---|
-| Hand-written realistic whisper transcripts (`intent/data/realistic.tsv`, not used in training) | **107/109** exact, **0 wrong motions** (the 2 misses are safe rejections) |
+| Hand-written realistic whisper transcripts (`intent/data/realistic.tsv`, not used in training) | **113/114** exact, **0 wrong motions** (the miss is a safe rejection) |
 | **Stop recall** (every stop sentence, generated + hand-written) | **1131/1131 = 100%** |
-| Python ↔ C parity (2863 sentences incl. fuzz, wake required and not) | **2863/2863 identical**, both modes |
+| Python ↔ C parity (3674 sentences incl. fuzz + regressions, wake required and not) | **3674/3674 identical**, both modes |
 | Decision latency (normalise + safety + classifier + slots) | **C 1.8 µs**, Python 48 µs per sentence (M4 Pro). Pi 5 estimate ~5–10 µs |
 
 ### End to end: speech → whisper → intent → real `tars_motor` (Mac, `make -C iter2-autonomy/voice e2e`)
@@ -191,9 +191,16 @@ talk button.**
 | model load / peak RAM | 30 ms / 120 MB RSS (measured) | < 1 s / ~120 MB (estimate) |
 
 `audio_ctx` (the encoder window) is sized to the segment, with a minimum of 512. That's about 3×
-faster than whisper's default 30 s window. Below about 384, tiny.en starts repeating the sentence. A
-small C filter (`stt_dedupe`) also cuts the "TARS, turn. TARS, turn. …" loops whisper produces on noisy
-audio. **Measure on the Pi:** the `[heard]` log line has `stt=…ms` for every segment.
+faster than whisper's default 30 s window. Below about 384, tiny.en starts repeating the sentence.
+tiny.en can still loop ("Tars, turn left, turn left, turn left, …"), which turns a clean command into a
+rejection. Two fixes in `src/stt.c`: whisper's **temperature fallback** (`temperature_inc 0.2`, entropy
+check 2.4) re-decodes only a decode that looks like a loop, and the **`stt_dedupe` filter** drops repeated
+sentences and collapses a 1–6-word run repeated back to back to one copy. The filter only deletes copies,
+so a stop word can't vanish (the old filter cut everything after the first repeated sentence, so
+"Turn left. Turn left. Stop!" lost the stop). On 1140 `say` clips (`realistic.tsv`, 5 voices, fast/slow
+speech, white noise 15 dB, babble 10 dB; Mac, load 6–10): loops **32 → 0**, correct 982 → 986, wrong
+motions 4 → 4, stops caught 177 → 179 of 210, whisper time +3%. Test: `make test-stt`.
+**Measure on the Pi:** the `[heard]` log line has `stt=…ms` for every segment.
 
 `tars_voice` runs at normal priority, and whisper never touches `tars_motor`'s SCHED_RR loop.
 If the Pi is too slow with YOLO running, try `threads = 3`, or `get_model.sh --base` for accuracy
@@ -210,7 +217,11 @@ If the Pi is too slow with YOLO running, try `threads = 3`, or `get_model.sh --b
 - **VAD noise floor:** minimum statistics (the quietest 20 ms frame of the last 1.5 s), so it follows
   fan and crowd noise. A fixed floor deadlocked in steady noise. Segments: ≥150 ms of speech (a short
   "Stop!"), ≤3 s, 300 ms pre-roll.
-- **Bare fragments are rejected:** "TARS, turn." / "go to" → LED no, never a 180° turn (tested).
+- **Bare fragments are rejected:** "TARS, turn." / "move it" / "rotate" / "go to" → LED no, never a 180°
+  turn. A rule (`intent_is_bare`), not the model: only verbs with no default direction (turn/rotate/move)
+  plus fillers. Bare "TARS, go!" still means forward. Tested in `test_intent.py` (regressions section).
+- **"one" is a word, not 1°:** "the left one" / "that one" aren't amounts, and a bare turn amount under 10
+  ("turn left two") gives the default 30°. "five degrees" still gives 5°.
 - **Link handling:** `tars_motor` and the go-to controller each reconnect every 1–2 s. `S` and
   `CANCEL` get one immediate retry. If the go-to controller is down, stops still reach `tars_motor`
   first. If `tars_voice` dies, `start_voice.sh` restarts it (1→10 s backoff), and `tars_motor`'s
@@ -232,6 +243,7 @@ If the Pi is too slow with YOLO running, try `threads = 3`, or `get_model.sh --b
 | `qnx/start_voice.sh`, `voice.conf` | supervisor/boot script, config |
 | `cmake/qnx-aarch64.cmake` | whisper.cpp cross-compile toolchain (qcc, Cortex-A76 `armv8.2-a+dotprod+fp16`) |
 | `tests/test_intent.py`, `tests/test_e2e.py` | classifier tests; end-to-end speech tests |
+| `tests/test_stt.py`, `tests/test_goto_link.py` | repeat-loop filter; voice moves vs the real goto + `tars_motor` |
 
 ## Not tested yet (be honest at the demo)
 
