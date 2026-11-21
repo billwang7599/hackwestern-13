@@ -1,6 +1,7 @@
 /* stt_cli: whisper.cpp transcript of one clip, nothing else (no classifier, no robot links).
  *
  *   stt_cli MODEL FILE.wav [threads]   -> one line on stdout: the transcript
+ *   stt_cli --dedupe TEXT              -> TEXT after the repeat-loop filter (tests)
  *
  * Laptop-only helper for mission control's --laptop-stt "cheat": the laptop turns
  * push-to-talk audio into text and sends only "HEAR <text>" to the robot, which runs
@@ -8,6 +9,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "audio.h"
 #include "stt.h"
@@ -18,6 +20,13 @@
 
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--dedupe")) {
+        char t[1024];
+        snprintf(t, sizeof t, "%s", argv[2]);
+        stt_dedupe(t);
+        printf("%s\n", t);
+        return 0;
+    }
     if (argc < 3) { fprintf(stderr, "usage: stt_cli MODEL FILE.wav [threads]\n"); return 2; }
     char spec[1100], err[256] = "";
     snprintf(spec, sizeof spec, "wav:%s", argv[2]);
