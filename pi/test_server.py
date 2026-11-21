@@ -161,7 +161,7 @@ def test_stub() -> None:
             c2.cmd("D 0.3 0.3")
             time.sleep(0.05)
         c2.close()
-        check(srv.wait_log(r"client disconnected -> stop"), "disconnect logged")
+        check(srv.wait_log(r"client \d+ disconnected -> stop"), "disconnect logged")
         time.sleep(0.1)
         check(c.status()["l"] == 0.0, "stopped after disconnect")
 
@@ -738,6 +738,81 @@ def test_uno_reconnect() -> None:
     check(rc == 0, f"clean exit {rc}")
 
 
+# ------------------------------------------------------------------ several clients (vision + voice)
+def test_multi_client() -> None:
+    srv = Server("-b", "stub", "-w", "300", "-H", "600")
+    a, b = Client(srv.port), Client(srv.port)          # a = "vision", b = "voice"
+    try:
+        print("multi: WHO, clients count")
+        check(a.cmd("WHO vision").startswith("OK "), "WHO vision")
+        check(b.cmd("WHO voice").startswith("OK "), "WHO voice")
+        check(srv.wait_log(r"client \d+ is 'voice'"), "WHO logged")
+        check(a.status()["clients"] == "2", "2 clients in STATUS")
+        check(a.cmd("WHO").startswith("ERR usage"), "WHO usage")
+
+        print("multi: S from voice stops vision's D stream and holds it")
+        drive_for(a, 0.5, 0.5, 0.4)
+        check(a.status()["l"] > 0.2, "vision driving")
+        check(b.cmd("S") == "OK", "voice S")
+        time.sleep(0.05)
+        check(a.status()["l"] == 0.0, "S from another client stops at once")
+        r = a.cmd("D 0.5 0.5")
+        check(r.startswith("ERR held"), f"other client's D refused during hold: {r}")
+        check(a.cmd("D 0 0") == "OK", "D 0 0 still OK during hold (keepalive)")
+        check(int(a.status()["hold_ms"]) > 0, "hold_ms in STATUS")
+        check(b.cmd("D 0.3 0.3") == "OK", "the client that sent S may drive at once")
+        b.cmd("S")
+        check(a.cmd("MOVE 50").startswith("OK"), "MOVE not held (one-shot)")
+        a.cmd("S")
+        time.sleep(0.7)
+        check(b.cmd("D 0.3 0.3") == "OK", "hold expires")
+        b.cmd("S")
+        time.sleep(0.65)
+
+        print("multi: same-client S does not hold itself")
+        check(a.cmd("S") == "OK" and a.cmd("D 0.4 0.4") == "OK", "S then D from same client")
+        a.cmd("S")
+        time.sleep(0.65)
+
+        print("multi: disconnect only stops what that client owned")
+        c = Client(srv.port)
+        for _ in range(6):
+            a.cmd("D 0.5 0.5"); time.sleep(0.05)
+        c.close()                                         # c never drove
+        check(srv.wait_log(r"disconnected \(was not driving"), "idle client leaving logged")
+        time.sleep(0.1)
+        check(a.cmd("D 0.5 0.5") == "OK" and a.status()["l"] > 0.2, "vision keeps driving after idle client leaves")
+        a.cmd("S")
+        time.sleep(0.65)
+        c = Client(srv.port)
+        check(c.cmd("MOVE 300").startswith("OK"), "voice-like client starts MOVE")
+        time.sleep(0.15)
+        a.close()                                         # a did not start the move
+        time.sleep(0.2)
+        st = b.status()
+        check(st["move"] == "running", f"another client leaving doesn't abort the move {st['move']} {st['move_why']}")
+        c.close()
+        time.sleep(0.2)
+        st = b.status()
+        check(st["move"] == "aborted" and st["move_why"] == "disconnect", f"owner leaving aborts {st['move']}")
+
+        print("multi: MODE request reaches the vision app via the VIS reply")
+        a = Client(srv.port)
+        check(a.cmd("VIS gesture 10 20 -1 no_hand") == "OK", "VIS before any MODE = plain OK")
+        check(b.cmd("MODE follow") == "OK MODE follow 1", "MODE follow")
+        check(a.cmd("VIS gesture 10 20 -1 no_hand") == "OK MODE follow 1", "VIS reply carries MODE")
+        check(b.cmd("MODE Gesture") == "OK MODE gesture 2", "MODE case-insensitive, seq counts")
+        st = b.status()
+        check(st["mode_req"] == "gesture" and st["mode_seq"] == "2", f"MODE in STATUS {st['mode_req']}")
+        check(b.cmd("MODE toggle").startswith("OK MODE toggle 3"), "MODE toggle")
+        check(b.cmd("MODE teach").startswith("OK MODE teach 4"), "MODE teach")
+        for bad in ("MODE", "MODE fly"):
+            check(b.cmd(bad).startswith("ERR usage"), f"{bad!r} rejected")
+    finally:
+        rc = srv.stop()
+    check(rc == 0, f"clean exit {rc}")
+
+
 def test_pico_still_builds() -> None:
     print("pico backend still selectable")
     srv = Server("-b", "pico", "-d", "/nonexistent")
@@ -752,6 +827,7 @@ if __name__ == "__main__":
     test_stub_moves()
     test_uno_moves()
     test_uno_reconnect()
+    test_multi_client()
     test_pico_still_builds()
     print(f"{checks - failures}/{checks} checks passed ({time.monotonic() - t0:.1f} s)")
     sys.exit(1 if failures else 0)

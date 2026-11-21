@@ -64,11 +64,11 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 
 | Area | Branch | State |
 |---|---|---|
-| Uno stepper firmware, `tars_motor`, WASD teleop, `docs/PI_TEST.md` | `stepper-wheels` (GitHub) | Mac tests pass. **Not run on hardware yet.** |
-| MediaPipe gestures + follow mode | `stepper-wheels` (GitHub) | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
-| Teach-a-gesture on the spot | `kothar/learn-gesture` (local only) | Mac tests pass. Not merged. |
-| Speech + intent classifier | `kothar/voice-stt` (local, in progress) | Being built. |
-| YOLO go-to-object | `kothar/goto` (local, in progress) | Being built. The teammate's YOLO plugs in via the detection interface. |
+| Uno stepper firmware, `tars_motor`, WASD teleop, `docs/PI_TEST.md` | `main` | Mac tests pass. **Not run on hardware yet.** |
+| MediaPipe gestures + follow mode | `main` | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
+| Teach-a-gesture on the spot | `main` | Mac tests pass. Back burner. |
+| Speech + intent classifier (`voice/`) | `main` | Mac tests pass (stop recall 100%, 107/109 realistic transcripts, 0 wrong moves; crowd chatter ~4/21). **Not built or run on QNX/Pi yet.** Next: `voice/qnx/mic_test` on the Pi. Use a close-talk mic or the Uno talk button on the demo floor. |
+| YOLO go-to-object (`goto/`) | `main` | C controller + C++ detector; Mac tests only. **Not built for QNX yet.** |
 | Goalie / balancer experiments | `goalie/`, `balancer/` | Parked. Don't touch. |
 
 ## Hardware checks that gate everything (do these first)

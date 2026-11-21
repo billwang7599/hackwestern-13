@@ -68,7 +68,7 @@ make -C pi deploy PI_HOST=qnxuser@<pi-ip>
 
 **Optional first check with no hardware:** `make -C pi host && make -C pi test`
 builds a Mac/Linux version and runs the server tests (about a minute). It
-should end with `240/240 checks passed`.
+should end with `270/270 checks passed`.
 
 ### 1b. Uno firmware — on the laptop, Uno plugged into the laptop
 
@@ -303,6 +303,55 @@ you'll demo on.
 Expected speed: about **4 cm/s** at 12 RPM with 65 mm wheels, so crossing
 1 m takes about 25 s. Bigger wheels go faster but push less.
 
+### Step 7 — voice (speech commands, all on the Pi)
+
+Details and the full command list are in [`voice/README.md`](../voice/README.md).
+Everything here runs on QNX in C; no laptop is needed once it's deployed.
+
+**7a. Mic check first (10 min). If this fails, voice is off; tell the lead.**
+```sh
+make -C voice mic_test                          # laptop: QNX build (Docker + ~/qnx800), no whisper needed
+ssh qnxuser@<pi-ip> 'mkdir -p voice'
+scp voice/build/qnx/mic_test qnxuser@<pi-ip>:voice/
+ssh qnxuser@<pi-ip>
+cd voice
+./mic_test -l                                   # lists cards/devices; the C270 should show up with [capture]
+./mic_test                                      # records 3 s from the default capture device -> mic.wav
+./mic_test -d 1,0                               # ...or pick card 1 device 0 from the list
+```
+You should see a level meter jump while you talk and `VERDICT: OK`. Then listen to it on the laptop:
+`scp qnxuser@<pi-ip>:voice/mic.wav . && afplay mic.wav` (Linux: `aplay mic.wav`).
+- `can't open the mic`: is io-audio running (`pidin | grep io-audio`)? Is the webcam on a **blue USB 3 port**? Try every card from `-l`.
+- `pure silence`: wrong device, or the mic is muted. `WEAK`: speak closer; a headset/lapel USB mic is much better on a loud floor.
+- Write the working `-d card,dev` down. It goes into `voice.conf` as `input = qnx:card,dev`.
+
+**7b. Build and deploy voice**
+```sh
+voice/fetch_whisper.sh && voice/get_model.sh    # laptop, once: whisper.cpp v1.9.5 source + 31 MB model
+make -C voice                                   # QNX build of whisper.cpp + tars_voice (a few minutes the first time)
+make -C voice deploy PI_HOST=qnxuser@<pi-ip>    # -> /data/home/qnxuser/voice/ (binary, model, voice.conf, start script)
+```
+This QNX build has never been run. If it fails, see "Not tested yet" in `voice/README.md` for likely fixes.
+
+**7c. Try it** (`tars_motor` running from Step 2, robot on blocks first)
+```sh
+cd ~/voice
+./tars_voice -c voice.conf --dry                # prints what it heard + what it WOULD send; nothing moves
+./tars_voice -c voice.conf                      # for real
+```
+Say, about 30 cm from the mic: **"TARS, turn left"** → `[heard] "TARS, turn left." ... TURN -30`, the
+robot beeps and turns. Then try "TARS, go forward", "TARS, turn right ninety", **"Stop!"** (no "TARS" needed),
+and "TARS, go to the trash can" (→ `[goto] GOTO trash can`; it just logs `unreachable` until the go-to
+controller on port 5557 is running, and that's fine). Speech without "TARS" is ignored. **Press the Uno
+button** and you have 4 s to give a command without saying "TARS" (use this on a noisy floor).
+
+Write down the `stt=…ms` numbers from the `[heard]` lines (whisper time per command) with and without
+YOLO running. They go in the CPU table in PLAN.md.
+
+**7d. Keep it running / at boot:** `./start_voice.sh &` restarts it if it crashes and logs to
+`~/voice/logs/voice.log`. For boot, add this to the startup script after the `tars_motor` line (§5):
+`(cd /data/home/qnxuser/voice && ./start_voice.sh >/dev/null 2>&1 &)`
+
 ---
 
 ## 4. Useful commands (TCP, port 5555)
@@ -317,6 +366,13 @@ Expected speed: about **4 cm/s** at 12 RPM with 65 mm wheels, so crossing
 | `LED off\|teach\|rec\|ok\|no\|forget` or `LED 0..3`, `BEEP n` | status LED (teach = slow blink, rec/ok = solid, no/forget = fast blink) / n beeps |
 | `STATUS` | everything: `why=`, `tipped=`, `move=`, `move_done=`, `btn_teach=`, `btn_forget=` … |
 | `RESET` | clear tip-over latch |
+| `WHO <name>` | label this client in the log (voice sends `WHO voice`) |
+| `MODE gesture\|follow\|toggle\|teach` | request for the vision app (shown in `STATUS mode_req= mode_seq=` and in the reply to `VIS`) |
+
+Several clients can be connected at once (voice, vision, YOLO go-to, teleop). **`S` from any client
+stops everything**, and for 1.5 s (`-H` ms) other clients' non-zero `D` is refused (`ERR held`), so a
+steering stream can't undo someone else's stop. A client disconnecting only stops a drive or move
+**it** started. `STATUS` shows `clients=` and `hold_ms=`.
 
 ## 5. Start at boot (optional)
 
@@ -327,6 +383,8 @@ To start it at boot, add this to the image's startup script:
 ```sh
 /data/home/qnxuser/tars_motor -b uno -d /dev/serusb1 > /tmp/tars_motor.log 2>&1 &
 ```
+
+Voice (Step 7d) starts after it: `(cd /data/home/qnxuser/voice && ./start_voice.sh >/dev/null 2>&1 &)`.
 
 The right startup file depends on the QSTI image. Look for `/etc/rc.d/rc.local`
 or ask the lead. Not tested yet.

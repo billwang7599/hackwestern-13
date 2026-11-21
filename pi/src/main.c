@@ -24,12 +24,26 @@
  *   VIS <mode> <fps> <cam_ms> <stop_ms> <label>
  *                        report from the vision app (vision/), shown in STATUS as
  *                        vis_*; does NOT feed the watchdog
+ *   MODE <gesture|follow|toggle|teach>
+ *                        ask the vision app to switch mode (e.g. from voice/;
+ *                        teach = start teach-a-gesture, like the Uno button). Shown
+ *                        in STATUS as mode_req= mode_seq=, and in the reply to VIS
+ *                        ("OK MODE <name> <seq>") so the vision app sees it at 1 Hz.
+ *   WHO <name>           label this client in logs/STATUS (voice, vision, teleop...)
  *   SIM T|B|READY [n]    stub backend only: inject a co-processor event (tests)
  *   SIM BTN TEACH|FORGET stub backend only: inject a button press
  *
  * STATUS also has move=idle|running|done|aborted move_id= move_kind=MOVE|TURN|-
  * move_req= move_done= move_why= move_est_ms= wheel_d= wheel_t= and the on-robot
  * button counters btn_teach= btn_forget= (they only ever count up).
+ *
+ * Several clients at once (e.g. vision/ + voice/ on the Pi, teleop on a laptop):
+ *   - S from ANY client stops everything at once, and for -H ms (default 1500)
+ *     non-zero D from OTHER clients is refused ("ERR held ..."), so a follow-mode
+ *     D stream can't undo someone else's stop. The client that sent S can drive
+ *     again at once. MOVE/TURN are not held (they're one-shot, deliberate).
+ *   - a client disconnecting only zeroes the wheels if it was the last one to
+ *     drive, and only aborts a MOVE/TURN that it started.
  *
  * Runs unattended at boot: no client = wheels held at 0 (the watchdog starts
  * tripped), and a missing/unplugged Uno is reopened every second.
@@ -42,7 +56,7 @@
  *             plays gesture keyframes and keeps a model of the arm angles.
  *
  * Usage: tars_motor [-b uno|stub|pico] [-d dev] [-p port] [-w watchdog_ms]
- *                   [-r rt_priority] [-k bump_hold_ms]
+ *                   [-r rt_priority] [-k bump_hold_ms] [-H stop_hold_ms]
  */
 #include <errno.h>
 #include <math.h>
@@ -78,6 +92,7 @@ static int cfg_port      = 5555;
 static int cfg_wd_ms     = 500;
 static int cfg_rt_prio   = 30;
 static int cfg_bump_ms   = 1000;
+static int cfg_hold_ms   = 1500;          /* S from one client holds other clients' D */
 
 /* ---- shared state (all under `lock`) ---- */
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -87,6 +102,14 @@ static float last_dist = -1.0f;
 static int   estop;                       /* 1 = some stop is holding the wheels */
 static const char *estop_why = "none";
 static struct timespec last_cmd;
+/* multi-client ownership (client ids start at 1; 0 = nobody) */
+static int   drive_owner;                 /* last client to set a non-zero D */
+static int   mv_owner;                    /* client that started the current MOVE/TURN */
+static int   hold_cid;                    /* client whose S is holding the others */
+static long long hold_until_ms;
+static int   n_clients;
+static char  mode_req[12] = "-";          /* MODE request for the vision app */
+static int   mode_seq;
 
 /* requests from client threads, executed by the control thread */
 typedef struct { int set; float deg, dps; } arm_req_t;
@@ -470,7 +493,7 @@ static const char *motion_refused(void)
     return NULL;
 }
 
-static void handle_line(char *line, char *reply, size_t rlen)
+static void handle_line(int cid, char *line, char *reply, size_t rlen)
 {
     char cmd[16] = "";
     float a, b, c;
@@ -493,9 +516,15 @@ static void handle_line(char *line, char *reply, size_t rlen)
         } else if (left > 0) {
             target_l = target_r = 0.0f;
             snprintf(reply, rlen, "ERR bumped: driving paused %lld ms\n", left);
+        } else if (hold_cid && hold_cid != cid && now_ms() < hold_until_ms
+                   && (fabsf(a) >= 0.03f || fabsf(b) >= 0.03f)) {
+            if (drive_owner == cid) target_l = target_r = 0.0f;
+            snprintf(reply, rlen, "ERR held: stop from another client (%lld ms left)\n",
+                     hold_until_ms - now_ms());
         } else {
             target_l = clampf(a, -1, 1);
             target_r = clampf(b, -1, 1);
+            if (fabsf(target_l) >= 0.03f || fabsf(target_r) >= 0.03f) drive_owner = cid;
             /* a real drive command takes over from an exact move (the device
              * aborts it itself when it sees the non-zero D) */
             if (mv_state == MV_RUNNING && (fabsf(target_l) >= 0.03f || fabsf(target_r) >= 0.03f)) {
@@ -511,6 +540,9 @@ static void handle_line(char *line, char *reply, size_t rlen)
         req_stop_gesture = req_halt = 1;
         req_hard_stop = 1;
         stop_rx_ms = now_ms();
+        hold_cid = cid;
+        hold_until_ms = stop_rx_ms + cfg_hold_ms;
+        drive_owner = 0;
         if (mv_state == MV_RUNNING) req_move_abort = "stop";
         req_gesture = NULL;
         memset(&arm_req, 0, sizeof arm_req);
@@ -618,6 +650,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
         } else {
             target_l = target_r = 0.0f;       /* the D stream becomes keepalives */
             mv_id++;
+            mv_owner = cid;
             mv_state = MV_RUNNING;
             mv_kind = kind;
             mv_req = amt;
@@ -672,6 +705,25 @@ static void handle_line(char *line, char *reply, size_t rlen)
         if (led) { led_pattern = v; req_led = v; } else req_beep = v;
         pthread_mutex_unlock(&lock);
         snprintf(reply, rlen, "OK\n");
+    } else if (!strcasecmp(cmd, "MODE")) {
+        char m[16] = "";
+        if (sscanf(line, "%*s %15s", m) != 1
+            || (strcasecmp(m, "gesture") && strcasecmp(m, "follow") && strcasecmp(m, "toggle") && strcasecmp(m, "teach"))) {
+            snprintf(reply, rlen, "ERR usage: MODE <gesture|follow|toggle|teach>\n");
+            return;
+        }
+        pthread_mutex_lock(&lock);
+        for (char *p = m; *p; p++) *p = (char)(*p | 0x20);
+        snprintf(mode_req, sizeof mode_req, "%s", m);
+        int seq = ++mode_seq;
+        pthread_mutex_unlock(&lock);
+        fprintf(stderr, "[net] client %d: MODE %s (seq %d)\n", cid, m, seq);
+        snprintf(reply, rlen, "OK MODE %s %d\n", m, seq);
+    } else if (!strcasecmp(cmd, "WHO")) {
+        char who[24] = "";
+        if (sscanf(line, "%*s %23s", who) != 1) { snprintf(reply, rlen, "ERR usage: WHO <name>\n"); return; }
+        fprintf(stderr, "[net] client %d is '%s'\n", cid, who);
+        snprintf(reply, rlen, "OK %d\n", cid);
     } else if (!strcasecmp(cmd, "GESTURES")) {
         size_t off = (size_t)snprintf(reply, rlen, "OK");
         for (int i = 0; gesture_at(i) && off < rlen; i++)
@@ -691,7 +743,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
                  "stop_ms=%ld vis=%s vis_fps=%.1f vis_cam_ms=%d vis_stop_ms=%d vis_see=%s "
                  "vis_age_ms=%lld move=%s move_id=%d move_kind=%s move_req=%.1f move_done=%.1f "
                  "move_why=%s move_est_ms=%d wheel_d=%.1f wheel_t=%.1f btn_teach=%d btn_forget=%d "
-                 "led=%d\n",
+                 "led=%d clients=%d hold_ms=%lld mode_req=%s mode_seq=%d\n",
                  out_l, out_r, ms_since(&last_cmd), last_dist, estop, estop_why,
                  arm_pos[0], arm_pos[1], arm_tgt[0], arm_tgt[1], gesture_name,
                  tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name,
@@ -699,7 +751,9 @@ static void handle_line(char *line, char *reply, size_t rlen)
                  vis_at_ms ? now_ms() - vis_at_ms : -1LL,
                  mv_names[mv_state], mv_id, mv_kind == 'M' ? "MOVE" : mv_kind == 'R' ? "TURN" : "-",
                  mv_req, mv_done, mv_why, mv_est_ms, wheel_d, wheel_t, btn_teach, btn_forget,
-                 led_pattern);
+                 led_pattern, n_clients,
+                 hold_cid && now_ms() < hold_until_ms ? hold_until_ms - now_ms() : 0LL,
+                 mode_req, mode_seq);
         pthread_mutex_unlock(&lock);
     } else if (!strcasecmp(cmd, "VIS")) {
         char m[16], see[24];
@@ -716,8 +770,9 @@ static void handle_line(char *line, char *reply, size_t rlen)
         vis_cam_ms = cam;
         vis_stop_ms = stp;
         vis_at_ms = now_ms();
+        if (mode_seq) snprintf(reply, rlen, "OK MODE %s %d\n", mode_req, mode_seq);
+        else snprintf(reply, rlen, "OK\n");
         pthread_mutex_unlock(&lock);
-        snprintf(reply, rlen, "OK\n");
     } else if (!strcasecmp(cmd, "SIM")) {
         char kind[16] = "";
         int v = 0;
@@ -748,13 +803,20 @@ static void handle_line(char *line, char *reply, size_t rlen)
     }
 }
 
+typedef struct { int fd, id; } client_arg_t;
+
 static void *client_thread(void *arg)
 {
-    int fd = (int)(long)arg;
+    client_arg_t ca = *(client_arg_t *)arg;
+    free(arg);
+    int fd = ca.fd, cid = ca.id;
     char buf[512], reply[1024];
     size_t used = 0;
 
-    fprintf(stderr, "[net] client connected\n");
+    pthread_mutex_lock(&lock);
+    int nc = ++n_clients;
+    pthread_mutex_unlock(&lock);
+    fprintf(stderr, "[net] client connected (id %d, %d connected)\n", cid, nc);
     for (;;) {
         ssize_t n = recv(fd, buf + used, sizeof buf - 1 - used, 0);
         if (n <= 0) break;
@@ -765,7 +827,7 @@ static void *client_thread(void *arg)
         while ((nl = strchr(start, '\n')) != NULL) {
             *nl = '\0';
             if (nl > start && nl[-1] == '\r') nl[-1] = '\0';
-            handle_line(start, reply, sizeof reply);
+            handle_line(cid, start, reply, sizeof reply);
             if (reply[0]) send(fd, reply, strlen(reply), 0);
             start = nl + 1;
         }
@@ -773,13 +835,21 @@ static void *client_thread(void *arg)
         memmove(buf, start, used + 1);
         if (used >= sizeof buf - 1) used = 0;   /* line too long: drop it */
     }
-    /* Safety: a dropped client means stop the wheels now, don't wait for the
-     * watchdog. Arms finish their current move (a gesture is harmless). */
+    /* Safety: a dropped client that was driving means stop the wheels now,
+     * don't wait for the watchdog. Another client's drive or move is left
+     * alone (it has its own watchdog feed). Arms finish their current move. */
     pthread_mutex_lock(&lock);
-    target_l = target_r = 0.0f;
-    if (mv_state == MV_RUNNING) req_move_abort = "disconnect";
+    int mine = drive_owner == cid || drive_owner == 0;
+    if (mine) { target_l = target_r = 0.0f; drive_owner = 0; }
+    int abort_mv = mv_state == MV_RUNNING && mv_owner == cid;
+    if (abort_mv) req_move_abort = "disconnect";
+    if (hold_cid == cid) hold_cid = 0;
+    nc = --n_clients;
     pthread_mutex_unlock(&lock);
-    fprintf(stderr, "[net] client disconnected -> stop\n");
+    if (mine || abort_mv)
+        fprintf(stderr, "[net] client %d disconnected -> stop (%d left)\n", cid, nc);
+    else
+        fprintf(stderr, "[net] client %d disconnected (was not driving; %d left)\n", cid, nc);
     close(fd);
     return NULL;
 }
@@ -791,13 +861,13 @@ static void usage(const char *argv0)
 {
     fprintf(stderr,
         "usage: %s [-b uno|stub|pico] [-d serial_dev] [-p port] [-w watchdog_ms]\n"
-        "          [-r rt_prio] [-k bump_hold_ms]\n", argv0);
+        "          [-r rt_prio] [-k bump_hold_ms] [-H stop_hold_ms]\n", argv0);
 }
 
 int main(int argc, char **argv)
 {
     int opt;
-    while ((opt = getopt(argc, argv, "b:d:p:w:r:k:h")) != -1) {
+    while ((opt = getopt(argc, argv, "b:d:p:w:r:k:H:h")) != -1) {
         switch (opt) {
         case 'b': cfg_backend = optarg; break;
         case 'd': cfg_dev = optarg; break;
@@ -805,6 +875,7 @@ int main(int argc, char **argv)
         case 'w': cfg_wd_ms = atoi(optarg); break;
         case 'r': cfg_rt_prio = atoi(optarg); break;
         case 'k': cfg_bump_ms = atoi(optarg); break;
+        case 'H': cfg_hold_ms = atoi(optarg); break;
         default:  usage(argv[0]); return opt == 'h' ? 0 : 2;
         }
     }
@@ -865,11 +936,16 @@ int main(int argc, char **argv)
         int c = accept(srv, NULL, NULL);
         if (c < 0) { if (errno == EINTR) continue; perror("accept"); break; }
         setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        static int next_id;
+        client_arg_t *ca = malloc(sizeof *ca);
         pthread_t t;
-        if (pthread_create(&t, NULL, client_thread, (void *)(long)c) == 0)
+        if (ca) { ca->fd = c; ca->id = ++next_id; }
+        if (ca && pthread_create(&t, NULL, client_thread, ca) == 0)
             pthread_detach(t);
-        else
+        else {
+            free(ca);
             close(c);
+        }
     }
 
     running = 0;
