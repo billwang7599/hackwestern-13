@@ -223,15 +223,19 @@ class FakeBroker:
 
 
 # ------------------------------------------------------------------ relay + laptop clients
+KEY = "test-key"                 # the relay refuses to start without one
+
+
 class Relay:
-    def __init__(self, exe, motor, goto, voice, rgb, extra=()):
+    def __init__(self, exe, motor, goto, voice, rgb, extra=(), key=KEY):
         self.port, self.tee = free_port(), free_port()
+        auth = ["-k", key] if key else ["--no-key"]
         os.makedirs(SCRATCH, exist_ok=True)
         self.logp = os.path.join(SCRATCH, f"relay_{self.port}.log")
         self.log = open(self.logp, "w")
         self.p = subprocess.Popen([exe, "-p", str(self.port), "-b", "127.0.0.1", "--motor", str(motor),
                                    "--goto", str(goto), "--voice", str(voice), "--rgb", str(rgb),
-                                   "--tee", str(self.tee), "-v", *extra], stderr=self.log)
+                                   "--tee", str(self.tee), "-v", *auth, *extra], stderr=self.log)
         assert wait_for(self._up, 3), "relay didn't open its port"
 
     def _up(self):
@@ -252,7 +256,7 @@ class Relay:
 
 class Lap:
     """A laptop connection: HELLO <ch>, then lines (or raw frames for CAM)."""
-    def __init__(self, port, ch, key="", rcvbuf=0, read=True):
+    def __init__(self, port, ch, key=KEY, rcvbuf=0, read=True):
         self.s = socket.socket()
         if rcvbuf:
             self.s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
@@ -521,7 +525,7 @@ def test_clean_disconnects(exe, mport, env, goto, voice):
         check(got == b"" and 2.5 < time.monotonic() - t0 < 4.5, "no HELLO -> closed after ~3 s")
         s.close()
         s = socket.create_connection(("127.0.0.1", rl.port))
-        s.sendall(b"HELLO BOGUS\n")
+        s.sendall(f"HELLO BOGUS {KEY}\n".encode())
         check(s.makefile().readline().startswith("ERR unknown channel"), "unknown channel -> ERR")
         s.close()
     finally:
@@ -530,11 +534,17 @@ def test_clean_disconnects(exe, mport, env, goto, voice):
 
 def test_voice_pipe_key_down(exe, mport, env, voice):
     print("VOICE pipe (binary AUDIO), key, service down")
-    rl = Relay(exe, mport, *env, extra=("-k", "s3cret"))
+    rl = Relay(exe, mport, *env, key="s3cret")
     try:
         bad = Lap(rl.port, "VOICE", key="nope")
         check(bad.hello == "ERR key", f"wrong key -> {bad.hello}")
+        check(bad.s.recv(16) == b"", "wrong key -> connection closed")
         bad.close()
+        for ch in ("MOTOR", "WATCH"):
+            bad = Lap(rl.port, ch, key="")
+            check(bad.hello == "ERR key", f"{ch} with no key -> {bad.hello}")
+            check(bad.s.recv(16) == b"", f"{ch} with no key -> connection closed")
+            bad.close()
         v = Lap(rl.port, "VOICE", key="s3cret")
         check(v.hello == "OK relay VOICE", "right key -> OK")
         v.send("HEAR tars turn left")
@@ -596,6 +606,48 @@ def test_headless_tee(exe, mport, env):
         rl.close()
 
 
+def test_key_required(exe, mport, env):
+    """The relay refuses to start keyless; MISSION_KEY works; --no-key is an explicit opt-out."""
+    print("key required: no key -> won't start; MISSION_KEY; --no-key opt-out")
+    base = [exe, "-p", str(free_port()), "-b", "127.0.0.1", "--motor", str(mport), "--goto", str(env[0]),
+            "--voice", str(env[1]), "--rgb", str(env[2])]
+    clean = {k: v for k, v in os.environ.items() if k != "MISSION_KEY"}
+    r = subprocess.run(base, env=clean, capture_output=True, text=True, timeout=5)
+    check(r.returncode == 2 and "refusing to start without a key" in r.stderr,
+          f"no -k, no MISSION_KEY -> exits 2 ({r.returncode}, {r.stderr.strip()[:60]!r})")
+    r = subprocess.run(base + ["-k", "a", "--no-key"], env=clean, capture_output=True, text=True, timeout=5)
+    check(r.returncode == 2, f"-k and --no-key together -> exits 2 ({r.returncode})")
+    r = subprocess.run(base + ["-k", "two words"], env=clean, capture_output=True, text=True, timeout=5)
+    check(r.returncode == 2, f"a key with a space -> exits 2 ({r.returncode})")
+    # MISSION_KEY from the environment
+    port = free_port()
+    p = subprocess.Popen(base[:2] + [str(port)] + base[3:], env={**clean, "MISSION_KEY": "envkey"},
+                         stderr=subprocess.PIPE, text=True)
+    try:
+        check(wait_for(lambda: port_open(port), 3), "MISSION_KEY -> relay starts")
+        bad = Lap(port, "WATCH", key="test-key")
+        check(bad.hello == "ERR key", f"MISSION_KEY: other key refused ({bad.hello})")
+        bad.close()
+        good = Lap(port, "WATCH", key="envkey")
+        check(good.hello == "OK relay WATCH", f"MISSION_KEY: right key works ({good.hello})")
+        good.close()
+    finally:
+        p.terminate(); p.wait(3)
+    # --no-key: starts, loud warning, keyless HELLO works
+    port = free_port()
+    p = subprocess.Popen(base[:2] + [str(port)] + base[3:] + ["--no-key"], env=clean,
+                         stderr=subprocess.PIPE, text=True)
+    try:
+        check(wait_for(lambda: port_open(port), 3), "--no-key -> relay starts")
+        lap = Lap(port, "WATCH", key="")
+        check(lap.hello == "OK relay WATCH", f"--no-key: keyless HELLO works ({lap.hello})")
+        lap.close()
+    finally:
+        p.terminate(); p.wait(3)
+        err = p.stderr.read()
+    check("WARNING --no-key" in err and "ANY client" in err, "--no-key logs a loud warning")
+
+
 def main() -> int:
     exe = sys.argv[1] if len(sys.argv) > 1 else os.path.join(MISSION, "build", "mission_relay_host")
     for p in (exe, MOTOR_BIN):
@@ -613,6 +665,7 @@ def main() -> int:
         test_slow_laptop(exe, mport, env, goto, broker)
         test_clean_disconnects(exe, mport, env, goto, voice)
         test_voice_pipe_key_down(exe, mport, env, voice)
+        test_key_required(exe, mport, env)
         test_headless_tee(exe, mport, env)
     finally:
         motor.terminate()

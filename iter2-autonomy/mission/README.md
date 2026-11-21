@@ -20,11 +20,17 @@ computed and passes your commands to the Pi's own processes.
 via `docker/run.sh`, or `make native` on the Pi with its clang):
 
 ```sh
-./mission_relay                    # laptops on 0.0.0.0:5575; add -k <key> on a shared Wi-Fi
+MISSION_KEY=<key> ./mission_relay  # laptops on 0.0.0.0:5575 (or: ./mission_relay -k <key>)
 # optional, to mirror what the phone shows (guard verdict, YOLOX boxes, map, rates):
 TARS_MISSION_TEE_PORT=5576 python3 iter2-autonomy/dashboard/service.py start
 # tars_voice listens for the laptop on 127.0.0.1:5574 by default (voice.conf net_port; 0 = off)
 ```
+
+**The key is required.** Without `-k <key>` or `MISSION_KEY` the relay refuses to start, because
+anyone on the Wi-Fi could otherwise drive the robot. Every laptop connection must send it in
+`HELLO`; a missing or wrong key gets `ERR key` and is closed. Pick something long (no spaces).
+`--no-key` exists only for the local demo stack and tests on a Mac: it logs a loud warning.
+Never use it on the robot.
 
 Normal priority, never SCHED_RR. If the relay dies, nothing on the robot notices except that
 any drive the laptop started stops (its tars_motor connection closes).
@@ -32,12 +38,16 @@ any drive the laptop started stops (its tars_motor connection closes).
 **On the laptop:**
 
 ```sh
-python3 iter2-autonomy/mission/laptop/mission.py --relay <pi-ip>          # open http://localhost:8765
-python3 iter2-autonomy/mission/laptop/mission.py --relay <pi-ip> --laptop-stt   # see "Voice"
+MISSION_KEY=<key> python3 iter2-autonomy/mission/laptop/mission.py --relay <pi-ip>   # open http://localhost:8765
+python3 iter2-autonomy/mission/laptop/mission.py --relay <pi-ip> --key <key> --laptop-stt   # see "Voice"
 ```
 
+The same key as the relay (`--key` or `MISSION_KEY`; the app won't start without one). A
+wrong key shows as `ERR key` on every link in the UI.
+
 No robot? `python3 iter2-autonomy/mission/tests/demo_stack.py` runs a fake Pi on the Mac
-(real tars_motor stub, goto, tars_voice; fake phone, camera, detections) plus the app.
+(real tars_motor stub, goto, tars_voice; fake phone, camera, detections) plus the app. It
+starts the relay with a test key and passes the same key to the app.
 
 ## Controls
 
@@ -98,7 +108,7 @@ The relay's `R` line reports which Pi services are up.
 | Port | Bind | Who | What |
 |---|---|---|---|
 | **5574** | 127.0.0.1 | tars_voice | network input: `HEAR <text>`, `AUDIO <bytes>` + PCM/WAV (16 kHz mono 16-bit, ≤ 15 s), `WATCH` (JSON events), `PING` |
-| **5575** | 0.0.0.0 | mission_relay | the laptop's only port: `HELLO <MOTOR\|GOTO\|VOICE\|WATCH\|CAM> [key]` |
+| **5575** | 0.0.0.0 | mission_relay | the laptop's only port: `HELLO <MOTOR\|GOTO\|VOICE\|WATCH\|CAM> <key>` (key required) |
 | **5576** | 127.0.0.1 | mission_relay | phone status tee: newline-delimited JSON from `headless.py` (`TARS_MISSION_TEE_PORT`) |
 | 8765 | 127.0.0.1 (laptop) | mission.py | the browser page |
 
@@ -135,9 +145,10 @@ make -C iter2-autonomy/voice test-net    # HEAR/AUDIO/WATCH 25/25
 `test_relay.py` runs the real tars_motor stub plus fakes. It covers: the MOTOR pipe disconnect,
 which stops only that laptop's drive (another client's MOVE survives); rate limits; byte-exact
 CAM passthrough; a non-reading laptop not blocking the fast laptop or goto; clean disconnects;
-key; service down; the headless tee. `test_laptop.py` runs the real tars_motor + goto + relay +
+the key (missing / wrong → `ERR key` + closed, right → works, `MISSION_KEY`, no key → won't
+start, `--no-key` warns); service down; the headless tee. `test_laptop.py` runs the real tars_motor + goto + relay +
 `mission.py` through its HTTP API. It covers: STOP = S then CANCEL; WASD; browser-quiet stop;
-kill -9 stopping only its own drive; goto buttons; voice text/clip; `--laptop-stt`; MJPEG; stale data.
+kill -9 stopping only its own drive; no key → app won't start, wrong key → every link `ERR key`; goto buttons; voice text/clip; `--laptop-stt`; MJPEG; stale data.
 
 **Not run:** on the Pi, under QNX/qcc, over real Wi-Fi, with a real iPhone, a real laptop mic
 in a browser (the JS was syntax-checked and the page logic exercised through the same HTTP

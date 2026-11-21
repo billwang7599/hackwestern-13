@@ -46,7 +46,7 @@ class App:
         os.makedirs(tr.SCRATCH, exist_ok=True)
         self.log = open(os.path.join(tr.SCRATCH, f"app_{self.http}.log"), "w")
         self.p = subprocess.Popen([sys.executable, APP, "--relay", f"127.0.0.1:{relay_port}",
-                                   "--http-port", str(self.http), *extra], stdout=self.log, stderr=subprocess.STDOUT)
+                                   "--http-port", str(self.http), "--key", tr.KEY, *extra], stdout=self.log, stderr=subprocess.STDOUT)
         assert wait_for(self._up, 5), "mission.py didn't start"
 
     def _up(self):
@@ -137,6 +137,19 @@ def stack_a(mport):
         ok = wait_for(lambda: all(v["up"] for v in app.state()["links"].values()), 5, 0.2)
         st = app.state()
         check(ok, f"all five relay links up ({ {k: v['up'] for k, v in st['links'].items()} })")
+        # the key: mission.py won't start without one; a wrong one is refused by the relay
+        env = {k: v for k, v in os.environ.items() if k != "MISSION_KEY"}
+        r = subprocess.run([sys.executable, APP, "--relay", f"127.0.0.1:{rl.port}", "--http-port", str(free_port())],
+                           env=env, capture_output=True, text=True, timeout=10)
+        check(r.returncode != 0 and "relay key" in r.stderr, f"no key -> mission.py refuses to start ({r.returncode})")
+        bad = App(rl.port, extra=("--key", "wrong"))
+        try:
+            time.sleep(1.0)
+            links = bad.state()["links"]
+            check(not any(v["up"] for v in links.values()) and all("ERR key" in v["error"] for v in links.values()),
+                  f"wrong key -> every link refused with ERR key ({ {k: v['error'] for k, v in links.items()} })")
+        finally:
+            bad.kill()
         ok = wait_for(lambda: "out_l" in app.state().get("motor", {}) and "state" in app.state().get("goto", {}), 4, 0.2)
         st = app.state()
         check(ok and st.get("motor_age", 9) < 1 and st.get("goto_age", 9) < 1,

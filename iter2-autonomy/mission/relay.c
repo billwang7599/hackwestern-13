@@ -5,7 +5,7 @@
  *
  *   laptop ──TCP :5575 (all interfaces)──► mission_relay ──► 127.0.0.1 services
  *
- * Each laptop connection starts with one line:  HELLO <channel> [key]   (-> "OK relay <channel>")
+ * Each laptop connection starts with one line:  HELLO <channel> <key>   (-> "OK relay <channel>")
  *   MOTOR   byte pipe to tars_motor   :5555  (its own connection: a laptop that disconnects
  *                                             stops only the drive it started)
  *   GOTO    byte pipe to goto         :5570
@@ -35,7 +35,11 @@
  *     (closing a MOTOR pipe = tars_motor stops that laptop's drive)
  *   - pollers connect only while someone is watching; at most 8 polls outstanding per service
  *
- * Usage: mission_relay [-p 5575] [-b 0.0.0.0] [-k key] [-v]
+ * Key: REQUIRED. -k <key> or the MISSION_KEY env var (-k wins). Every HELLO must carry it;
+ *   a missing or wrong key gets "ERR key" and the connection is closed. Without a key the
+ *   relay refuses to start, unless --no-key (local demo stack only: logs a loud warning).
+ *
+ * Usage: mission_relay [-p 5575] [-b 0.0.0.0] (-k key | MISSION_KEY=key | --no-key) [-v]
  *          [--motor 5555] [--goto 5570] [--voice 5574] [--rgb 5566] [--tee 5576]
  *          [--cam-fps 5] [--map-hz 1] [--phone-hz 1] [--status-hz 5]
  */
@@ -253,7 +257,7 @@ static void hello_done(lap_t *l)
 {
     char ch[16] = "", key[128] = "";
     l->hello[l->hello_n] = '\0';
-    if (sscanf(l->hello, "HELLO %15s %127s", ch, key) < 1) { lap_say(l, "ERR expected: HELLO <MOTOR|GOTO|VOICE|WATCH|CAM> [key]\n", 1); return; }
+    if (sscanf(l->hello, "HELLO %15s %127s", ch, key) < 1) { lap_say(l, "ERR expected: HELLO <MOTOR|GOTO|VOICE|WATCH|CAM> <key>\n", 1); return; }
     if (cfg.key[0] && strcmp(key, cfg.key)) { lap_say(l, "ERR key\n", 1); return; }
     int c = 0;
     for (int i = CH_MOTOR; i <= CH_CAM; i++) if (!strcasecmp(ch, ch_name[i])) c = i;
@@ -562,7 +566,8 @@ static void on_sig(int s) { (void)s; running = 0; }
 
 static void usage(void)
 {
-    fprintf(stderr, "usage: mission_relay [-p 5575] [-b 0.0.0.0] [-k key] [-v] [--motor 5555] [--goto 5570]\n"
+    fprintf(stderr, "usage: mission_relay [-p 5575] [-b 0.0.0.0] (-k key | env MISSION_KEY | --no-key) [-v]\n"
+                    "         [--motor 5555] [--goto 5570]\n"
                     "         [--voice 5574] [--rgb 5566] [--tee 5576] [--cam-fps 5] [--map-hz 1] [--phone-hz 1]\n"
                     "         [--status-hz 5] [--watch-lim bytes]\n");
 }
@@ -614,9 +619,11 @@ static void schedule_polls(double t)
 
 int main(int argc, char **argv)
 {
+    int no_key = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "-v")) { verbose = 1; continue; }
+        if (!strcmp(a, "--no-key")) { no_key = 1; continue; }
         if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         if (!v) { usage(); return 2; }
         i++;
@@ -635,6 +642,20 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--watch-lim")) WATCH_LIM = (size_t)atol(v) < 4096 ? 4096 : (size_t)atol(v);
         else { usage(); return 2; }
     }
+    if (!cfg.key[0] && getenv("MISSION_KEY")) snprintf(cfg.key, sizeof cfg.key, "%s", getenv("MISSION_KEY"));
+    if (strpbrk(cfg.key, " \t\r\n")) { fprintf(stderr, "mission_relay: the key can't contain spaces\n"); return 2; }
+    if (cfg.key[0] && no_key) { fprintf(stderr, "mission_relay: a key and --no-key? pick one\n"); return 2; }
+    if (!cfg.key[0] && !no_key) {
+        fprintf(stderr, "mission_relay: refusing to start without a key: anyone on the Wi-Fi could drive the robot.\n"
+                        "  Use -k <key> or MISSION_KEY=<key> (and the same --key / MISSION_KEY on the laptop).\n"
+                        "  --no-key is for the local demo stack only.\n");
+        return 2;
+    }
+    if (no_key)
+        fprintf(stderr, "mission_relay: ************************************************************\n"
+                        "mission_relay: WARNING --no-key: ANY client that reaches port %d can drive the robot.\n"
+                        "mission_relay: Local demo / tests only. Never on the robot's Wi-Fi.\n"
+                        "mission_relay: ************************************************************\n", cfg.port);
     if (cfg.cam_fps > 5) cfg.cam_fps = 5;              /* hard cap: Wi-Fi + the broker are shared */
     if (cfg.map_hz > 2) cfg.map_hz = 2;
     if (cfg.phone_hz > 2) cfg.phone_hz = 2;
@@ -652,7 +673,7 @@ int main(int argc, char **argv)
     int tfd = cfg.tee > 0 ? listen_on("127.0.0.1", cfg.tee) : -1;
     if (cfg.tee > 0 && tfd < 0) fprintf(stderr, "mission_relay: phone tee 127.0.0.1:%d unavailable (%s)\n", cfg.tee, strerror(errno));
     fprintf(stderr, "mission_relay: laptops on %s:%d%s; motor %d goto %d voice %d rgb %d tee %d; cam <= %.0f fps, map %.1f Hz\n",
-            cfg.bind, cfg.port, cfg.key[0] ? " (key required)" : "", cfg.motor, cfg.go, cfg.voice, cfg.rgb, cfg.tee,
+            cfg.bind, cfg.port, cfg.key[0] ? " (key required)" : " (NO KEY)", cfg.motor, cfg.go, cfg.voice, cfg.rgb, cfg.tee,
             cfg.cam_fps, cfg.map_hz);
 
     enum { K_LISTEN, K_TEELISTEN, K_TEE, K_LAP, K_UP, K_POLL, K_CAM };

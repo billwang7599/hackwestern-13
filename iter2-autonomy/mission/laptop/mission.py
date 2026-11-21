@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """TARS mission control: a laptop-only dashboard + controls in your browser.
 
-    python3 iter2-autonomy/mission/laptop/mission.py --relay <pi-ip>     # then open http://localhost:8765
-    python3 .../mission.py --relay <pi-ip> --laptop-stt                  # whisper on the laptop, send text only
+    MISSION_KEY=<key> python3 iter2-autonomy/mission/laptop/mission.py --relay <pi-ip>   # then open http://localhost:8765
+    python3 .../mission.py --relay <pi-ip> --key <key> --laptop-stt     # whisper on the laptop, send text only
+
+The key is the one mission_relay was started with (-k / MISSION_KEY); a wrong or missing key
+gets "ERR key" from the relay (shown in the UI's link status).
 
 Everything goes through mission_relay on the Pi (TCP 5575). The robot never needs this:
 close the laptop and it carries on exactly as before. This process does no robot work:
@@ -565,7 +568,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="TARS laptop mission control (browser UI on localhost)")
     ap.add_argument("--relay", default=os.environ.get("TARS_HOST", "tars.local"),
                     help="Pi address (host or host:port, relay port 5575)")
-    ap.add_argument("--key", default=os.environ.get("TARS_RELAY_KEY", ""), help="relay key (mission_relay -k)")
+    ap.add_argument("--key", default=os.environ.get("MISSION_KEY", ""),
+                    help="relay key: the same as mission_relay's -k / MISSION_KEY (env MISSION_KEY)")
     ap.add_argument("--http-port", type=int, default=8765)
     ap.add_argument("--speed", type=float, default=0.6, help="WASD start speed (fraction of max)")
     ap.add_argument("--laptop-stt", action="store_true",
@@ -574,6 +578,9 @@ def main() -> int:
     ap.add_argument("--model", default=os.path.join(REPO, "iter2-autonomy", "voice", "models", "ggml-tiny.en-q5_1.bin"))
     a = ap.parse_args()
     host, _, port = a.relay.partition(":")
+    if not a.key:
+        sys.exit("mission control needs the relay key: --key <key> or MISSION_KEY=<key> "
+                 "(the same one mission_relay was started with)")
     if a.laptop_stt and not (os.path.exists(a.stt_cli) and os.path.exists(a.model)):
         sys.exit(f"--laptop-stt needs {a.stt_cli} (make -C iter2-autonomy/voice host) and {a.model}")
     m = Mission(host, int(port or 5575), a.key, a.laptop_stt, a.stt_cli, a.model, a.speed)

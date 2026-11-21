@@ -117,7 +117,8 @@ def main() -> int:
                 except OSError:
                     tee = None
     threading.Thread(target=fake_phone, daemon=True).start()
-    app = subprocess.Popen([sys.executable, os.path.join(tr.MISSION, "laptop", "mission.py"), "--relay", f"127.0.0.1:{rl.port}"])
+    app = subprocess.Popen([sys.executable, os.path.join(tr.MISSION, "laptop", "mission.py"), "--relay", f"127.0.0.1:{rl.port}",
+                            "--key", tr.KEY])            # the relay runs with -k tr.KEY
     try:
         app.wait()
     except KeyboardInterrupt:

@@ -515,6 +515,16 @@ Needs Steps 2–5 working. Details are in `iter2-autonomy/goto/README.md`.
    - Turn the robot away by hand with WASD, then `GOTO trash can`: the first move should be one TURN straight toward it, not a 30° search.
    - It's saved in `/data/home/qnxuser/goto/memory.txt`. **If you carry the robot somewhere else, say "TARS, forget everything" or send `FORGET` to 5570**, because the remembered positions are relative to where it was.
 
+### Step 9 (optional) — laptop mission control
+
+Details: `iter2-autonomy/mission/README.md`. The robot never needs it.
+1. On the Pi: `MISSION_KEY=<long-key> ./mission_relay` (or `-k <key>`). **It refuses to start
+   without a key** (anyone on the Wi-Fi could drive the robot). Don't use `--no-key` here: it's
+   for the Mac demo stack only.
+2. On the laptop: `MISSION_KEY=<same-key> python3 iter2-autonomy/mission/laptop/mission.py --relay <pi-ip>`,
+   open http://localhost:8765. All five links should be up. `ERR key` on the links = the keys differ.
+3. STOP button with the wheels in the air: wheels stop, goto shows `cancelled:stop`.
+
 ---
 
 ## 4. Useful commands (TCP, port 5555)
