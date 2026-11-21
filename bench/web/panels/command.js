@@ -34,7 +34,7 @@
   document.head.appendChild(Object.assign(document.createElement('style'), {textContent: css}));
 
   Bench.register({
-    id: 'command', title: '🗣 Talk to TARS', order: 1, area: 'side',
+    id: 'command', title: '🗣 Talk to TARS', order: 1, area: 'drive',
     help: 'Say or type what the robot should do. No “TARS” wake word needed here.',
     mount(el) {
       el.innerHTML = `

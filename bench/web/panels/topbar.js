@@ -86,6 +86,7 @@
         const v = String(gv).toUpperCase();
         set('guard', /BLOCK/.test(v) ? 'bad' : /CLEAR/.test(v) ? 'ok' : v ? 'warn' : 'off', v ? `verdict ${v}` : 'no obstacle data');
         L.guard.el.textContent = /BLOCK/.test(v) ? 'Path blocked' : 'Path';
+        guardNote(/BLOCK/.test(v), f);
 
         // activity, in priority order: safety stops, go-to, hand driving
         let text, cls = '';
@@ -102,6 +103,27 @@
         else [text, cls] = phrase(G || {state: 'idle'});
         act.textContent = text; act.className = 'activity ' + cls;
         act.title = G ? `goto state=${G.state} target=${G.target} result=${G.result} searched=${G.searched ?? '-'}° elapsed=${G.elapsed ?? '-'} s` : 'goto: no status';
+      }
+      // plain words under the top bar while the guard blocks, so "why can't I move?" answers itself.
+      // If the robot plugin supplies its own wording (status topic `guard_text`), that wins.
+      const note = document.getElementById('guardnote');
+      L.guard.el.style.cursor = 'pointer';
+      L.guard.el.addEventListener('click', () => Bench.openPage && Bench.openPage('car'));
+      let noteKey = '';
+      function guardNote(blocked, f) {
+        const own = st && (st.guard_text || (st.guard && st.guard.text));
+        const reason = String(f.guard_reason || '');
+        const show = !!(blocked || (own && /block/i.test(reason)));
+        const k = show ? (own || '') + '|' + reason : '';
+        if (!note || k === noteKey) return;
+        noteKey = k; note.hidden = !show;
+        if (!show) return;
+        note.replaceChildren();
+        if (own) { note.textContent = '⚠ ' + own; return; }
+        note.append('⚠ Obstacle ahead: the safety guard blocks driving forward. ');
+        const d = document.createElement('span'); d.className = 'dim';
+        d.textContent = 'Turn away first (say “turn around”, or TURN under Exact moves on the Drive page), or move/delete the obstacle on the Room page (sim). Details: Car page → Safety.';
+        note.append(d);
       }
       setInterval(tick, 250); tick();
     },

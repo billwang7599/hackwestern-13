@@ -31,7 +31,7 @@
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
   const fmtT = t => new Date(t * 1000).toLocaleTimeString();
   const ageTxt = a => a == null ? 'no data' : a < 1 ? '' : `${a.toFixed(1)} s old`;
-  const rows = (el, pairs) => { el.innerHTML = pairs.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''); };
+  const rows = (el, pairs) => { el.innerHTML = pairs.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(v)}</td></tr>`).join(''); };
   const stale = (el, age, lim) => el.classList.toggle('mc-stale', age == null || age > lim);
   const api = (p, b) => Bench.api('mission/' + p, b).catch(e => { Bench.log('mission', `${p}: ${e.message}`); return {}; });
 
@@ -47,7 +47,7 @@
 
   // ------------------------------------------------------------------ camera
   Bench.register({
-    id: 'mc-camera', title: 'Camera (phone, via the Pi)', order: 12, area: 'pi',
+    id: 'mc-camera', title: 'Camera (phone, via the Pi)', order: 12, area: 'mission',
     help: 'The robot’s camera with detection boxes. Real robot only: there is no camera in the sim.',
     mount(el) {
       el.innerHTML = `<div class="mc-cam"><img alt=""><canvas></canvas><div class="none">no frames</div></div>
@@ -84,11 +84,11 @@
 
   // ------------------------------------------------------------------ safety
   Bench.register({
-    id: 'mc-safety', title: 'Safety (obstacle guard)', order: 13, area: 'robot',
+    id: 'mc-safety', title: 'Safety (obstacle guard)', order: 10, area: 'car',
     help: 'The LiDAR obstacle check that can veto driving forward, and the tip-over reset.',
     mount(el) {
       el.innerHTML = `<div class="mc-row"><span class="mc-verdict">?</span> <span class="why mc-note"></span></div>
-        <table class="mc-t"></table>
+        <table class="dt"></table>
         <div class="mc-row"><button class="reset" title="RESET to tars_motor: clears the tip latch (teleop's R key)">RESET tip</button><span class="rr mc-note"></span></div>`;
       const V = el.querySelector('.mc-verdict');
       el.querySelector('.reset').onclick = async () => { el.querySelector('.rr').textContent = (await api('reset', {})).reply || ''; };
@@ -114,20 +114,19 @@
 
   // ------------------------------------------------------------------ goto
   Bench.register({
-    id: 'mc-goto', title: 'Go-to controller', order: 11, area: 'robot',
-    help: 'Send GOTO / SCAN / FORGET directly, and see goto’s state and event log.',
+    id: 'mc-goto', title: 'Go-to controller', order: 20, area: 'memory',
+    help: 'goto’s state right now, direct GOTO / RECALL / SCAN / CANCEL, and its event log.',
     mount(el) {
-      el.innerHTML = `<table class="mc-t"></table>
+      el.innerHTML = `<table class="dt"></table>
         <div class="mc-row"><select class="obj"></select>
-          <button data-g="GOTO">GOTO</button><button data-g="RECALL">RECALL</button><button data-g="FORGET">FORGET</button>
-          <button class="fa">FORGET all</button></div>
+          <button data-g="GOTO">GOTO</button><button data-g="RECALL" title="Drive back to where it last saw this">RECALL</button><button data-g="FORGET" class="danger">FORGET</button></div>
         <div class="mc-row"><button class="scan">SCAN (look around)</button><button class="ms">MEMORY SAY</button><button class="cx">CANCEL</button>
           <span class="rep mc-note"></span></div>
         <div class="mc-log ev"></div>`;
       const $ = s => el.querySelector(s), sel = $('.obj');
       const g = async line => { const r = await api('goto', {line}); $('.rep').textContent = `${line} → ${r.reply ?? ''}`; };
       el.querySelectorAll('[data-g]').forEach(b => b.onclick = () => g(`${b.dataset.g} ${sel.value}`));
-      $('.fa').onclick = () => g('FORGET all'); $('.scan').onclick = () => g('SCAN'); $('.cx').onclick = () => g('CANCEL');
+      $('.scan').onclick = () => g('SCAN'); $('.cx').onclick = () => g('CANCEL');
       $('.ms').onclick = async () => { $('.rep').textContent = 'MEMORY SAY → ' + ((await api('memory_say', {})).reply ?? ''); };
       renders.push(() => {
         const G = (gotoTopic && gotoTopic.status) || {};
@@ -146,22 +145,72 @@
     }
   });
 
-  // ------------------------------------------------------------------ memory + phone
+  // ------------------------------------------------------------------ memory (with Forget) + phone
+  // goto's MEMORY line, parsed by mission.State: {name: "trash can#1", status, x, y (mm, goto's odometry
+  // frame), rel_bearing, rel_dist, est_dist, age (s), seen, conf, map: "wx,wz" (ARKit m) when it has one}.
+  // FORGET <label>#<id> forgets one sighting, FORGET all everything (goto.c), via POST /api/mission/goto.
+  const memKey = name => String(name ?? '').replace(/_/g, ' ').trim();
   Bench.register({
-    id: 'mc-memory', title: 'What it remembers + phone', order: 12, area: 'robot',
-    help: 'Objects goto has seen and where (it drives back to them), plus the phone’s link state.',
+    id: 'mc-memory', title: 'What the robot remembers', order: 10, area: 'memory',
+    help: 'Objects goto has seen and where; it drives back to these. Forget removes one, Forget all wipes it. Anything the camera still sees is learned again at once.',
     mount(el) {
-      el.innerHTML = `<div class="mc-note mage"></div><table class="mc-t mem"></table>
-        <h2 style="margin-top:8px">phone <span class="page mc-note"></span></h2><table class="mc-t ph"></table>`;
+      el.innerHTML = `<div class="toolbar"><b class="cnt">–</b><span class="mc-note mage"></span><span style="flex:1"></span>
+          <button class="ms" title="Ask tars_voice what it remembers (it says it out loud on the robot)">🔊 Say it</button>
+          <button class="fa danger" title="FORGET all: goto forgets every object">🗑 Forget all…</button></div>
+        <div class="undo-bar rep" hidden></div>
+        <div class="tbl-scroll" style="max-height:none"><table class="dt nowrap mem">
+          <thead><tr><th>Object</th><th title="Where it was seen: ARKit map x, z in metres when known, else goto's odometry mm">Where</th>
+            <th title="Distance and bearing from the robot now (+ = right)">From robot</th><th>Age</th><th title="Detector confidence (hover: times seen)">Conf</th><th></th></tr></thead>
+          <tbody></tbody></table></div>`;
+      const $ = s => el.querySelector(s);
+      const say = (txt, bad) => { const r = $('.rep'); r.hidden = false; r.style.borderColor = bad ? 'var(--bad)' : ''; r.textContent = txt; clearTimeout(say.t); say.t = setTimeout(() => { r.hidden = true; }, 6000); };
+      async function forget(what) {
+        const line = what ? `FORGET ${what}` : 'FORGET all';
+        const r = await api('goto', {line});
+        const rep = String(r.reply ?? '');
+        say(`${line} → ${rep || 'no reply'}`, !/^OK/.test(rep));
+        Bench.log('memory', `${line} -> ${rep}`);
+      }
+      $('.fa').onclick = () => { if (confirm('Forget EVERYTHING the robot remembers? It will have to search for objects again.')) forget(null); };
+      $('.ms').onclick = async () => say('MEMORY SAY → ' + ((await api('memory_say', {})).reply ?? ''));
+      const tbody = $('tbody');
+      tbody.addEventListener('click', ev => { const b = ev.target.closest('button[data-forget]'); if (b) forget(b.dataset.forget); });
+      let key = '';
+      const num = (v, d = 0) => v === undefined || v === '' || isNaN(+v) ? '–' : (+v).toFixed(d);
+      const age = a => a === undefined || isNaN(+a) ? '–' : +a < 90 ? `${(+a).toFixed(0)} s` : +a < 5400 ? `${(+a / 60).toFixed(0)} min` : `${(+a / 3600).toFixed(1)} h`;
+      renders.push(() => {
+        const Mem = S.memory || {}, objs = Mem.objects || [];
+        stale($('.mem'), S.memory_age, 2.5);
+        $('.mage').textContent = S.memory_age == null ? 'no MEMORY from goto yet' : S.memory_age > 2.5 ? `(${ageTxt(S.memory_age)})` : '';
+        $('.cnt').textContent = `${objs.length} remembered`;
+        $('.fa').disabled = !objs.length;
+        const k = JSON.stringify(objs.map(o => [o.name, o.status, o.map, o.x, o.y, o.rel_dist, o.rel_bearing, Math.round(+o.age / 5), o.seen, o.conf]));
+        if (k === key) return;
+        key = k;
+        tbody.innerHTML = objs.length ? objs.map(o => {
+          const [label, id] = memKey(o.name).split('#');
+          const where = o.map ? String(o.map).split(',').map(v => (+v).toFixed(2)).join(', ') + ' m' : `${num(o.x)}, ${num(o.y)} mm`;
+          const st = o.status === 'fresh' ? 'ok' : o.status === 'stale' ? 'warn' : 'dim';
+          return `<tr data-name="${esc(memKey(o.name))}"><td title="${esc(o.status)}: fresh = seen recently, stale = old, gone = looked and it wasn't there"><span class="${st}">●</span> <b>${esc(label)}</b>${id ? ` <span class="dim">#${esc(id)}</span>` : ''}</td>
+            <td class="num">${esc(where)}</td>
+            <td class="num">${o.rel_dist !== undefined && !isNaN(+o.rel_dist) ? (+o.rel_dist / 1000).toFixed(2) + ' m' : '–'} @ ${num(o.rel_bearing)}°</td>
+            <td class="num">${age(o.age)}</td><td class="num" title="seen ${esc(o.seen ?? '?')} times">${num(o.conf, 2)}</td>
+            <td class="act"><button class="danger" data-forget="${esc(memKey(o.name))}" title="FORGET ${esc(memKey(o.name))}">Forget</button></td></tr>`;
+        }).join('') : '<tr class="empty-row"><td colspan="6">nothing remembered yet: GOTO or SCAN makes goto remember what it sees</td></tr>';
+      });
+    }
+  });
+
+  Bench.register({
+    id: 'mc-phone', title: 'Phone link', order: 30, area: 'mission',
+    help: 'The iPhone’s state as the Pi’s phone tee reports it (real robot).',
+    mount(el) {
+      el.innerHTML = `<div class="mc-note page"></div><table class="dt ph"></table>`;
       const $ = s => el.querySelector(s);
       renders.push(() => {
-        const Mem = S.memory || {};
-        stale($('.mem'), S.memory_age, 2.5); $('.mage').textContent = ageTxt(S.memory_age > 2.5 ? S.memory_age : 0);
-        $('.mem').innerHTML = (Mem.objects || []).map(o => `<tr><td>${esc(o.name)}</td><td>${esc(o.status)} · ${esc(o.rel_dist)} mm @ ${esc(o.rel_bearing)}° · seen ${esc(o.seen)} · ${esc(o.age)} s ago${o.map ? ' · map ' + esc(o.map) : ''}</td></tr>`).join('')
-          || '<tr><td>nothing remembered</td></tr>';
         const P = phone || {}, sur = P.surroundings || {}, ai = P.ai || {}, dep = P.depth || {};
         stale($('.ph'), S.phone_age, 2.5);
-        $('.page').textContent = phone ? ageTxt(S.phone_age > 2.5 ? S.phone_age : 0) : (S.target === 'pi' ? '(phone tee off)' : '(no phone tee in sim/usb: see the iPhone 3D map panel)');
+        $('.page').textContent = phone ? ageTxt(S.phone_age > 2.5 ? S.phone_age : 0) : (S.target === 'pi' ? '(phone tee off)' : '(no phone tee in sim/usb: see the iPhone 3D map view)');
         rows($('.ph'), [['streaming', P.streaming], ['motion / camera', `${P.motion_hz ?? '-'} Hz / ${P.camera_fps ?? '-'} fps`], ['tracking', `${sur.tracking ?? '-'} floor ${sur.floor_ready ?? '-'}`],
           ['map', `${sur.voxels ?? '-'} voxels, ${sur.frames ?? '-'} frames, scanned ${sur.scan_degrees ?? '-'}°`], ['YOLOX', ai.live ? `${ai.inference_ms} ms, ${(ai.objects || []).length} objects` : (ai.error || 'off')],
           ['MiDaS', dep.live ? `${dep.inference_ms} ms` : (dep.error || 'off')], ['message', sur.message ?? '']]);
@@ -230,7 +279,7 @@
 
   // ------------------------------------------------------------------ robot voice (the robot's own classifier)
   Bench.register({
-    id: 'mc-voice', title: 'Robot voice log', order: 17, area: 'pi',
+    id: 'mc-voice', title: 'Robot voice log', order: 17, area: 'mission',
     help: 'What the robot’s own tars_voice heard and did (hold V to talk to it directly).',
     mount(el) {
       el.innerHTML = `<div class="mc-note mode"></div>
@@ -292,7 +341,7 @@
 
   // ------------------------------------------------------------------ Pi: services, journals, room view
   Bench.register({
-    id: 'mc-pi', title: 'Pi: services · action journals · room view', order: 18, wide: true, area: 'pi',
+    id: 'mc-pi', title: 'Pi: services · action journals · room view', order: 18, wide: true, area: 'mission',
     help: 'Which services run on the Pi, their journals over SSH, and Andrew’s room view tunnel.',
     mount(el) {
       el.innerHTML = `<div class="mc-row"><span class="ups"></span></div>

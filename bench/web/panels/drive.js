@@ -23,7 +23,7 @@
 
   // ---------------------------------------------------------------- Drive (left column)
   Bench.register({
-    id: 'drive', title: '🕹 Drive by hand', order: 10, area: 'side',
+    id: 'drive', title: '🕹 Drive by hand', order: 10, area: 'drive',
     help: 'Hold the keys (or press the pad). Releasing stops the wheels.',
     mount(el) {
       el.innerHTML = `
@@ -106,7 +106,7 @@
 
   // ---------------------------------------------------------------- wheel chart + console (Debug tab)
   Bench.register({
-    id: 'drive-debug', title: 'Wheels chart + command console', order: 10, area: 'debug',
+    id: 'drive-debug', title: 'Wheels chart + command console', order: 30, area: 'tests',
     help: 'Commanded wheel power vs what tars_motor outputs vs the virtual car’s real wheel speed; and send any raw line.',
     mount(el) {
       el.innerHTML = `

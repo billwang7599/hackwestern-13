@@ -1,23 +1,25 @@
 // TARS bench shell: loads every panel in /panels.json, gives them a shared
-// event stream and API helper, and lays the page out. A panel file only calls Bench.register({...}).
+// event stream and API helper, and lays the page out as a navbar of pages (one job each).
+// A panel file only calls Bench.register({...}).
 //
 //   Bench.register({
-//     id: 'drive', title: 'Drive', order: 10,   // lower order = earlier in its area
-//     area: 'side',                             // where it goes (below); default 'more'
+//     id: 'drive', title: 'Drive', order: 10,   // lower order = earlier on its page
+//     area: 'drive',                            // which page (below); 'view' = the map; 'header' = top bar
 //     help: 'one line saying what this is for', // shown under the title
-//     view: 'Room',                             // area 'view' only: the label on the view switch
-//     wide: false,                              // legacy, ignored by the layout
+//     view: 'Room',                             // area 'view' only: the label on the map's view switch
+//     wide: false,                              // full-width pages: span every column
 //     mount(el, Bench) { ... }                  // build the DOM inside el
 //   });
-//   Areas: 'header' (bits of the top bar), 'side' (always-visible left column: talk + drive),
-//          'view' (the big centre view; several = a switch above it), or a drawer tab id from
-//          TABS below ('robot', 'pi', 'sim', 'maps', 'voice', 'tests', 'debug'; an unknown id
-//          makes a new tab, titled tabTitle or the id).
+//   Pages: PAGES below ('drive', 'room', 'memory', 'voice', 'car', 'tests', 'mission'). Old drawer tab ids
+//   still work (LEGACY: side→drive, robot→memory, sim/maps→room, pi→mission, debug→tests); an unknown id
+//   makes a new page titled tabTitle or the id. Pages with map: true show the map (area 'view') beside
+//   their column; the others use the full width.
 //   Bench.on('status', data => ...)   // server-sent event topic (also local Bench.emit topics)
+//   Bench.on('page', id => ...)       // local: the shown page changed (also fired once at boot)
 //   Bench.emit('topic', data)         // local event to every Bench.on('topic') handler in this tab
 //   await Bench.api('drive/cmd', {line: 'S'})   // POST /api/drive/cmd (GET if no body)
 //   Bench.log('drive', 'text')        // local line in the log
-//   Bench.openTab('debug') / Bench.closeDrawer() / Bench.showView('world2d')
+//   Bench.openPage('room') / Bench.page / Bench.showView('world2d')   (openTab = openPage, legacy)
 //   Bench.setBadgeDetail('virtual SM11')        // text after SIM in the badge
 //   Bench.mic.start() / await Bench.mic.stop() -> 16 kHz mono WAV ArrayBuffer (or null)
 'use strict';
@@ -27,19 +29,19 @@ const Bench = (() => {
   let es = null;
   let info = {panels: [], plugins: [], target: {}};
 
-  // drawer tabs, in this order; help = the one-line explanation at the top of the drawer
-  const TABS = [
-    ['robot', 'Robot status', 'What the robot’s brain reports: go-to state and object memory, the safety guard, tars_motor’s raw STATUS, goto’s own map.'],
-    ['pi', 'Pi & camera', 'Real-robot links: the phone camera through the Pi, the robot’s own voice input, Pi services and journals.'],
-    ['sim', 'Sim room & car', 'SIMULATION controls: edit the room, inject sensor faults and noise, and poke the virtual car (faults, battery, motor guesses).'],
-    ['maps', 'Map demos', 'Build a map, then go find things: explore live from nothing, or load a prescan (sim only).'],
-    ['voice', 'Voice lab', 'Test the speech pipeline in depth: exactly what the classifier decides, what lines it sends, batch accuracy with noise.'],
-    ['tests', 'Tests & recorder', 'Scripted bring-up checks (the PI_TEST.md steps) with pass/fail, and record/replay of everything.'],
-    ['debug', 'Debug & log', 'Wheel-speed chart, a raw command console to tars_motor / goto / voice, and the full event log.'],
+  // pages, in navbar order: [id, title, help, map shown?, default map view]
+  const PAGES = [
+    ['drive', '🕹 Drive', 'Talk to TARS or drive by hand, and watch the map.', true, null],
+    ['room', '🧱 Room', 'SIMULATION: edit the sim room (add, move, delete things), load or save rooms, break sensors on purpose, map demos.', true, 'world2d'],
+    ['memory', '🧠 Memory', 'What the robot’s go-to controller remembers and where. Forget one thing or everything; send GOTO / SCAN directly.', true, 'mc-map'],
+    ['voice', '🎙 Voice lab', 'The speech pipeline in depth: what the classifier decides, which lines it sends, batch accuracy with noise.', false, null],
+    ['car', '🚗 Car', 'The car: readings, the safety guard, tars_motor’s raw STATUS, and (sim) faults and motor guesses.', false, null],
+    ['tests', '✅ Tests', 'Scripted bring-up checks with pass/fail, record/replay, the wheel chart, a raw command console and the full log.', false, null],
+    ['mission', '📡 Mission', 'Real-robot mission control: the phone camera through the Pi, the robot’s own voice log, Pi services and journals.', false, null],
   ];
-  const tabHelp = {};
-  const tabOrder = [];
-
+  const LEGACY = {side: 'drive', robot: 'memory', sim: 'room', maps: 'room', pi: 'mission', debug: 'tests', more: 'tests'};
+  const pageDef = {};
+  const pageOrder = [];
   function on(topic, fn) {
     (handlers[topic] = handlers[topic] || []).push(fn);
     if (es) es.addEventListener(topic, ev => fn(JSON.parse(ev.data)));
@@ -75,52 +77,67 @@ const Bench = (() => {
   }
 
   // ---------------------------------------------------------------- layout
-  function ensureTab(id, title) {
-    let body = document.querySelector(`#drawer-body [data-tab="${id}"]`);
+  // Each page is a div in #pages; pages with map:true also show #center (the map) beside it.
+  // Hidden pages stay in the DOM (display:none), so panels keep their state and keep listening.
+  function ensurePage(id, title) {
+    id = LEGACY[id] || id;
+    let body = document.querySelector(`#pages > .page[data-page="${id}"]`);
     if (body) return body;
-    const def = TABS.find(t => t[0] === id);
-    title = (def && def[1]) || title || id;
-    tabHelp[id] = {title, help: (def && def[2]) || ''};
+    const def = PAGES.find(t => t[0] === id);
+    pageDef[id] = {title: (def && def[1]) || title || id, help: (def && def[2]) || '', map: !!(def && def[3]), view: def && def[4]};
     body = document.createElement('div');
-    body.className = 'tab-body'; body.dataset.tab = id; body.hidden = true;
-    document.getElementById('drawer-body').appendChild(body);
-    const b = document.createElement('button');
-    b.className = 'tab'; b.dataset.tab = id; b.textContent = title;
-    b.title = tabHelp[id].help;
-    b.onclick = () => (openTabId === id ? closeDrawer() : openTab(id));
-    // keep the TABS order regardless of which panel registers first
-    const rank = k => { const i = TABS.findIndex(t => t[0] === k); return i < 0 ? 99 : i; };
-    const bar = document.getElementById('tabbar');
-    const after = [...bar.querySelectorAll('button.tab')].find(x => rank(x.dataset.tab) > rank(id));
+    body.className = 'page'; body.dataset.page = id; body.id = 'page-' + id; body.hidden = true;
+    body.setAttribute('role', 'tabpanel');
+    const head = document.createElement('div'); head.className = 'page-help'; head.textContent = pageDef[id].help;
+    if (pageDef[id].help) body.appendChild(head);
+    const grid = document.createElement('div'); grid.className = 'page-grid';
+    body.appendChild(grid);
+    document.getElementById('pages').appendChild(body);
+    const b = document.createElement('a');
+    b.className = 'navtab'; b.dataset.page = id; b.href = '#' + id; b.setAttribute('role', 'tab');
+    b.textContent = pageDef[id].title; b.title = pageDef[id].help;
+    b.onclick = ev => { ev.preventDefault(); openPage(id); };
+    // keep the PAGES order regardless of which panel registers first
+    const rank = k => { const i = PAGES.findIndex(t => t[0] === k); return i < 0 ? 99 : i; };
+    const bar = document.getElementById('navbar');
+    const after = [...bar.querySelectorAll('.navtab')].find(x => rank(x.dataset.page) > rank(id));
     bar.insertBefore(b, after || null);
-    tabOrder.push(id);
-    if (savedTab === id) openTab(id);
+    pageOrder.splice(0, pageOrder.length, ...[...bar.querySelectorAll('.navtab')].map(x => x.dataset.page));
     return body;
   }
+  const pageGrid = (id, title) => ensurePage(id, title).querySelector('.page-grid');
 
-  let openTabId = null;
-  const savedTab = (() => { try { return localStorage.getItem('bench.tab'); } catch (e) { return null; } })();
-  function openTab(id) {
-    if (!document.querySelector(`#drawer-body [data-tab="${id}"]`)) return;
-    openTabId = id;
-    for (const b of document.querySelectorAll('#drawer-body .tab-body')) b.hidden = b.dataset.tab !== id;
-    for (const b of document.querySelectorAll('#tabbar button.tab')) b.classList.toggle('on', b.dataset.tab === id);
-    document.getElementById('drawer-title').textContent = tabHelp[id].title;
-    document.getElementById('drawer-help').textContent = tabHelp[id].help;
-    document.getElementById('drawer').hidden = false;
-    document.body.classList.add('drawer-open');
-    try { localStorage.setItem('bench.tab', id); } catch (e) { /* private mode */ }
+  let curPage = null;
+  const store = {get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+                 set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }};
+  function openPage(id, {hash = true} = {}) {
+    id = LEGACY[id] || id;
+    const pg = document.querySelector(`#pages > .page[data-page="${id}"]`);
+    if (!pg) return false;
+    curPage = id;
+    for (const x of document.querySelectorAll('#pages > .page')) x.hidden = x.dataset.page !== id;
+    for (const b of document.querySelectorAll('#navbar .navtab')) {
+      const on = b.dataset.page === id;
+      b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+    const def = pageDef[id] || {};
+    document.body.dataset.page = id;
+    document.body.classList.toggle('with-map', !!def.map);
+    document.getElementById('center').hidden = !def.map;
+    store.set('bench.page', id);
+    if (hash && location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
+    // the map view this page wants: the one last chosen on this page, else the page's default
+    if (def.map) {
+      const has = v => v && document.querySelector(`#views [data-view="${v}"]`);
+      const first = [...document.querySelectorAll('#views > .view')].sort((a, b) => (+a.style.order) - (+b.style.order))[0];
+      const want = [store.get('bench.view.' + id), def.view, first && first.dataset.view].find(has);
+      if (want && want !== shownView) showView(want, false);
+    }
+    emit('page', id);
     relayout();
+    return true;
   }
-  function closeDrawer() {
-    openTabId = null;
-    document.getElementById('drawer').hidden = true;
-    document.body.classList.remove('drawer-open');
-    for (const b of document.querySelectorAll('#tabbar button.tab')) b.classList.remove('on');
-    try { localStorage.removeItem('bench.tab'); } catch (e) { /* private mode */ }
-    relayout();
-  }
-  // canvases size themselves on window resize
+  // canvases size themselves on window resize (also after a page or view switch: they were 0×0 while hidden)
   const relayout = () => requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
 
   let shownView = null;
@@ -130,14 +147,14 @@ const Bench = (() => {
     shownView = id;
     for (const x of document.querySelectorAll('#views > .view')) x.hidden = x.dataset.view !== id;
     for (const b of document.querySelectorAll('#viewbar button')) b.classList.toggle('on', b.dataset.view === id);
-    if (persist) try { localStorage.setItem('bench.view', id); } catch (e) { /* private mode */ }
+    if (persist) { store.set('bench.view', id); if (curPage) store.set('bench.view.' + curPage, id); }
     emit('view', id);
     relayout();
   }
 
   function section(p) {
     const sec = document.createElement('section');
-    sec.className = 'panel';
+    sec.className = 'panel' + (p.wide ? ' wide' : '');
     sec.id = 'panel-' + p.id;
     sec.style.order = p.order ?? 50;
     const h = document.createElement('h2'); h.textContent = p.title || p.id;
@@ -171,17 +188,16 @@ const Bench = (() => {
       if (!shownView) showView(p.id, false);
     } else {
       const [sec, body] = section(p);
-      const parent = area === 'side' ? document.getElementById('side') : ensureTab(area, p.tabTitle);
-      parent.appendChild(sec);
+      pageGrid(area, p.tabTitle).appendChild(sec);
       mountEl = body;
     }
     try { p.mount(mountEl, Bench); }
     catch (e) { mountEl.textContent = 'panel failed: ' + e; console.error(e); }
   }
 
-  // the shell's own log panel (Debug tab)
+  // the shell's own log panel (Tests page)
   function logPanel() {
-    register({id: 'log', title: 'Log', order: 90, area: 'debug', help: 'Every message from every part, newest first.',
+    register({id: 'log', title: 'Log', order: 90, area: 'tests', wide: true, help: 'Every message from every part, newest first.',
       mount(el) {
         const box = document.createElement('div'); box.id = 'log'; box.setAttribute('aria-label', 'log');
         el.appendChild(box);
@@ -217,7 +233,7 @@ const Bench = (() => {
       (info.hidden && info.hidden.length ? `\nsim-only panels hidden: ${info.hidden.join(', ')}` : '');
     document.body.classList.toggle('real-robot', real);
     document.title = (real ? 'REAL ROBOT · ' : 'SIM · ') + 'TARS bench';
-    for (const [id] of TABS) if (id === 'debug') ensureTab(id);
+    for (const [id] of PAGES) ensurePage(id);   // the navbar always lists the pages in PAGES order
     logPanel();
     connect();
     for (const f of info.panels) {
@@ -228,15 +244,25 @@ const Bench = (() => {
         document.body.appendChild(s);
       });
     }
-    // the saved view if it still exists, else the lowest-order one
     const views = [...document.querySelectorAll('#views > .view')];
-    let want = null; try { want = localStorage.getItem('bench.view'); } catch (e) { /* private mode */ }
-    if (views.length) showView(views.some(v => v.dataset.view === want) ? want
-      : views.sort((a, b) => (+a.style.order) - (+b.style.order))[0].dataset.view, false);
-    if (!views.length) {
-      document.getElementById('views').innerHTML = '<div class="empty">No map view on this target. Open <b>More tools → Robot status</b> for goto’s map.</div>';
+    if (views.length) {   // the saved view if it still exists, else the lowest-order one
+      const want = store.get('bench.view');
+      showView(views.some(v => v.dataset.view === want) ? want
+        : views.slice().sort((a, b) => (+a.style.order) - (+b.style.order))[0].dataset.view, false);
+    } else {
+      document.getElementById('views').innerHTML = '<div class="empty">No map view on this target.</div>';
     }
     document.getElementById('viewbar').hidden = document.querySelectorAll('#viewbar button').length < 2;
+    // a page with nothing on it (e.g. Room on the real robot: its panels are sim-only) leaves the navbar
+    for (const pg of document.querySelectorAll('#pages > .page')) {
+      const empty = !pg.querySelector('.page-grid > .panel');
+      if (empty) { pg.remove(); document.querySelector(`#navbar .navtab[data-page="${pg.dataset.page}"]`)?.remove(); }
+    }
+    pageOrder.splice(0, pageOrder.length, ...[...document.querySelectorAll('#navbar .navtab')].map(x => x.dataset.page));
+    // the page: the URL hash (#room), else the last one shown, else Drive
+    const fromHash = location.hash.slice(1);
+    if (!openPage(fromHash) && !openPage(store.get('bench.page'))) openPage(pageOrder[0] || 'drive');
+    window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (h && h !== curPage) openPage(h, {hash: false}); });
   }
 
   // ---------------------------------------------------------------- mic (shared by every panel)
@@ -303,8 +329,13 @@ const Bench = (() => {
   window.addEventListener('keydown', ev => {
     if (ev.code === 'Escape' && !typing(ev.target)) {
       const help = document.getElementById('help');
-      if (help && !help.hidden) { hideHelp(); return; }
-      if (openTabId) closeDrawer();
+      if (help && !help.hidden) hideHelp();
+      return;
+    }
+    // 1…7 switch pages (outside text boxes, no modifiers)
+    if (/^Digit[1-9]$/.test(ev.code) && !typing(ev.target) && !ev.metaKey && !ev.ctrlKey && !ev.altKey && !ev.repeat) {
+      const id = pageOrder[+ev.code.slice(5) - 1];
+      if (id) { ev.preventDefault(); openPage(id); }
       return;
     }
     if (ev.code !== 'Space' || ev.repeat) return;
@@ -322,12 +353,13 @@ const Bench = (() => {
     document.getElementById('help-btn').addEventListener('click', showHelp);
     document.getElementById('help-close').addEventListener('click', hideHelp);
     document.getElementById('help').addEventListener('click', ev => { if (ev.target.id === 'help') hideHelp(); });
-    document.getElementById('drawer-close').addEventListener('click', closeDrawer);
-    document.getElementById('ticker').addEventListener('click', () => openTab('debug'));
+    document.getElementById('ticker').addEventListener('click', () => {
+      openPage('tests'); document.getElementById('panel-log')?.scrollIntoView({block: 'nearest'});
+    });
     let seen = null; try { seen = localStorage.getItem('bench.helpSeen'); } catch (e) { /* private mode */ }
     if (!seen && !/[?&]nohelp\b/.test(location.search)) showHelp();
     boot();
   });
-  return {on, emit, api, log, register, openTab, closeDrawer, showView, setBadgeDetail, mic,
-    get info() { return info; }, get panels() { return panels; }};
+  return {on, emit, api, log, register, openPage, openTab: openPage, closeDrawer: () => openPage('drive'), showView, setBadgeDetail, mic,
+    get info() { return info; }, get panels() { return panels; }, get page() { return curPage; }, PAGES};
 })();
