@@ -99,7 +99,8 @@ static void grid_print() {
           c.p["batt_v"] = bv; c.p["batt_r_ohm"] = br; c.vb = c.vb_min = bv;
           if (k == 0) rr[k] = fw_turn(c, 0.45, 0.6);
           else if (k == 1) rr[k] = run(c, 1.0, -1.0, 0.6);
-          else { c.walls = {{0.135, -1, 0.135, 1}, {-0.135, -1, -0.135, 1}}; rr[k] = run(c, 0.8, 0.8, 0.6); }
+          else { double xw = c.P("length_m") > 0 ? c.P("length_m") / 2 + 0.0075 : 0.135;
+                 c.walls = {{xw, -1, xw, 1}, {-xw, -1, -xw, 1}}; rr[k] = run(c, 0.8, 0.8, 0.6); }
         }
         printf("  %dWD   %.1f V  %.1f ohm | %5.2f V %-11s| %5.2f V %-11s| %5.2f V %-11s\n", wd, bv, br,
                rr[0].vb_min, rr[0].sag ? "RESET" : "", rr[1].vb_min, rr[1].sag ? "RESET" : "",
@@ -139,7 +140,8 @@ int main(int argc, char **argv) {
     Car s1(1), s2(1);
     load(s1, "sm11"); load(s2, "sm11");
     s1.p["motors_per_side"] = 1;
-    for (Car *c : {&s1, &s2}) c->walls = {{0.135, -1, 0.135, 1}};   // nose at 0.1275: a wall 7.5 mm ahead
+    const double xw = s2.P("length_m") / 2 + 0.0075;   // a wall 7.5 mm ahead of the nose
+    for (Car *c : {&s1, &s2}) c->walls = {{xw, -1, xw, 1}};
     Run t1 = run(s1, 1.0, 1.0, 0.5), t2 = run(s2, 1.0, 1.0, 0.5);
     check(t2.ich_max > 1.6 * t1.ich_max, "stalled against a wall at duty 1: channel %.2f A (2 motors) vs %.2f A (1)",
           t2.ich_max, t1.ich_max);
@@ -153,7 +155,7 @@ int main(int argc, char **argv) {
     Car c(1);
     load(c, "sm11");
     c.p["ch_limit_a"] = 0.6;   // an L293D-style board
-    c.walls = {{0.135, -1, 0.135, 1}};
+    c.walls = {{c.P("length_m") / 2 + 0.0075, -1, c.P("length_m") / 2 + 0.0075, 1}};
     Run r = run(c, 1.0, 1.0, 0.5);
     check(r.ilim && r.ich_max <= 0.6 + 1e-9, "ch_limit_a 0.6 (L293D-style): 4WD stall clamped to %.3f A, ilim flagged", r.ich_max);
     Car d(1);
@@ -172,8 +174,9 @@ int main(int argc, char **argv) {
   {
     Car c(1);
     load(c, "sm11");
-    check(std::fabs(c.track_eff() - 0.155 * (1 + std::pow(0.13 / 0.155, 2))) < 1e-9,
-          "4WD track_eff derived from geometry: %.3f m (track 0.155, wheelbase 0.13)", c.track_eff());
+    const double B = c.P("track_m"), L = c.P("wheelbase_m");
+    check(B > 0 && L > 0 && std::fabs(c.track_eff() - B * (1 + std::pow(L / B, 2))) < 1e-9,
+          "4WD track_eff derived from geometry: %.3f m (track %.3f, wheelbase %.3f)", c.track_eff(), B, L);
     printf("  ..   4WD spin needs %.2f V/motor extra (tyre scrub) + scrub_v %.2f over v_keep %.2f / v_start %.2f\n",
            c.scrub_geo_v(), c.P("scrub_v"), c.P("v_keep"), c.P("v_start"));
     Car s(1);
@@ -205,6 +208,22 @@ int main(int argc, char **argv) {
     ln.p["mass_kg"] = 0.45; ln.p["scrub_mu"] = 0.3;   // bare kit on smooth tile
     Run light = fw_turn(ln, 0.45, 1.5);
     printf("  ..   4WD bare kit (0.45 kg, mu 0.3) TURN at D 1: %.0f deg in 1.5 s\n", -light.dth_deg);
+    // sm11_taped.json: rear tyres wrapped in tape (scrub_mu = the rear pair's sliding friction)
+    Car tp(1), tq(1);
+    load(tp, "sm11_taped"); load(tq, "sm11_taped");
+    Run tf = fw_turn(tp, 0.45, 1.5), ts = fw_turn(tq, 0.36, 1.5);
+    double taped_min = 0;
+    for (double du = 0.30; du <= 1.0001; du += 0.01) {
+      Car h(1);
+      load(h, "sm11_taped");
+      Run q = fw_turn(h, du, 1.5);
+      if (std::fabs(q.dth_deg) > 30) { taped_min = du; break; }
+    }
+    printf("  ..   taped rears (mu %.2f): scrub %.2f V/motor; TURN at D 1 %.0f deg, slow %.0f deg in 1.5 s; lowest spin duty %.2f\n",
+           tp.P("scrub_mu"), tp.scrub_geo_v(), -tf.dth_deg, -ts.dth_deg, taped_min);
+    check(std::fabs(tf.dth_deg) > 10 && std::fabs(tf.dth_deg) > std::fabs(d1.dth_deg) + 10 && taped_min < min_spin_duty,
+          "taped rear tyres: the firmware's TURN (kick, then 0.45) now creeps round %.0f deg in 1.5 s (untaped %.0f); "
+          "lowest spin duty %.2f vs %.2f untaped: marginal at the 0.45 cap", -tf.dth_deg, -d1.dth_deg, taped_min, min_spin_duty);
     Car st(1);
     load(st, "sm11");
     Run straight = run(st, 0.36, 0.36, 1.5, 40);
@@ -247,9 +266,11 @@ int main(int argc, char **argv) {
   {
     Car c(1);
     load(c, "sm11");
-    c.walls = {{-1, 0.12, 1, 0.12}};   // wall alongside: 3 cm off the wheels, inside the half-diagonal
+    const double hl = c.P("length_m") / 2, hw = c.P("width_m") / 2;
+    c.walls = {{-1, 0.12, 1, 0.12}};   // wall alongside: ~3 cm off the wheels, inside the half-diagonal
     Run idle = run(c, 0, 0, 0.1);
-    check(!idle.contact, "box 0.255 x 0.18 parked 0.12 m from a wall: no contact (half-width 0.09)");
+    check(hw < 0.12 && c.half_diag() > 0.12 + 0.005, "geometry puts 0.12 m between half-width %.4f and half-diagonal %.4f", hw, c.half_diag());
+    check(!idle.contact, "box %.3f x %.3f parked 0.12 m from a wall: no contact (half-width %.4f)", 2 * hl, 2 * hw, hw);
     Run sp = run(c, 1.0, -1.0, 1.0);
     check(sp.contact && c.y < -0.004, "spin in place there: a corner (half-diagonal %.3f) hits it, car shoved %.0f mm away",
           c.half_diag(), -c.y * 1000);
@@ -264,14 +285,14 @@ int main(int argc, char **argv) {
     load(h, "sm11");
     h.walls = {{0.5, -1, 0.5, 1}};
     run(h, 0.45, 0.45, 5.0, 40);
-    check(h.contact && std::fabs(h.x - (0.5 - 0.1275)) < 0.005, "head-on: stops with the nose on the wall (centre x %.4f, expect %.4f)",
-          h.x, 0.5 - 0.1275);
+    check(h.contact && std::fabs(h.x - (0.5 - hl)) < 0.005, "head-on: stops with the nose on the wall (centre x %.4f, expect %.4f)",
+          h.x, 0.5 - hl);
     Car bx(1);
     load(bx, "sm11");
     bx.th = M_PI / 4;   // 45 deg toward a wall at x = 0.3: a corner leads
     bx.walls = {{0.3, -1, 0.3, 1}};
     run(bx, 0.6, 0.6, 3.0, 40);
-    double a = 0.1275, b = 0.09, cth = std::cos(bx.th), sth = std::sin(bx.th);
+    double a = hl, b = hw, cth = std::cos(bx.th), sth = std::sin(bx.th);
     double reach = a * std::fabs(cth) + b * std::fabs(sth);
     check(bx.contact && std::fabs(bx.x + reach - 0.3) < 0.006, "approach at an angle: stops when the leading corner touches (corner x %.4f)",
           bx.x + reach);
