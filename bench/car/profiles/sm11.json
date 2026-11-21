@@ -1,6 +1,6 @@
 {
   "name": "sm11",
-  "about": "Kuman SM11 smart car kit, 4WD (the user, 2026-11-21): Uno R3, L298N-style EN+IN board, 4 TT 1:48 gearmotors (2 in parallel per channel), 2x18650, carrying the Pi 5 and the iPhone. NOTHING here is measured yet: every value is a guess from the firmware constants, datasheets and TT-motor folklore. Replace them when the car arrives (see measure_when_the_car_arrives). sm11_2wd.json is the 2WD variant.",
+  "about": "Kuman SM11 smart car kit, 4WD (the user, 2026-11-21): Uno R3, L298N-style EN+IN board, 4 TT 1:48 gearmotors (2 in parallel per channel), 2x18650, carrying the Pi 5 and the iPhone. Geometry (track, wheelbase, body) is estimated from the user's photo with the 65 mm TT wheel as scale; NOTHING here is measured yet: every value is a guess from the firmware constants, datasheets and TT-motor folklore. Replace them when the car arrives (see measure_when_the_car_arrives). sm11_2wd.json is the 2WD variant.",
   "measure_when_the_car_arrives": [
     "1. Battery: multimeter across the battery box, idle (batt_v) and while 'D 1 1' runs on the floor (sag -> batt_r_ohm ~= (V_idle - V_load) / ~1.2 A for 4WD). Then the worst case: watch the meter (min/max mode) during 'R 90' from rest; compare with the bench truth's batt_v_low for the same TURN.",
     "2. Straight speed: python3 iter1-wasd/laptop/wheel_cal.py dc-move (docs/PI_TEST.md Step 5) on the demo floor. The saved mm_s is the car's speed at D 1 (duty 0.45). In the bench: adjust kv_mps_per_v until 'M 1000' with the firmware's default 150 mm/s lands where the real car did (or run bench/tests/test_car.py's calibration step and compare its recovered mm_s with yours).",
@@ -36,7 +36,7 @@
     "kv_mps_per_v": {
       "value": 0.147,
       "measured": false,
-      "source": "chosen so duty 0.45 (DC_MAX_DUTY) at 7.4 V gives 150 mm/s, the firmware's DC_MM_S_DEFAULT; also ~0.66 m/s at 6 V = the TT 1:48 '200 rpm' rating on a 65 mm wheel"
+      "source": "chosen so duty 0.45 (DC_MAX_DUTY) at 7.4 V gives 150 mm/s, the firmware's DC_MM_S_DEFAULT; also ~0.66 m/s at 6 V = the TT 1:48 '200 rpm' rating on a 65 mm wheel. Wheel: 65 mm TT (photo), which this speed already assumes"
     },
     "v_keep": {
       "value": 1.5,
@@ -101,12 +101,12 @@
     "track_eff_m": {
       "value": 0.0,
       "measured": false,
-      "source": "0 = derive: track_m x (1 + (wheelbase_m/track_m)^2) = 0.264 m (vs 0.20 in goto's test_dc_car.py). Calibration (step 3) writes the measured value here"
+      "source": "0 = derive: track_m x (1 + (wheelbase_m/track_m)^2) = 0.207 m with the photo geometry (was 0.264 with the old guesses; goto's test_dc_car.py uses 0.20). Calibration (step 3) writes the measured value here"
     },
     "car_r_m": {
       "value": 0.155,
       "measured": false,
-      "source": "unused while length_m > 0 (half-diagonal of the box, for anything that wants a circle)"
+      "source": "unused while length_m > 0 (box half-diagonal ~0.133 m)"
     },
     "bump_g_per_mps": {
       "value": 16.0,
@@ -149,24 +149,24 @@
       "source": "L298N: 2 A per channel DC. If the board turns out to be L293D-style, set 0.6 (4WD stall ~1.2 A per channel would hit it)"
     },
     "track_m": {
-      "value": 0.155,
-      "measured": false,
-      "source": "guess: SM11 plate ~15 cm wide, wheel centres just outside"
-    },
-    "wheelbase_m": {
       "value": 0.13,
       "measured": false,
-      "source": "guess: TT motors near the front and back of a ~25 cm plate"
+      "source": "estimated from photo, 65 mm TT wheel as scale (the user's photo of the real car, 2026-11-21): tyre centre to tyre centre ~13 cm (was a 0.155 guess)"
+    },
+    "wheelbase_m": {
+      "value": 0.1,
+      "measured": false,
+      "source": "estimated from photo, 65 mm TT wheel as scale (the user's photo of the real car, 2026-11-21): axle to axle ~10 cm (was a 0.13 guess)"
     },
     "mass_kg": {
       "value": 0.85,
       "measured": false,
-      "source": "guess: kit + 2x18650 ~0.45 kg, Pi 5 + its 5 V supply ~0.2 kg, iPhone ~0.2 kg"
+      "source": "guess: kit + 2x18650 ~0.45 kg, Pi 5 + its 5 V supply ~0.2 kg, iPhone ~0.2 kg. No better basis from the photo: kept"
     },
     "scrub_mu": {
       "value": 0.4,
       "measured": false,
-      "source": "guess: sideways sliding friction of TT tyres; ~0.3 on smooth tile with hard tyres, ~0.8 soft rubber on grippy floor; carpet differs"
+      "source": "guess, kept at 0.4: the photo shows wide, soft-looking rubber TT tyres, which argues for MORE sideways grip (0.5-0.8 on a grippy floor), not less; 0.4 is the hard-floor/smooth-tile middle. ~0.3 smooth tile with hard tyres, ~0.8 soft rubber on grippy floor; carpet differs"
     },
     "motor_n_per_v": {
       "value": 0.55,
@@ -174,14 +174,14 @@
       "source": "TT 1:48 folklore: ~0.8 kgf.cm stall at 6 V on a 32.5 mm wheel = 2.4 N, over (6 - v_keep) V"
     },
     "length_m": {
-      "value": 0.255,
+      "value": 0.2,
       "measured": false,
-      "source": "guess: SM11 acrylic plate length"
+      "source": "estimated from photo, 65 mm TT wheel as scale (the user's photo of the real car, 2026-11-21): overall ~20 cm incl. wheels (was 0.255); a longer deck for the Pi/iPhone grows this"
     },
     "width_m": {
-      "value": 0.18,
+      "value": 0.175,
       "measured": false,
-      "source": "guess: plate + wheels"
+      "source": "estimated from photo, 65 mm TT wheel as scale (the user's photo of the real car, 2026-11-21): overall ~17.5 cm across the wide tyres (was 0.18)"
     },
     "brown_hold_ms": {
       "value": 5,

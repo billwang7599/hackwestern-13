@@ -182,29 +182,38 @@ The firmware's EEPROM survives resets and unplugs, but not a restart of `vuno`.
 
 **4WD parameters** (all `measured: false`; defaults keep a 2WD circle car exactly as before):
 `motors_per_side` 2, `driver_drop_v` 1.3 + `driver_r_ohm` 1.2 × channel A (L298N VCEsat vs
-current), `ch_limit_a` 2.0 (L293D-style board: 0.6), `track_m` 0.155, `wheelbase_m` 0.13,
-`mass_kg` 0.85 (kit + Pi + iPhone), `scrub_mu` 0.4, `motor_n_per_v` 0.55, `length_m` 0.255,
-`width_m` 0.18, `brown_hold_ms` 5, `tau_s` 0.14 (÷ motors per side). `track_eff_m` 0 =
-derive `track_m × (1 + (wheelbase/track)²)` = 0.264 m. Spin scrub per motor =
+current), `ch_limit_a` 2.0 (L293D-style board: 0.6), `track_m` 0.13, `wheelbase_m` 0.10,
+`mass_kg` 0.85 (kit + Pi + iPhone), `scrub_mu` 0.4, `motor_n_per_v` 0.55, `length_m` 0.20,
+`width_m` 0.175 (track, wheelbase and body estimated from the user's photo with the 65 mm TT
+wheel as scale), `brown_hold_ms` 5, `tau_s` 0.14 (÷ motors per side). `track_eff_m` 0 =
+derive `track_m × (1 + (wheelbase/track)²)` = 0.207 m. Spin scrub per motor =
 `scrub_mu × mass × g × wheelbase / (2 × track) / (motors_per_side × motor_n_per_v)` volts on
-top of `v_keep`/`v_start` (1.27 V here), scaled by how much of a spin the command is.
+top of `v_keep`/`v_start` (1.17 V here), scaled by how much of a spin the command is.
 
 **What 4WD predicts, with these guesses** (`make -C bench/car test`, `test_car_4wd.py`):
 - **The firmware can't spin the loaded 4WD car in place.** `TURN 90` at D 1 (kick 0.8 × 40 ms,
   then `DC_MAX_DUTY` 0.45) turns ~1°, the slow turn (0.36) the same; the lowest spin duty that
-  turns from rest is ~0.88 (duty 1.0: ~94°/s). Straight driving is fine. `wheel_cal.py dc-spin`
+  turns from rest is ~0.84 (duty 1.0: ~133°/s). The photo geometry (shorter wheelbase)
+  only lowered that from ~0.88. Straight driving is fine. `wheel_cal.py dc-spin`
   can't calibrate it: at 0° it says "measured amount must be > 0" (slow: "the slow turn
   stalled: raise DC_SLOW_TURN_DUTY"); a few degrees ends in a SPEEDCAL usage traceback (the
   scaled deg/s is under SPEEDCAL's 20). A bare kit on a slick floor (0.45 kg,
   mu 0.2) turns at D 1 (~22°/s) but its slow turn still stalls. Measure this first when the
   car arrives.
+- **Taped rear tyres** (`profiles/sm11_taped.json`, rear `scrub_mu` 0.15: with grippy fronts
+  the pivot moves to the front axle and only the taped rears slide, so the model's symmetric
+  scrub with mu = the rears' is the right resistance; the bench still spins about the centre,
+  not the front axle). It turns, but only just: lowest spin duty ~0.46 vs the 0.45 cap,
+  `TURN 90` creeps ~16° (uncalibrated) and the slow turn stalls; `dc-spin` can't save it (the
+  rate is under SPEEDCAL's 20°/s). Tape alone is not enough with these guesses; tape plus a
+  higher spin duty would be.
 - **Brownout:** none on a 7.4 V pack with 0.30 Ω (lowest 6.64 V on a duty-1 spin start,
   6.73 V on a firmware TURN; 4WD stall 1.2 A per channel, under the L298N's 2 A). A flat pack
   in a weak holder (7.0 V, 0.5 Ω) resets the Uno on a duty-1 spin start (5.91 V); the
   firmware's TURN on it sits at 6.01 V, right on the 6.0 V guess. With the Pi's USB plugged
   in, the Uno R3 switches to USB power below ~6.6 V on VIN and should not reset at all
   (`uno_resets_below_v` 0).
-- **Corners:** a spin 3 cm from a wall clips it with a corner (shoved ~8 mm, a ~2.4 g spike:
+- **Corners:** a spin 3 cm from a wall clips it with a corner (shoved ~4 mm, a ~2.0 g spike:
   over the firmware's 1.2 g bump threshold). The old circle body never touched it.
 - `sim GOTO` on `sm11` inherits the spin stall, so `run_sim.py` defaults to `--profile sm11_2wd`
   for the software demo (user decision); `--profile sm11` runs the 4WD model.
