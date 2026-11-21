@@ -1,0 +1,32 @@
+# clangd config for nvim on macOS.
+#
+# compile_commands.json comes from `make -C pi compdb` (bear runs inside the
+# Docker container). Because docker/run.sh mounts the repo and the SDP at the
+# SAME absolute paths as on the Mac, the paths in it are valid here.
+#
+# clangd can't execute qcc (it's a Linux x86 binary), so --query-driver is no
+# help on macOS. Instead we strip qcc's flags and point clangd at the QNX headers.
+#
+# >>> EDIT the /Users/bill/qnx800 path if your SDP lives elsewhere. <<<
+# (.clangd doesn't expand ~ or env vars.)
+#
+# Without compile_commands.json (e.g. before the SDP is installed), the same
+# flags still give decent completion on the host headers.
+CompileFlags:
+  Remove:
+    - -V*
+    - -Vgcc*
+    - -Y*
+  Add:
+    - --target=aarch64-unknown-linux-gnu   # Apple clang rejects *-nto-qnx triples
+    - -U__linux__
+    - -U__linux
+    - -Ulinux
+    - -D__QNXNTO__
+    - -D__QNX__=800
+    - -nostdlibinc
+    - -isystem/Users/bill/qnx800/target/qnx/usr/include
+    - -Wall
+    - -Wextra
+Diagnostics:
+  UnusedIncludes: None

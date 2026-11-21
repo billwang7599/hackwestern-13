@@ -1,0 +1,4 @@
+anthropic>=0.40
+# For real STT later (see voice.py listen()):
+# faster-whisper
+# sounddevice
