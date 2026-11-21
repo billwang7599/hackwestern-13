@@ -7,22 +7,22 @@
  *   MODE QNX | MODE LINUX      real-time vs EMULATED Linux (see below)
  *   HUMAN <x> / AUTO           Switch-controller target / back to prediction
  *   GOAL / RESET / PING / STATUS
- * Extensions (not in the contract, safe to ignore):
- *   GAINS <kp> <kd>            live PD tuning on the bench -> "OK <kp> <kd>"
- *   SIMHIT <mag>               stub backend only: fake an Uno "HIT <mag>" line
+ *   GAINS <kp> <kd>            live tuning of the active controller -> "OK <kp> <kd>"
+ *   SIMHIT <mag>               test only, stub backend: fake an Uno "HIT <mag>" line
+ *   SIMUNO <line>              test only, stub backend: fake any Uno line
  *
  * Threads:
  *   main      accept loop, one detached thread per client
  *   control   200 Hz, SCHED_RR (QNX mode), clock_nanosleep(TIMER_ABSTIME):
  *             Uno events -> watchdog -> target (prediction / human / park)
- *             -> PD on camera-measured paddle x -> backend->motor(duty)
+ *             -> controller (control.c: motor-model observer + PD, or
+ *                legacy PD with --ctl pd) -> backend->motor(duty)
  *
  * LINUX mode is an EMULATION for the demo: the control thread drops to
  * SCHED_OTHER and sleeps a random 0..jitter_ms on some ticks to mimic a
  * non-real-time kernel under load. It is not real Linux.
  *
- * Usage: goalie_motor [-b arduino|stub] [-d dev] [-p port] [-w wd_ms] [-r rt_prio]
- *                     [--kp K] [--kd K] [--jitter-ms MS] [--walls HALF_W_M]
+ * Usage: see usage() / goalie_motor --help.
  */
 #include <errno.h>
 #include <math.h>
@@ -40,28 +40,19 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "control.h"
 #include "goalie.h"
 #include "predict.h"
 
-/* ---- control constants (keep in sync with sim/controller.py) ---- */
+/* ---- control constants (controller gains/model: control.h, = sim/params.py) ---- */
 #define TICK_HZ             200
 #define GOAL_HALF_W         0.11    /* m, paddle target is clamped to the goal mouth */
-#define CTL_KP_DEF          15.0    /* duty per metre of error */
-#define CTL_KD_DEF          0.40    /* duty per m/s of paddle velocity (derivative on measurement) */
-#define CTL_DUTY_MAX        1.0
-#define CTL_DUTY_MIN        0.15    /* deadband compensation: smallest duty that moves the motor */
-#define CTL_ERR_DEADBAND    0.004   /* m: |err| below this and paddle still -> duty 0 */
-#define CTL_STILL_V         0.05    /* m/s: "paddle still" for the deadband */
-#define CTL_CAM_LATENCY_S   0.040   /* s: assumed camera+network latency, paddle is extrapolated */
-#define CTL_EXTRAP_MAX_S    0.100   /* s: never extrapolate the paddle further than this */
-#define PADDLE_VEL_ALPHA    0.5     /* low-pass on frame-to-frame paddle velocity */
-#define PADDLE_VEL_MAX      5.0     /* m/s clamp on the velocity estimate */
 #define PADDLE_STALE_MS     500     /* paddle unseen this long -> no feedback -> S */
-#define BALL_LOST_MS        250     /* ball unseen this long -> park centre */
+#define BALL_LOST_MS        250     /* ball unseen this long -> park centre (sim UNSEEN) */
 
 /* ---- save logic (contract) ---- */
-#define SAVE_VY_IN         -0.05    /* m/s: shot in flight */
-#define SAVE_VY_OUT         0.05    /* m/s: ball going back out */
+#define SAVE_VY_IN         -0.15    /* m/s: shot in flight (= predictor PRED_VY_INCOMING) */
+#define SAVE_VY_OUT         0.15    /* m/s: ball going back out */
 #define SAVE_REVERSE_Y      0.10    /* m: reversal counts only this close to the goal line */
 #define SAVE_REARM_Y        0.25    /* m: ball further out -> re-arm */
 #define SAVE_REARM_LOST_MS  1000    /* ball unseen this long -> re-arm */
@@ -88,7 +79,9 @@ static double cfg_walls     = PRED_WALL_HALF_W_DEF;
 
 /* ---- shared state (all under `lock`) ---- */
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static double kp = CTL_KP_DEF, kd = CTL_KD_DEF;
+static ctl_cfg_t    ctl_cfg;            /* filled from defaults + flags in main() */
+static controller_t ctl;
+static double       x_lim = GOAL_HALF_W;  /* min(goal half width, paddle reach) */
 
 static struct timespec last_feed;       /* F / PING / HUMAN: watchdog */
 static struct timespec last_frame;      /* F only: ms_since_frame */
@@ -99,7 +92,7 @@ static struct timespec ball_rx;         /* Pi time of the last ball sighting */
 static int             ball_ever;
 
 static int             paddle_valid;
-static double          paddle_x, paddle_v, paddle_t;   /* paddle_t: laptop seconds */
+static double          paddle_x;        /* last camera paddle x */
 static struct timespec paddle_rx;
 
 static int    ctl_human;
@@ -111,7 +104,7 @@ static int    stats_reset_req;
 static double target_x, duty_out;
 static int    wd_active, motor_stopped;
 
-static int    saves, goals, hits, last_accel_mg = -1;
+static int    saves, goals, hits, last_accel_mg = -1, uno_ready;
 static int    armed = 1, shot_incoming;
 static double shot_min_y = 1e9;
 static struct timespec last_incoming;
@@ -211,7 +204,16 @@ static void handle_event(const char *line)
     } else if (sscanf(line, "A %d", &v) == 1) {
         last_accel_mg = v;
     } else if (!strncmp(line, "READY", 5)) {
-        fprintf(stderr, "[uno] READY\n");
+        /* First READY = boot after the port opened. A later one means the Uno
+         * rebooted (brown-out / USB reset): its needle zero is lost. */
+        uno_ready++;
+        if (uno_ready > 1)
+            fprintf(stderr, "[uno] READY again (#%d): Uno rebooted, needle zero lost "
+                    "(re-centre it by hand and send Z)\n", uno_ready);
+        else
+            fprintf(stderr, "[uno] READY\n");
+    } else if (line[0] == '#') {
+        fprintf(stderr, "[uno] %s\n", line);   /* Uno status/debug line: log only */
     } else if (line[0]) {
         fprintf(stderr, "[uno] ? %s\n", line);
     }
@@ -248,6 +250,8 @@ static void *control_thread(void *arg)
                 fprintf(stderr, "[ctl] MODE QNX (SCHED_RR prio %d, absolute-time ticks)%s\n",
                         cfg_rt_prio, sched_rr ? "" : " [RR not granted: running SCHED_OTHER]");
             cur_linux = want_linux;
+            clock_gettime(CLOCK_MONOTONIC, &hz_t0);   /* fresh loop-rate window per mode */
+            hz_ticks = 0;
             pthread_mutex_lock(&lock);
             stats_reset_req = 1;
             pthread_mutex_unlock(&lock);
@@ -294,30 +298,17 @@ static void *control_thread(void *arg)
             tgt = human_x;
         } else if (!ball_ever || ms_since(&ball_rx) > BALL_LOST_MS) {
             tgt = 0.0;
-        } else if (pred_last.state == PRED_INCOMING) {
-            tgt = pred_last.x_cross;
-        } else if (pred_last.state == PRED_AWAY) {
-            tgt = 0.0;
-        } /* PRED_NONE: hold */
-        tgt = clampd(tgt, -GOAL_HALF_W, GOAL_HALF_W);
+        } else {
+            tgt = predict_target(&pred_last, x_lim);   /* incoming / shadow 0.5x */
+        }
+        tgt = clampd(tgt, -x_lim, x_lim);
 
-        /* PD on the camera-measured paddle position. */
+        /* Controller (observer on sent duties + camera, or legacy PD). */
         long p_age = paddle_valid ? ms_since(&paddle_rx) : 1000000L;
         int have_fb = paddle_valid && p_age < PADDLE_STALE_MS;
         double duty = 0.0;
-        if (have_fb) {
-            double ext = clampd(p_age / 1000.0 + CTL_CAM_LATENCY_S, 0.0, CTL_EXTRAP_MAX_S);
-            double est = paddle_x + paddle_v * ext;
-            double err = tgt - est;
-            double raw = kp * err - kd * paddle_v;
-            if (fabs(err) < CTL_ERR_DEADBAND && fabs(paddle_v) < CTL_STILL_V) {
-                duty = 0.0;
-            } else if (raw != 0.0) {
-                double mag = fmin(fabs(raw), 1.0);
-                duty = copysign(CTL_DUTY_MIN + (1.0 - CTL_DUTY_MIN) * mag, raw);
-            }
-            duty = clampd(duty, -CTL_DUTY_MAX, CTL_DUTY_MAX);
-        }
+        if (have_fb) duty = ctl_tick(&ctl, tgt, p_age / 1000.0);
+        else          ctl_hold(&ctl);
         target_x = tgt;
         duty_out = duty;
         wd_active = wd;
@@ -334,10 +325,10 @@ static void *control_thread(void *arg)
         if (celebrate_req) { do_celebrate = 1; celebrate_req = 0; }
         pthread_mutex_unlock(&lock);
 
-        /* Loop rate, once per second. */
+        /* Loop rate over 250 ms windows. */
         hz_ticks++;
         double el = ts_diff_us(&now, &hz_t0);
-        if (el >= 1e6) {
+        if (el >= 2.5e5) {
             pthread_mutex_lock(&lock);
             loop_hz = hz_ticks * 1e6 / el;
             pthread_mutex_unlock(&lock);
@@ -399,15 +390,8 @@ static void on_frame(double t_s, int bseen, double bx, double by, int pseen, dou
     }
 
     if (pseen) {
-        if (paddle_valid && ms_since(&paddle_rx) < 200 && t_s > paddle_t) {
-            double v = (px - paddle_x) / (t_s - paddle_t);
-            v = clampd(v, -PADDLE_VEL_MAX, PADDLE_VEL_MAX);
-            paddle_v = PADDLE_VEL_ALPHA * v + (1.0 - PADDLE_VEL_ALPHA) * paddle_v;
-        } else {
-            paddle_v = 0.0;
-        }
+        ctl_on_paddle(&ctl, px, t_s);
         paddle_x = px;
-        paddle_t = t_s;
         paddle_rx = now;
         paddle_valid = 1;
     }
@@ -450,7 +434,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
         }
         pthread_mutex_lock(&lock);
         ctl_human = 1;
-        human_x = clampd(x, -GOAL_HALF_W, GOAL_HALF_W);
+        human_x = clampd(x, -x_lim, x_lim);
         clock_gettime(CLOCK_MONOTONIC, &last_feed);
         pthread_mutex_unlock(&lock);
         snprintf(reply, rlen, "OK HUMAN %.4f\n", human_x);
@@ -484,16 +468,19 @@ static void handle_line(char *line, char *reply, size_t rlen)
         snprintf(reply, rlen, "OK PONG\n");
     } else if (!strcasecmp(cmd, "STATUS")) {
         pthread_mutex_lock(&lock);
+        double g_kp, g_kd;
+        ctl_get_gains(&ctl, &g_kp, &g_kd);
         snprintf(reply, rlen,
             "OK mode=%s ctl=%s saves=%d goals=%d target=%.4f paddle=%.4f duty=%.3f wd=%d "
             "ms_since_frame=%ld jit_avg_us=%.0f jit_max_us=%.0f loop_hz=%.1f hits=%d "
             "sched=%s emulated=%d pred=%s armed=%d stopped=%d paddle_seen=%d kp=%.3f kd=%.3f "
-            "accel_mg=%d backend=%s\n",
+            "accel_mg=%d backend=%s ctl_kind=%s paddle_est=%.4f model_rpm=%.0f uno_ready=%d\n",
             mode_linux ? "LINUX" : "QNX", ctl_human ? "HUMAN" : "AUTO", saves, goals,
             target_x, paddle_x, duty_out, wd_active, ms_since(&last_frame),
             jit_n ? jit_sum_us / jit_n : 0.0, jit_max_us, loop_hz, hits,
             sched_rr ? "RR" : "OTHER", mode_linux, predict_state_name(pred_last.state),
-            armed, motor_stopped, paddle_valid, kp, kd, last_accel_mg, be->name);
+            armed, motor_stopped, paddle_valid, g_kp, g_kd, last_accel_mg, be->name,
+            ctl_kind_name(ctl.c.kind), ctl_x_est(&ctl), ctl.c.model_rpm, uno_ready);
         pthread_mutex_unlock(&lock);
     } else if (!strcasecmp(cmd, "GAINS")) {
         double a, b;
@@ -502,7 +489,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
             return;
         }
         pthread_mutex_lock(&lock);
-        kp = a; kd = b;
+        ctl_set_gains(&ctl, a, b);
         pthread_mutex_unlock(&lock);
         snprintf(reply, rlen, "OK %.3f %.3f\n", a, b);
     } else if (!strcasecmp(cmd, "SIMHIT")) {
@@ -516,6 +503,16 @@ static void handle_line(char *line, char *reply, size_t rlen)
             snprintf(reply, rlen, "ERR event queue full\n");
         else
             snprintf(reply, rlen, "OK SIMHIT %d\n", mag);
+    } else if (!strcasecmp(cmd, "SIMUNO")) {
+        /* test only (stub): queue a raw Uno line, e.g. "SIMUNO # no accel" */
+        const char *raw = line + 6;
+        while (*raw == ' ') raw++;
+        if (!be->inject)
+            snprintf(reply, rlen, "ERR SIMUNO needs -b stub\n");
+        else if (be->inject(raw) != 0)
+            snprintf(reply, rlen, "ERR event queue full\n");
+        else
+            snprintf(reply, rlen, "OK SIMUNO\n");
     } else if (cmd[0] == '\0') {
         reply[0] = '\0';   /* blank line: no reply */
     } else {
@@ -560,16 +557,32 @@ static void on_signal(int sig) { (void)sig; running = 0; }
 
 static void usage(const char *argv0)
 {
+    ctl_cfg_t d;
+    ctl_defaults(&d);
     fprintf(stderr,
-        "usage: %s [-b arduino|stub] [-d dev] [-p port] [-w wd_ms] [-r rt_prio]\n"
-        "          [--kp K] [--kd K] [--jitter-ms MS] [--walls HALF_W_M]\n"
-        "  defaults: -b arduino -d /dev/serusb1 -p 5556 -w 300 -r 40 --kp %.1f --kd %.2f\n"
-        "            --jitter-ms 30 (LINUX emulation) --walls 0 (no side-wall bounces)\n",
-        argv0, CTL_KP_DEF, CTL_KD_DEF);
+        "usage: %s [options]\n"
+        "  -b arduino|stub   actuator backend (arduino)\n"
+        "  -d DEV            Uno serial device (/dev/serusb1; UART fallback /dev/ser1)\n"
+        "  -p PORT           TCP port (5556)\n"
+        "  -w MS             laptop watchdog (300)\n"
+        "  -r PRIO           SCHED_RR priority in QNX mode (40)\n"
+        "  --jitter-ms MS    LINUX-mode emulated jitter, max per delay (30)\n"
+        "  --walls W         side walls at +-W m for bank-shot prediction (0 = off; contract 0.25)\n"
+        "  --ctl observer|pd controller (observer = sim/controller.py; pd = legacy camera PD)\n"
+        "  --kp K --kd K     gains of the active controller (observer %.2f/%.2f duty/rad, pd %.1f/%.2f duty/m)\n"
+        "  --rpm R           motor no-load output RPM, MEASURED (docs/rpm_test.md) (%.0f)\n"
+        "  --tau S           motor time constant (%.3f)\n"
+        "  --delay-ms MS     assumed camera->Pi latency (%.0f)\n"
+        "  --db-comp D --min-duty D --uoff D --l1 G --l2 G   observer tuning (%.2f %.2f %.2f %.1f %.1f)\n"
+        "  --geom pivot|rail --paddle-len M --qmax-deg D --spool-r M   paddle geometry (pivot %.2f m, %.0f deg)\n",
+        argv0, d.kp, d.kd, d.pd_kp, d.pd_kd, d.model_rpm, d.model_tau, d.latency_est * 1000,
+        d.db_comp, d.min_duty, d.uoff, d.l1, d.l2, d.paddle_len, d.q_max * 180.0 / M_PI);
 }
 
 int main(int argc, char **argv)
 {
+    ctl_defaults(&ctl_cfg);
+    double kp_arg = -1, kd_arg = -1;
     /* Hand-rolled parser (QNX getopt_long availability not assumed). */
     for (int i = 1; i < argc; i += 2) {
         const char *a = argv[i];
@@ -581,12 +594,46 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "-p")) cfg_port = atoi(v);
         else if (!strcmp(a, "-w")) cfg_wd_ms = atoi(v);
         else if (!strcmp(a, "-r")) cfg_rt_prio = atoi(v);
-        else if (!strcmp(a, "--kp")) kp = atof(v);
-        else if (!strcmp(a, "--kd")) kd = atof(v);
+        else if (!strcmp(a, "--kp")) kp_arg = atof(v);
+        else if (!strcmp(a, "--kd")) kd_arg = atof(v);
         else if (!strcmp(a, "--jitter-ms")) cfg_jitter_ms = atoi(v);
         else if (!strcmp(a, "--walls")) cfg_walls = atof(v);
+        else if (!strcmp(a, "--ctl")) {
+            if (!strcmp(v, "observer")) ctl_cfg.kind = CTL_OBSERVER;
+            else if (!strcmp(v, "pd")) ctl_cfg.kind = CTL_PD;
+            else { usage(argv[0]); return 2; }
+        }
+        else if (!strcmp(a, "--rpm")) ctl_cfg.model_rpm = atof(v);
+        else if (!strcmp(a, "--tau")) ctl_cfg.model_tau = atof(v);
+        else if (!strcmp(a, "--delay-ms")) ctl_cfg.latency_est = atof(v) / 1000.0;
+        else if (!strcmp(a, "--db-comp")) ctl_cfg.db_comp = atof(v);
+        else if (!strcmp(a, "--min-duty")) ctl_cfg.min_duty = atof(v);
+        else if (!strcmp(a, "--uoff")) ctl_cfg.uoff = atof(v);
+        else if (!strcmp(a, "--l1")) ctl_cfg.l1 = atof(v);
+        else if (!strcmp(a, "--l2")) ctl_cfg.l2 = atof(v);
+        else if (!strcmp(a, "--geom")) {
+            if (!strcmp(v, "pivot")) ctl_cfg.geom = GEOM_PIVOT;
+            else if (!strcmp(v, "rail")) ctl_cfg.geom = GEOM_RAIL;
+            else { usage(argv[0]); return 2; }
+        }
+        else if (!strcmp(a, "--paddle-len")) ctl_cfg.paddle_len = atof(v);
+        else if (!strcmp(a, "--qmax-deg")) ctl_cfg.q_max = atof(v) * M_PI / 180.0;
+        else if (!strcmp(a, "--spool-r")) ctl_cfg.spool_r = atof(v);
         else { usage(argv[0]); return 2; }
     }
+    if (ctl_cfg.model_rpm <= 0 || ctl_cfg.model_tau <= 0 || ctl_cfg.paddle_len <= 0 ||
+        ctl_cfg.spool_r <= 0 || ctl_cfg.latency_est < 0) {
+        fprintf(stderr, "bad controller parameters\n");
+        return 2;
+    }
+    ctl_cfg.rate = TICK_HZ;
+    ctl_init(&ctl, &ctl_cfg);
+    {
+        double kp0, kd0;
+        ctl_get_gains(&ctl, &kp0, &kd0);
+        ctl_set_gains(&ctl, kp_arg >= 0 ? kp_arg : kp0, kd_arg >= 0 ? kd_arg : kd0);
+    }
+    x_lim = ctl.c.x_max < GOAL_HALF_W ? ctl.c.x_max : GOAL_HALF_W;
 
     for (size_t i = 0; i < sizeof backends / sizeof *backends; i++)
         if (!strcmp(backends[i]->name, cfg_backend)) be = backends[i];
@@ -614,11 +661,11 @@ int main(int argc, char **argv)
     pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
     pthread_attr_setschedpolicy(&attr, SCHED_RR);
     pthread_attr_setschedparam(&attr, &sp);
-    pthread_t ctl;
-    if (pthread_create(&ctl, &attr, control_thread, NULL) != 0) {
+    pthread_t ctl_th;
+    if (pthread_create(&ctl_th, &attr, control_thread, NULL) != 0) {
         fprintf(stderr, "[ctl] can't get SCHED_RR prio %d (need privileges?), using default\n",
                 cfg_rt_prio);
-        if (pthread_create(&ctl, NULL, control_thread, NULL) != 0) {
+        if (pthread_create(&ctl_th, NULL, control_thread, NULL) != 0) {
             perror("pthread_create");
             return 1;
         }
@@ -639,9 +686,13 @@ int main(int argc, char **argv)
         running = 0;
         rc = 1;
     } else {
+        double g_kp, g_kd;
+        ctl_get_gains(&ctl, &g_kp, &g_kd);
         fprintf(stderr, "goalie_motor: backend=%s dev=%s port=%d watchdog=%dms prio=%d "
-                "kp=%.2f kd=%.2f walls=%.2f\n",
-                be->name, cfg_dev, cfg_port, cfg_wd_ms, cfg_rt_prio, kp, kd, cfg_walls);
+                "ctl=%s kp=%.2f kd=%.2f rpm=%.0f tau=%.3f delay=%.0fms geom=%s x_lim=%.3f walls=%.2f\n",
+                be->name, cfg_dev, cfg_port, cfg_wd_ms, cfg_rt_prio,
+                ctl_kind_name(ctl.c.kind), g_kp, g_kd, ctl.c.model_rpm, ctl.c.model_tau,
+                ctl.c.latency_est * 1000, ctl.c.geom == GEOM_PIVOT ? "pivot" : "rail", x_lim, cfg_walls);
     }
 
     while (running) {
@@ -656,7 +707,7 @@ int main(int argc, char **argv)
     }
 
     running = 0;
-    pthread_join(ctl, NULL);   /* control thread sends S on exit */
+    pthread_join(ctl_th, NULL);   /* control thread sends S on exit */
     be->shutdown();
     if (srv >= 0) close(srv);
     fprintf(stderr, "goalie_motor: bye\n");

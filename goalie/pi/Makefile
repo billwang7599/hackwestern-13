@@ -4,6 +4,7 @@
 #                      ../../docker/run.sh if qcc isn't on PATH)
 #   make host          build with the host cc (macOS clang) for quick testing
 #   make test          host build + test_server.py against the stub backend
+#   make parity        C predictor/controller vs goalie/sim Python, same event stream
 #   make deploy        scp binary to the Pi
 #   make run           ssh in and run it (Ctrl-C stops the motor)
 #   make compdb        regenerate compile_commands.json for clangd (via bear)
@@ -17,7 +18,7 @@ DEV      ?= /dev/serusb1
 PORT     ?= 5556
 
 BIN      := goalie_motor
-SRCS     := src/main.c src/predict.c src/goalie_stub.c src/goalie_arduino.c
+SRCS     := src/main.c src/predict.c src/control.c src/goalie_stub.c src/goalie_arduino.c
 CFLAGS   := -Wall -Wextra -O2 -std=gnu11
 
 QCC      := qcc -V gcc_ntoaarch64le
@@ -25,7 +26,7 @@ QNX_LIBS := -lsocket -lm
 
 REPO     := $(abspath ../..)
 
-.PHONY: all host test deploy run compdb clean
+.PHONY: all host test parity deploy run compdb clean
 
 all: build/$(BIN)
 
@@ -48,6 +49,15 @@ host: | build
 
 test: host
 	python3 test_server.py
+
+SIM_PY   := $(firstword $(wildcard ../sim/.venv/bin/python) python3)
+
+build/parity_harness: tools/parity_harness.c src/predict.c src/control.c src/*.h | build
+	cc $(CFLAGS) -o $@ tools/parity_harness.c src/predict.c src/control.c -lm
+
+parity: build/parity_harness
+	"$(SIM_PY)" tools/parity.py
+	"$(SIM_PY)" tools/parity.py --speed 2.0 --walls --drop 0.1 --rpm 90
 
 deploy: build/$(BIN)
 	scp build/$(BIN) $(PI_HOST):$(PI_DIR)/$(BIN)

@@ -10,7 +10,7 @@ Change it only with a matching change on both sides of a link.
      ▼
 [Pi 5 · QNX 8.0]  goalie_motor: 200 Hz SCHED_RR loop
           predict ball crossing x on the goal line -> target paddle x
-          PD on (target - measured paddle x) -> motor duty
+          motor-model observer (sent duties + late camera paddle x) + PD -> duty
           watchdog (no frame for WD ms -> park centre), save/goal counters,
           QNX/LINUX mode switch, jitter stats
      │  USB serial (or UART fallback) 115200 8N1, line protocol
@@ -49,11 +49,37 @@ reply line: `OK ...` or `ERR <reason>`.
 
 Clients must parse STATUS as key=value and ignore unknown keys.
 
+Extra STATUS keys `goalie_motor` emits (informational, may change):
+`sched=RR|OTHER` (actual policy of the control thread), `emulated=0|1` (1 in
+LINUX mode), `pred=NONE|AWAY|INCOMING`, `armed=0|1` (save counter armed),
+`stopped=0|1` (no paddle feedback -> `S` sent), `paddle_seen=0|1`,
+`kp=<f> kd=<f>` (active controller gains), `accel_mg=N` (last Uno `A`, -1 if
+none), `backend=arduino|stub`, `ctl_kind=observer|pd`, `paddle_est=<x>`
+(controller's belief of the paddle x now), `model_rpm=<f>`, `uno_ready=N`
+(READY lines seen; > 1 = the Uno rebooted).
+
+Extensions (not needed by the laptop; reply format as shown):
+
+| Command | Meaning |
+|---|---|
+| `GAINS <kp> <kd>` | Live tuning of the active controller (observer: duty/rad, duty/(rad/s); pd: duty/m, duty/(m/s)). Reply `OK <kp> <kd>`. |
+| `SIMHIT <mag>` | **Test only**, stub backend: pretend the Uno sent `HIT <mag>`. `ERR` with the arduino backend. `mock_pi.py` implements it too. |
+| `SIMUNO <line>` | **Test only**, stub backend: pretend the Uno sent any line. |
+
+**Prediction (Pi, = `sim/predict.py`, checked by `pi/make parity`):** straight
+line least-squares fit over the last 5 ball samples (laptop timestamps); a gap
+> 0.15 s starts a new fit. Incoming when `vy < -0.15 m/s` and the crossing is
+< 2 s away: target = crossing x. Otherwise the paddle shadows the ball half
+way: target = `0.5 * x`. Ball unseen for 0.25 s: target 0. Targets are clamped
+to the goal (and the paddle's reach). Side walls (bank shots) are **off by
+default**; `goalie_motor --walls 0.25` folds the crossing between walls at
+±0.25 m (the ball centre bounces one radius, 0.02 m, from the wall).
+
 **Save logic (Pi):** a save is counted when the Uno reports `HIT` while a shot
-is in flight (ball moving towards the goal, `vy < -0.05`), or when the ball
-reverses direction (`vy` goes from < -0.05 to > +0.05) within 0.10 m of the
-goal line. Debounce: one save per shot, re-armed when the ball is > 0.25 m out
-or not seen for 1 s.
+is in flight (ball moving towards the goal, `vy < -0.15`, within the last
+300 ms), or when the ball bounces back (`vy` goes from < -0.15 to > +0.15)
+after coming within 0.10 m of the goal line. Debounce: one save per shot,
+re-armed when the ball is > 0.25 m out or not seen for 1 s.
 
 **Watchdog:** no `F`/`PING`/`HUMAN` for `WD_MS` (default 300 ms) -> target x = 0
 (park centre) with the paddle-feedback loop running if the paddle was last seen
@@ -79,11 +105,18 @@ it only sends events.
 
 | Uno -> Pi | Meaning |
 |---|---|
-| `READY` | Sent once after boot. |
+| `READY` | Sent once after boot. Opening the USB port resets the Uno, so expect one at start. A `READY` **mid-run means the Uno rebooted** (brown-out, USB glitch): its needle zero is lost (re-centre the needle by hand, then `Z`). The Pi logs it and counts it in `uno_ready`. |
 | `HIT <mag>` | Accelerometer spike above threshold; `mag` = peak deviation in milli-g. Rate-limited to one per 250 ms. |
 | `A <mg>` | Optional low-rate (≤10 Hz) accel magnitude for debugging. Pi may ignore. |
+| `# <text>` | Status/debug text (e.g. `# no accelerometer found`). **The Pi must ignore lines starting with `#`** (it only logs them). |
 
-**Uno watchdog:** no `M` for 200 ms -> motor #1 stops.
+**Uno watchdog:** no `M` for 200 ms -> motor #1 stops (brakes).
+
+**Static-friction boost lives on the Pi only.** The Pi's controller adds the
+deadband compensation (observer `db_comp` 0.12, or 0.15 minimum duty in
+`--ctl pd`). The Uno's own kick/boost setting stays **0** so the two don't add
+up. Measure the duty where the paddle starts moving on the bench and set it in
+one place (`goalie_motor --db-comp`).
 
 ## Defaults (keep in sync with `sim/params.py`)
 
@@ -96,3 +129,8 @@ it only sends events.
 | Goal width | 0.22 m |
 | Field length | 0.60 m |
 | Paddle (pivot arm) length | 0.12 m |
+| Paddle blade width (pivot) | 0.05 m (a still 5 cm blade already saves ~50%; wider makes the game too easy) |
+| Side walls (bank-shot prediction) | off; ±0.25 m when enabled (sim `field_half_w`). Vision's calib default board width is 0.40 m: measure your board and pass its half width to `--walls` |
+| Camera latency the Pi assumes | 50 ms (`--delay-ms`) |
+| Motor no-load RPM | 150 placeholder: **measure it** (`docs/rpm_test.md`), pass `--rpm` |
+| Controller (observer) | kp 3.0 duty/rad, kd 0.10, db_comp 0.12, min_duty 0.06, friction offset 0.10, L1 0.5, L2 2.0, tau 0.04 s |
