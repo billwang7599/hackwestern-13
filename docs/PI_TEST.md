@@ -17,6 +17,11 @@ laptop (teleop.py) --Wi-Fi TCP :5555--> Pi 5 / QNX (tars_motor) --USB serial--> 
                                                                                   <-- MPU6050 (I2C), TEACH button, LED, buzzer
 ```
 
+> **The robot is now the Kuman SM11 smart car kit** (DC TT motors, the kit's driver board,
+> no encoders). The firmware's default build is for it: wiring, unplug list, power and first
+> checks are in **[§2b Kuman SM11](#2b-kuman-sm11-smart-car-the-default-build)**. The 28BYJ-48
+> stepper rover below is still a build option (`-DWHEEL_TYPE=2`).
+
 Nothing here has run on real hardware yet. All of it has only been tested
 against simulators on a Mac. Expect to find the first real bugs, and write
 down what you see.
@@ -71,8 +76,10 @@ should end with `270/270 checks passed`.
 
 ### 1b. Uno firmware — on the laptop, Uno plugged into the laptop
 
-The sketch is `iter1-wasd/uno/tars/tars.ino`. The defaults already match the wiring
-below (stepper wheels, no arms, button/LED/buzzer).
+The sketch is `iter1-wasd/uno/tars/tars.ino`. The default build is the **Kuman SM11 kit**
+(`CAR_SM11`, §2b). For the 28BYJ-48 stepper rover in §2, add `#define WHEEL_TYPE WHEELS_STEPPER`
+at the top of the sketch (or `--build-property "build.extra_flags=-DWHEEL_TYPE=2"` with
+arduino-cli). **SM11: unplug the kit's Bluetooth module before uploading** (it sits on D0/D1).
 
 **Arduino IDE:** open `iter1-wasd/uno/tars/tars.ino`, then *Tools → Board → Arduino Uno*
 and *Tools → Port → the usbmodem / usbserial port*. Click Upload.
@@ -164,6 +171,113 @@ on its wheels.
 **Which wheel is left?** Left and right are as seen from behind the robot,
 looking forward. The right motor faces the other way, so the firmware mirrors
 it (`WHEEL_INVERT = {false, true}`).
+
+---
+
+## 2b. Kuman SM11 smart car (the default build)
+
+The kit: Uno R3 + the kit's motor driver board (EN + IN1/IN2 per side, L298N-style), TT gear
+motors, buzzer, LEDs, push button, IR receiver, ultrasonic on a servo, line sensors, IR
+proximity sensors, Bluetooth module, battery box. **No wheel encoders**, so `MOVE`/`TURN` are
+**timed** (D 1 for |mm| / mm_s), not counted. The Pi re-plans from the iPhone pose after every
+leg, which is what corrects the error (sim numbers below).
+
+**Unplug / leave alone:**
+- **!! The Bluetooth module. !!** It is wired to D0/D1, the Uno's USB serial link to the Pi.
+  Plugged in, it garbles the Pi's commands (and uploads fail). Pull it off the shield.
+- The **IR proximity sensors on A4/A5** if you fit an MPU6050/ADXL345 (A4/A5 are I2C SDA/SCL).
+  Without an accelerometer, tip/bump detection is simply off (it says so at boot).
+- The **servo**: not used. The Servo library would take Timer1 and kill the PWM on D10 (left
+  EN), which is the "no speed control on one side" problem Mitov hit. The ultrasonic just
+  faces forward and isn't read either.
+- IR receiver (D2), right LED (D4), ultrasonic (A0/A1), line sensors (A2/A3): stay plugged
+  in, unused.
+
+**Pin map** (firmware `CAR_SM11` block). Source: the community SM11 sketch
+[github.com/mbof/sm11 `sm11_pinout.h`](https://github.com/mbof/sm11) and its `motor.cpp`
+(`Motor(enable, go, back)`, go HIGH = forward), cross-checked by the
+[Mitov SM11 programming post](http://labpacks.blogspot.com/2018/07/programming-kuman-smart-car-arduino.html)
+(Servo library breaks speed control on one side = an EN pin on Timer1).
+
+| Uno pin | Kit part | Our use | Confirmed? |
+|---|---|---|---|
+| D10 | left motor ENABLE (PWM, Timer1) | left speed | mbof sketch |
+| D8 / D9 | left motor GO / BACK | IN1 / IN2 | mbof sketch |
+| D5 | right motor ENABLE (PWM, Timer0) | right speed | mbof sketch |
+| D6 / D7 | right motor GO / BACK | IN1 / IN2 | mbof sketch |
+| D12 | buzzer (active, HIGH = on) | `BEEP` | mbof sketch |
+| D13 | push button "KEY" (to GND, pull-up) | TEACH button | mbof sketch |
+| D3 | left LED | status `LED` (D4 right LED unused) | mbof sketch; **polarity unverified** (`LED_INVERT`) |
+| D2 | IR receiver | unused | mbof sketch |
+| A0 / A1 | ultrasonic TRIG / ECHO | unused | mbof sketch |
+| A2 / A3 | line sensors R / L | unused | mbof sketch |
+| A4 / A5 | IR proximity R / L | **I2C if you add an accelerometer: unplug them** | mbof sketch |
+| D0 / D1 | Bluetooth module | **USB serial to the Pi: unplug Bluetooth** | mbof README |
+| servo signal | ? | unused | **unverified** (no source gave the pin) |
+
+**Unverified kit facts** (no source we could reach confirmed them; check your kit): the driver
+chip (L298N vs L293D-style board), 2WD vs 4WD (with 4WD each side's two motors share a
+channel; the firmware doesn't care), the battery (2×18650 is typical), and whether the driver
+board feeds the Uno through VIN or the 5 V pin.
+
+**ENA/ENB jumpers:** if the kit's driver is an L298N module with ENA/ENB jumper caps, the caps
+must be **off** and ENA/ENB wired to D10/D5 (stock SM11 wiring). With a cap on, that side runs
+at full speed whatever the PWM says: the speed cap is gone. Test: `D 0.3 0.3` must be clearly
+slower than `D 1 1`, and even `D 1 1` is a walking-pace crawl (the cap, below).
+
+**Power:**
+- The **kit's battery** runs the motors and the Uno (through the kit board). Charge it: the
+  speed (and the calibration) drops with the battery voltage.
+- The **Pi 5 needs its own 5 V supply**: a USB-C PD 5 V / 5 A supply is ideal. On a 3 A supply
+  the Pi caps its USB ports at 600 mA total, which the Uno + webcam + mic can exceed.
+- **Common ground:** the Uno's USB cable to the Pi already joins the grounds. Don't add any
+  other wire from the kit to the Pi. If the kit board feeds the Uno's **5 V pin** directly (not
+  VIN / the barrel jack), that fights the Pi's USB 5 V: then cut/unplug that 5 V wire and let
+  the Pi's USB power the Uno (the kit battery still runs the motors, grounds stay joined).
+
+**Speed cap: ~150 mm/s at `D 1`** (`DC_MAX_DUTY`, a duty guess for TT motors; measure it).
+Everything above the Uno was tuned on the ~41 mm/s steppers, so we checked how fast goto can go:
+- `iter2-autonomy/goto/tests/test_dc_car.py --sweep` (2D sim, visual GOTO, 16 random starts per
+  row): 100, 150 and 200 mm/s arrive like the stepper reference (16/16, stops 0.37–0.56 m, none
+  under 0.30 m). 300 mm/s: first stop at 0.25 m and misses. 450 mm/s: 14/16 exact, 5/16 with
+  under-turning.
+- lidar_guard's stop zone is 0.55–0.6 m. Worst case before the wheels stop: a 150 ms-stale LiDAR
+  sample + 100 ms gate heartbeat + a 20 ms tick + the Uno's brake ≈ 0.3 s. That's ~45 mm at
+  150 mm/s (~90 mm at 300) plus a few cm of braking.
+- 150 leaves ~30% under the 200 mm/s edge for battery voltage (8.4 V fresh vs ~7 V flat).
+After `wheel_cal.py dc-move`, if the measured speed isn't 100–200 mm/s, change `DC_MAX_DUTY`,
+re-flash and calibrate again. `DC_MIN_DUTY` (0.30) is the slowest a rolling wheel keeps turning;
+`DC_KICK_DUTY`/`DC_KICK_MS` (0.8 for 40 ms) get a wheel going from rest.
+
+**First flash (wheels in the air, then on the floor).** Serial Monitor at 115200, "Newline":
+1. Reset. Expect `WHEELS DC 150.0 120.0`, then `READY`. Nothing garbled (garbled = Bluetooth
+   still plugged in).
+2. `D 0.5 0.5` (it only runs 200 ms: the watchdog; type it again or use teleop): **both wheels
+   forward.** A wheel backwards → flip `LEFT_INVERT` / `RIGHT_INVERT` in the SM11 block. `D 0.5 0`
+   moves the right wheel → left/right are swapped: swap the L and R pin groups.
+3. `D 0.3 0.3` from rest: both wheels start (short kick, then slow). One doesn't → raise
+   `DC_MIN_DUTY` or `DC_KICK_DUTY`. `S` stops at once (brake).
+4. On the floor: `M 300` → ~2 s forward, then `DONE M 300.0`. `R 90` → spins **right**
+   (clockwise from above) ~0.75 s, then `DONE R 90.0`. `R -90` spins left. `S` mid-move →
+   `ABORT M <done> stop` and it stops dead.
+5. It curves on `M 1000` → the faster side's `DC_LEFT_GAIN` / `DC_RIGHT_GAIN` below 1 (the two
+   EN pins have different PWM frequencies, 490 vs 980 Hz, so some pull is normal).
+6. On the Pi: `tars_motor` logs `co-processor has DC wheels: 150.0 mm/s, 120.0 deg/s` and
+   `STATUS` shows `wheels=dc`. Then calibrate (Step 5, DC).
+
+**How sloppy can it be?** Timed moves on a real floor will be off. In the sims, goto still
+arrives with ±25% MOVE/TURN error plus 15°/m drift:
+- `test_dc_car.py` (visual GOTO, in `make test`; numbers from a 16-start run): exact timing
+  16/16; ±15% (after calibration) 32/32 over two rows; ±25%: 60/64 over four rows. The misses are all clean `not_found` (BEEP 3): a TURN that really
+  does 75% turns 12 × 22.5° = 270°, and with the 60° FOV that leaves a blind wedge.
+  **Keep TURN error under ~15%** (calibrate `dc-spin`) and the search covers 360°.
+- `test_fullstack_dc.py` (map-guided, real `tars_motor` + `goto`, fake iPhone/guard/YOLO):
+  obstacle, moved object, visual fallback × 5 error rows: 64/65. The miss: goto's object memory
+  merges sightings by `tars_motor`'s dead-reckoned x/y, which drifts metres on a DC car, so a
+  moved bin refreshes the old entry instead of downgrading it (it still docks; fix pending in
+  `goto_core.c`).
+- `tars_motor`'s own `POSE` is dead-reckoned from commanded amounts and is **not trustworthy**
+  on the DC car. Use the iPhone pose.
 
 ---
 
@@ -267,6 +381,16 @@ because terminals don't report key release.
 ### Step 5 — Calibration (on the floor)
 
 Use a hard, flat floor and a tape measure. Run these from `iter1-wasd/laptop/`.
+
+**SM11 / DC car** (timed moves: calibrate speeds, with the battery you'll demo on):
+1. `python wheel_cal.py dc-move` → `MOVE 1000`. Tape the real distance, type it in. It scales and
+   saves mm/s (`SPEEDCAL` → the Uno's EEPROM). Run it again: it should land within ~5%. Outside
+   100–200 mm/s → change `DC_MAX_DUTY` (§2b).
+2. Put tape along the nose, `python wheel_cal.py dc-spin` → `TURN 360`. Type how far it really
+   turned (e.g. 300). Repeat until it's within ~15° (goto's search needs < ~15% error).
+3. `python wheel_cal.py show`. (Bench alternative: `V <mm_s> <deg_s>` in the Serial Monitor.)
+
+**Stepper rover:**
 
 1. **Wheel diameter:** mark the start, then `python wheel_cal.py move 1000`.
    Measure the real distance in mm. Then

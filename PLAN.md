@@ -30,8 +30,10 @@ A two-wheel rover that runs **fully on the robot**. No laptop and no internet at
         │  USB serial 115200
         ▼
 [Arduino Uno]  "the muscles"   iter1-wasd/uno/tars/tars.ino
-   2× 28BYJ-48 wheel steppers (ULN2003) · ramps · exact M <mm> / R <deg>
-   button D2 · LED D13 · buzzer D12 · accelerometer tip/bump
+   default: Kuman SM11 kit · DC TT motors on the kit driver (EN+IN) · speed cap ~150 mm/s
+   · timed M <mm> / R <deg> (no encoders) · kit button D13 · LED D3 · buzzer D12
+   (option: 2× 28BYJ-48 steppers · exact M/R · button D2 · LED D13 · buzzer D12)
+   · accelerometer tip/bump (optional)
 ```
 
 The Pi decides. The Uno only moves motors and reports events. Nothing on the Pi touches a motor pin.
@@ -68,6 +70,7 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 | Area | Branch | State |
 |---|---|---|
 | Uno stepper firmware, `tars_motor`, WASD teleop, `docs/PI_TEST.md` | `main` | Mac tests pass. **Not run on hardware yet.** |
+| **Kuman SM11 smart car port** (firmware `CAR_SM11` default, `tars_motor` WHEELS DC/SPEEDCAL, `wheel_cal.py dc-move/dc-spin`, `docs/PI_TEST.md` §2b) | `kothar/dc-car` | Mac only: Uno host tests sm11 248/248 (+ stepper 238, arm 260, dc 278, dc en+in 275); tars_motor 340/340 + guard 8/8; teleop 36/36; goto 247/84/25/52 + DC sloppy-motion sim 8/8; full-stack DC 64/65 (known memory-merge miss). **Sketch never compiled for AVR, nothing run on the kit.** Speed cap 150 mm/s from the sim sweep. |
 | MediaPipe gestures + follow mode | `main` | Mac tests pass. Turns still timed for DC motors; must switch to `TURN`/`MOVE`. |
 | Teach-a-gesture on the spot | `main` | Mac tests pass. Back burner. |
 | Iteration 3: pet mode (`iter3-pet/vision/common/pet.py` + `pet.hpp`) | `kothar/pet` | Mac only: 38/38 pet unit tests, Python vs C++ parity identical (pet sessions included). C++ app type-checked against stub headers. **Not built on QNX, not run on the Pi or with a real camera/hand.** |
@@ -94,7 +97,7 @@ or by cycling ✌️ GESTURE → FOLLOW → PET. Rules + bounds: `iter3-pet/visi
 
 ## Hardware checks that gate everything (do these first)
 
-1. Upload `iter1-wasd/uno/tars/tars.ino`, then type `M 100` in Serial Monitor. Both wheels should turn.
+1. Unplug the SM11's Bluetooth module, upload `iter1-wasd/uno/tars/tars.ino`, then run the first-flash checks in `docs/PI_TEST.md` §2b (`D 0.5 0.5` both forward, `M 300`, `R 90`).
 2. Build and deploy the native C `tars_motor` (needs Docker + SDP 8.0 in `~/qnx800`). This is the demo path. Find the Uno's serial device name.
 3. WASD drive from a laptop (`iter1-wasd/laptop/teleop.py`).
 4. On the Pi: `apk search mediapipe`, and run the camera test.

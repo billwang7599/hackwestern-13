@@ -23,7 +23,7 @@ One folder per iteration (README "Iterations"; old → new paths in `docs/MOVED.
 | Path | What | Language |
 |---|---|---|
 | **`iter1-wasd/`** | **Iteration 1: WASD driving** | |
-| `iter1-wasd/uno/tars/tars.ino` | Uno firmware: wheels, LED, buzzer, button, tip/bump | Arduino C++ |
+| `iter1-wasd/uno/tars/tars.ino` | Uno firmware: wheels, LED, buzzer, button, tip/bump. Default build = **Kuman SM11 kit** (`CAR_SM11`: DC wheels, timed MOVE/TURN, speed cap); steppers = `-DWHEEL_TYPE=2` | Arduino C++ |
 | `iter1-wasd/uno/test/` | host-side firmware tests with mocks (`make -C iter1-wasd/uno/test`) | C++ |
 | `iter1-wasd/pi/` | `tars_motor` QNX server + `test_server.py` (`make -C iter1-wasd/pi host && make -C iter1-wasd/pi test`), `MOTOR_GUARD.md` | C / Python |
 | `iter1-wasd/laptop/` | `tars_client.py`, WASD `teleop.py`, `wheel_cal.py` (dev only) | Python |
@@ -42,7 +42,8 @@ One folder per iteration (README "Iterations"; old → new paths in `docs/MOVED.
 ## Protocols (keep these in sync, and update the docs if you change them)
 
 **Clients → `tars_motor` (TCP 5555, one line per command):**
-`D <l> <r>` drive fraction −1..1 (must be repeated, watchdog) · `S` stop · `MOVE <mm>` · `TURN <deg>` (+ = right)
+`D <l> <r>` drive fraction −1..1 (must be repeated, watchdog) · `S` stop · `MOVE <mm>` · `TURN <deg>` (+ = right; exact on steppers, **timed open loop on the DC car**: the iPhone pose is the truth)
+· `WHEELCAL [diam track]` (steppers) · `SPEEDCAL [mm_s deg_s]` (DC: speeds at D 1 → Uno `V`; no args → `OK dc <mm_s> <deg_s>` / `OK stepper`). `STATUS` has `wheels=stepper|dc dc_mm_s= dc_deg_s=`.
 · `LED <teach|rec|ok|no|forget|off>` · `BEEP <1-4>` · `STATUS` (includes `btn_teach=` `btn_forget=` counters) · `PING` · `STATUS` also has `stops=` (S received from anyone)
 · `WHO <name>` (label the client) · `MODE <gesture|follow|toggle|teach>` (request for the vision app)
 · `POSE` → `OK <x_mm> <y_mm> <hdg_deg> <epoch> <moving>` · `POSE RESET`. `STATUS` also has `pose=x,y,hdg pose_epoch=`. The pose is dead-reckoned from the motion that ran (D output, MOVE/TURN DONE/ABORT amounts): x forward, y right, hdg + = clockwise. The epoch changes on restart or `POSE RESET`.
@@ -51,8 +52,9 @@ Several clients at once: `S` from any client stops everything and holds other cl
 
 **voice → go-to controller (TCP 5570, one line each, reply optional):** `GOTO <canonical object>` (e.g. `GOTO trash can`) · `CANCEL` (on every stop, and before any manual `MOVE`/`TURN`) · `SCAN` ("look around") · `FORGET [object]` ("forget everything" / "forget the bin") · `MEMORY SAY` ("what do you remember": voice prints the sentence, `BEEP min(n,4)`, and sends it to the phone) · `RECALL <object>` ("go back to where the bin was").
 
-**`tars_motor` → Uno (USB serial 115200):** `D l r`, `M <mm>`, `R <deg>`, `S`, `K diam track`, `L <0-3>`, `B <n>`.
-**Uno → `tars_motor`:** `READY`, `DONE M|R <n>`, `ABORT …`, `T <deg>` tipped, `B <mg>` bump, `BTN TEACH`, `BTN FORGET`.
+**`tars_motor` → Uno (USB serial 115200):** `D l r`, `M <mm>`, `R <deg>`, `S`, `K diam track` (steppers), `V [mm_s deg_s]` (DC speed cal; sent bare after the first `S` as a query), `L <0-3>`, `B <n>`.
+**Uno → `tars_motor`:** `READY`, `WHEELS DC <mm_s> <deg_s>` (DC firmware: at boot before `READY`, and after `V`; switches `tars_motor`'s pose + move estimates to DC), `DONE M|R <n>`, `ABORT …`, `T <deg>` tipped, `B <mg>` bump, `BTN TEACH`, `BTN FORGET`.
+**SM11: the kit's Bluetooth module must be unplugged** (it's on D0/D1, the Pi link).
 The full spec is in the header comment of `iter1-wasd/uno/tars/tars.ino`.
 
 **Clients → `goto` (TCP 5570):** `GOTO <object words>` · `RECALL <object words>` · `CANCEL` · `STATUS` · `OBJECTS` · `RESOLVE <words>` · `SCAN` · `MEMORY` · `MEMORY SAY` · `NAV` · `FORGET [object[#n]]` · `WATCH` (async `EVENT searching|remembered|not_there|arrived|lost|failed:…|scanning|scanned … <object>`) · `PING`.

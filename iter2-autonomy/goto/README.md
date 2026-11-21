@@ -112,6 +112,7 @@ The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. Whe
 9. **MEMORY SAY** is one line, nearest first, at most 4 objects named ("and N more"), gone ones left out, directions relative to the current heading (ahead / ahead on my left / to my right / behind me …). Voice beeps `min(n, 4)` times (`LED no` for none) and sends `SAY <sentence>` (≤ 300 chars) to the phone on 5573. On a stop it sends the urgent JSON "Stopping." **after** `S` and `CANCEL`.
 10. Memory file gains `navw <id> <x> <z> <label>` lines (map position). Old files load unchanged; old loaders skip the new lines as bad lines.
 11. The full-stack sim speeds the stub up 4× (`WHEELCAL 260 400`): same turn rate, 4× linear speed. Not physical.
+12. **DC smart car (Kuman SM11):** `TURN`/`MOVE` are timed, not exact, and `tars_motor`'s POSE drifts. Nothing in goto changed: it re-plans from the iPhone pose after every leg. `tests/test_dc_car.py` (in `make test`) and `make test-fullstack-dc` check it with ±25% MOVE/TURN error + 15°/m drift at 150 mm/s. Known gaps: (a) with TURN really doing < ~85%, the 12 × 30° search leaves a blind wedge (calibrate `dc-spin`; or raise `search_max_deg` to ~420); (b) object memory merges sightings by the dead-reckoned x/y, so on a DC car a moved object can refresh its old entry instead of downgrading it. Merge by `navw` when both sides have one (goto_core.c).
 
 ## Run order on the Pi
 
