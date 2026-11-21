@@ -1,9 +1,15 @@
 """Camera-agnostic runtime shared by the Mac prototype and the QNX Python app.
 
-    frames -> (flip, downscale) -> MediaPipe HandLandmarker -> classify ->
-    Controller (gesture/follow) -> MotorLink, plus a 20 ms tick thread for
-    resends / move ends / camera-stall stops, plus a once-a-second status line
-    that is also sent to tars_motor as "VIS ..." so its STATUS shows it.
+    frames -> (flip, downscale) -> MediaPipe HandLandmarker -> learn.Brain
+    (built-in rules, learned poses, teach state machine, gesture.Controller) ->
+    MotorLink, plus a 20 ms tick thread for resends / move ends / camera-stall
+    stops / teach timers, plus a once-a-second status line that is also sent to
+    tars_motor as "VIS ..." so its STATUS shows it.
+
+Teach triggers that need no laptop: the TEACH hand sign (handled in Brain), and
+the Uno button, read by polling tars_motor STATUS for btn_teach= / btn_forget=
+counters (see GESTURES.md section 7). Learned poses are saved to learned_path
+whenever they change and loaded at start.
 
 Latency we report (the QNX demo number):
     cam->cmd   frame captured -> command written to the socket and ACKed
@@ -20,11 +26,16 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+import re
+
 import gesture as g
+import learn as L
 from link import MotorLink
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MODEL = os.path.join(HERE, "..", "models", "hand_landmarker.task")
+DEFAULT_LEARNED = os.path.join(HERE, "..", "learned.json")
+BTN_RE = re.compile(r"\bbtn_(teach|forget)=(\d+)")
 
 
 def now_ms() -> float:
@@ -58,6 +69,8 @@ class FrameResult:
     infer_ms: float
     cmds: list = field(default_factory=list)
     image: np.ndarray | None = None         # the (flipped, resized) RGB MediaPipe saw
+    match: tuple | None = None              # (nearest learned pose, confidence, accepted)
+    rule: str = g.NO_HAND                   # built-in rule label (before learned poses)
 
 
 @dataclass
@@ -72,12 +85,26 @@ class Stats:
 
 class GestureRuntime:
     def __init__(self, cfg: dict, link: MotorLink, model_path: str = DEFAULT_MODEL,
-                 log_every_s: float = 1.0):
+                 log_every_s: float = 1.0, learned_path: str | None = DEFAULT_LEARNED,
+                 poll_buttons: bool = True, landmarker=None):
         self.cfg = cfg
         self.link = link
-        self.ctl = g.Controller(cfg)
+        self.brain = L.Brain(cfg)
+        self.ctl = self.brain.ctl
         self.ctl_lock = threading.Lock()
-        self.landmarker = make_landmarker(model_path, cfg)
+        self.learned_path = learned_path
+        if learned_path:
+            try:
+                n = self.brain.load(learned_path)
+                print(f"[teach] loaded {n} learned pose(s) from {learned_path}"
+                      + "".join(f"\n[teach]   {c.name} -> {c.action}" for c in self.brain.learner.classes),
+                      flush=True)
+            except (ValueError, KeyError) as e:
+                print(f"[teach] could not read {learned_path} ({e}); starting empty", file=sys.stderr, flush=True)
+        self.poll_buttons = poll_buttons and not link.dry
+        self._btn: dict[str, int] | None = None
+        self._next_poll = 0.0
+        self.landmarker = landmarker if landmarker is not None else make_landmarker(model_path, cfg)
         self.stats = Stats()
         self._last_frame = None
         self._last_ts = -1
@@ -103,12 +130,55 @@ class GestureRuntime:
                     self._last_stop_wall = time.monotonic()
                     print(f"[lat] PALM -> STOP: camera frame -> S acked in {lat:.0f} ms", flush=True)
 
+    def _after(self) -> None:
+        """Drain teach events and persist learned poses (call with ctl_lock held)."""
+        for e in self.brain.events:
+            print(f"[teach] {e}", flush=True)
+        self.brain.events = []
+        if self.brain.dirty and self.learned_path:
+            try:
+                self.brain.save(self.learned_path)
+                print(f"[teach] saved {len(self.brain.learner.classes)} pose(s) -> {self.learned_path}", flush=True)
+            except OSError as e:
+                self.brain.dirty = False
+                print(f"[teach] save failed: {e}", file=sys.stderr, flush=True)
+
+    def button(self, kind: str) -> None:
+        """'teach' (short press / desktop 't' / console) or 'forget' (long press)."""
+        with self.ctl_lock:
+            cmds = self.brain.button(now_ms(), kind)
+            self._after()
+        self._send(cmds, None)
+
+    def _poll_buttons(self) -> None:
+        """Uno button via tars_motor: STATUS ... btn_teach=<n> btn_forget=<n> (counters)."""
+        t = now_ms()
+        if not self.poll_buttons or t < self._next_poll:
+            return
+        self._next_poll = t + 200
+        reply = self.link.send("STATUS")
+        if not reply or not reply.startswith("OK"):
+            return
+        seen = {k: int(v) for k, v in BTN_RE.findall(reply)}
+        if not seen:
+            return
+        if self._btn is None:
+            self._btn = seen                  # baseline: presses before we started don't count
+            return
+        for kind in ("forget", "teach"):
+            if seen.get(kind, 0) > self._btn.get(kind, 0):
+                print(f"[teach] button: {kind}", flush=True)
+                self.button(kind)
+        self._btn = seen
+
     def _tick_loop(self) -> None:
         while not self._stop_evt.wait(0.02):
             with self.ctl_lock:
-                cmds = self.ctl.tick(now_ms())
+                cmds = self.brain.tick(now_ms())
+                self._after()
             if cmds:
                 self._send(cmds, None)
+            self._poll_buttons()
             self._maybe_log()
 
     # -- per frame ---------------------------------------------------------------
@@ -137,10 +207,16 @@ class GestureRuntime:
         lm = None
         if res.hand_landmarks:
             lm = [(p.x, p.y, p.z) for p in res.hand_landmarks[0]]
-        label = g.classify(lm, aspect, self.cfg)
+        return self.process_landmarks(lm, aspect, t_cap, infer, img)
+
+    def process_landmarks(self, lm, aspect: float, t_cap: float, infer: float = 0.0,
+                          img: np.ndarray | None = None) -> FrameResult:
+        """Everything after MediaPipe (also used by tests with synthetic hands)."""
         feat = g.hand_features(lm, aspect)
         with self.ctl_lock:
-            cmds = self.ctl.on_frame(now_ms(), label, feat)
+            cmds = self.brain.on_frame(now_ms(), lm, aspect)
+            label, match, rule = self.brain.label, self.brain.match, self.brain.last_rule
+            self._after()
         self._send(cmds, t_cap)
 
         st = self.stats
@@ -154,7 +230,7 @@ class GestureRuntime:
         if label != self._last_label:
             print(f"[see] {label}", flush=True)
             self._last_label = label
-        return FrameResult(label, lm, feat, aspect, infer, cmds, img)
+        return FrameResult(label, lm, feat, aspect, infer, cmds, img, match, rule)
 
     # -- status ------------------------------------------------------------------
     def status_line(self) -> str:
@@ -166,6 +242,12 @@ class GestureRuntime:
             extra = f" wheels={c.f_cur[0]:+.2f},{c.f_cur[1]:+.2f}"
         elif c.moving:
             extra = f" move={c.moving}"
+        b = self.brain
+        if b.state != L.IDLE:
+            extra += f" teach={b.state}"
+        if b.match:
+            extra += f" match={b.match[0]}:{b.match[1]:.2f}"
+        extra += f" learned={len(b.learner.classes)}"
         return (f"mode={c.mode} fps={st.fps:.1f} infer={st.infer_ms:.0f}ms "
                 f"cam->cmd={st.cam_to_cmd_ms:.0f}ms palm->stop={stop} "
                 f"see={self._last_label}{extra} link_rtt={self.link.last_rtt_ms:.1f}ms")
@@ -180,8 +262,32 @@ class GestureRuntime:
             return
         st = self.stats
         # tars_motor shows these in STATUS (vis_mode= vis_fps= vis_stop_ms= ...)
-        self.link.send(f"VIS {self.ctl.mode} {st.fps:.1f} {st.cam_to_cmd_ms:.0f} "
+        mode = self.ctl.mode if self.brain.state == L.IDLE else "teach:" + self.brain.state
+        self.link.send(f"VIS {mode} {st.fps:.1f} {st.cam_to_cmd_ms:.0f} "
                        f"{st.stop_ms:.0f} {self._last_label}")
+
+    def start_console(self) -> None:
+        """Optional stdin commands (ssh / dev only; the robot never needs them):
+        teach | forget | list | stop. Ends quietly when stdin is closed (autostart)."""
+        def run():
+            for line in sys.stdin:
+                cmd = line.strip().lower()
+                if cmd in ("teach", "t"):
+                    self.button("teach")
+                elif cmd == "forget":
+                    self.button("forget")
+                elif cmd in ("list", "l"):
+                    with self.ctl_lock:
+                        cs = [(c.name, c.action, c.thr, len(c.raw)) for c in self.brain.learner.classes]
+                    print(f"[teach] {len(cs)} learned: " + ", ".join(
+                        f"{n}->{a} (r={t:.2f}, {k} frames)" for n, a, t, k in cs), flush=True)
+                elif cmd in ("stop", "s"):
+                    with self.ctl_lock:
+                        cmds = self.ctl._stop(now_ms(), "key")
+                    self._send(cmds, None)
+                elif cmd:
+                    print("[console] commands: teach | forget | list | stop", flush=True)
+        threading.Thread(target=run, daemon=True).start()
 
     def camera_stalled(self) -> None:
         """Call when a frame read timed out; the tick thread does the STOP."""

@@ -3,7 +3,10 @@
 Builds tests/parity_main.cpp with the host C++ compiler, generates random
 sessions of synthetic hands (all poses, moving around, dropouts, camera stalls,
 mode toggles, several config variants), runs both implementations, and diffs
-every label, mode and command line.
+every label, mode and command line. A second set of sessions exercises
+teach-on-the-spot (common/learn.py vs learn.hpp): long held poses so the TEACH
+sign triggers, novel poses get recorded, gestures assign actions, palm cancels,
+Uno button presses, forget, and a save -> load round trip across languages.
 
     python3 vision/tests/test_parity.py
 """
@@ -19,8 +22,11 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [os.path.join(HERE, "..", "common"), HERE]
 
+import json  # noqa: E402
+
 import gesture as g  # noqa: E402
 import handgen as h  # noqa: E402
+import learn as L  # noqa: E402
 
 CONF = os.path.abspath(os.path.join(HERE, "..", "gesture.conf"))
 BUILD = os.path.join(HERE, "build")
@@ -32,7 +38,7 @@ def build() -> str:
         raise SystemExit("no C++ compiler found")
     os.makedirs(BUILD, exist_ok=True)
     exe = os.path.join(BUILD, "parity_main")
-    subprocess.run([cxx, "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
+    subprocess.run([cxx, "-std=c++17", "-O1", "-ffp-contract=off", "-Wall", "-Wextra", "-Werror",
                     os.path.join(HERE, "parity_main.cpp"), "-o", exe], check=True)
     return exe
 
@@ -81,18 +87,70 @@ VARIANTS = [
 ]
 
 
+TEACH_POSES = ([("shaka", "up")] * 4 + [(p, "up") for p in h.NOVEL] * 2
+               + [("palm", "up"), ("fist", "up"), ("peace", "up"), ("thumb", "up"),
+                  ("point", "left"), ("point", "right"), ("none", "up")])
+
+
+def teach_session(rng: random.Random, n_chunks: int, save_dir: str, tag: str):
+    """Chunks of one pose held 0.2-4 s, so TEACH holds, recordings and picks happen."""
+    t = 0.0
+    aspect = rng.choice([640 / 480, 16 / 9])
+    for ci in range(n_chunks):
+        pose = rng.choice(TEACH_POSES)
+        r = rng.random()
+        if r < 0.03:
+            yield ("B", round(t, 3), "teach")
+        elif r < 0.045:
+            yield ("B", round(t, 3), "forget")
+        if ci == n_chunks // 2:
+            yield ("SAVE", os.path.join(save_dir, f"{tag}_py.json"), os.path.join(save_dir, f"{tag}_cpp.json"))
+            yield ("LOAD", os.path.join(save_dir, f"{tag}_py.json"))
+        hold = rng.uniform(200, 4000)
+        end = t + hold
+        cx, size = rng.uniform(0.3, 0.7), rng.uniform(0.12, 0.3)
+        while t < end:
+            dt = rng.uniform(30, 90)
+            k = t + rng.uniform(5, 20)
+            while k < t + dt:
+                yield ("T", round(k, 3))
+                k += rng.uniform(15, 25)
+            t += dt
+            if pose[0] == "none" or rng.random() < 0.02:
+                yield ("F", round(t, 3), aspect, None)
+            else:
+                lm = h.make_hand(pose[0], pose[1], cx=cx, size=size, jitter_deg=rng.uniform(-20, 20),
+                                 noise=0.004, rng=rng, aspect=aspect)
+                yield ("F", round(t, 3), aspect, lm)
+    yield ("DB",)
+
+
 def run_python(conf_path: str, events) -> list[str]:
-    c = g.Controller(g.load_config(conf_path))
+    b = L.Brain(g.load_config(conf_path))
     out = []
+
+    def dump(cmds):
+        out.extend(f"> {x.text}|{x.reason}" for x in cmds)
+        out.extend(f"E {e}" for e in b.events)
+        b.events = []
+
     for ev in events:
         if ev[0] == "T":
-            out += [f"> {x.text}|{x.reason}" for x in c.tick(ev[1])]
+            dump(b.tick(ev[1]))
+        elif ev[0] == "B":
+            dump(b.button(ev[1], ev[2]))
+        elif ev[0] == "SAVE":
+            b.save(ev[1])
+        elif ev[0] == "LOAD":
+            out.append(f"LOADED {b.load(ev[1])}")
+        elif ev[0] == "DB":
+            out.extend("DB %s %s %.9f %d" % (c.name, c.action, c.thr, len(c.examples))
+                       for c in b.learner.classes)
         else:
             _, t, aspect, lm = ev
-            label = g.classify(lm, aspect, c.cfg)
-            cmds = c.on_frame(t, label, g.hand_features(lm, aspect))
-            out.append(f"L {label} {c.mode}")
-            out += [f"> {x.text}|{x.reason}" for x in cmds]
+            cmds = b.on_frame(t, lm, aspect)
+            out.append(f"L {b.label} {b.ctl.mode} {b.state}")
+            dump(cmds)
     return out
 
 
@@ -101,6 +159,14 @@ def script(conf_path: str, events) -> str:
     for ev in events:
         if ev[0] == "T":
             lines.append(f"T {ev[1]!r}")
+        elif ev[0] == "B":
+            lines.append(f"B {ev[1]!r} {ev[2]}")
+        elif ev[0] == "SAVE":
+            lines.append(f"SAVE {ev[2]}")
+        elif ev[0] == "LOAD":
+            lines.append(f"LOAD {ev[1]}")
+        elif ev[0] == "DB":
+            lines.append("DB")
         else:
             _, t, aspect, lm = ev
             if lm is None:
@@ -144,10 +210,10 @@ def main() -> int:
                 total_lines += len(py)
                 for ln in py:
                     if ln.startswith("L "):
-                        _, lab, mode = ln.split()
+                        _, lab, mode, _state = ln.split()
                         labels_seen.add(lab)
                         modes_seen.add(mode)
-                    else:
+                    elif ln.startswith("> "):
                         total_cmds += 1
                         reasons_seen.add(ln.rsplit("|", 1)[1])
     print(f"parity OK: {len(VARIANTS)} configs x 6 sessions, {total_lines} lines, {total_cmds} commands identical")
@@ -159,6 +225,56 @@ def main() -> int:
             "turn_right", "resend", "follow", "mode_gesture", "mode_follow"}
     if missing or must - reasons_seen or modes_seen != {"gesture", "follow"}:
         print(f"coverage gap: labels {missing}, reasons {must - reasons_seen}")
+        return 1
+    return teach_parity(exe)
+
+
+def teach_parity(exe: str) -> int:
+    """Teach sessions through both Brains; also check the C++ and Python JSON files agree."""
+    total = 0
+    events_seen: set[str] = set()
+    reasons_seen: set[str] = set()
+    with tempfile.TemporaryDirectory(dir=BUILD) as tmp:
+        for vi, over in enumerate([{}, {"feedback_led_beep": 0, "learn_assign_frames": 3}]):
+            conf = write_conf(tmp, over)
+            for seed in range(8):
+                rng = random.Random(5000 + 100 * vi + seed)
+                tag = f"v{vi}s{seed}"
+                events = list(teach_session(rng, 90, tmp, tag))
+                py = run_python(conf, events)
+                # the C++ side saves to *_cpp.json, then (like Python) loads the Python file
+                cpp = subprocess.run([exe], input=script(conf, events), capture_output=True,
+                                     text=True, check=True).stdout.splitlines()
+                if py != cpp:
+                    for i, (a, b) in enumerate(zip(py, cpp)):
+                        if a != b:
+                            print(f"TEACH MISMATCH variant {vi} seed {seed} line {i}:\n  py : {a}\n  cpp: {b}")
+                            print("  context:", py[max(0, i - 6):i])
+                            return 1
+                    print(f"TEACH MISMATCH variant {vi} seed {seed}: length {len(py)} vs {len(cpp)}")
+                    return 1
+                with open(os.path.join(tmp, f"{tag}_py.json")) as f:
+                    jp = json.load(f)
+                with open(os.path.join(tmp, f"{tag}_cpp.json")) as f:
+                    jc = json.load(f)
+                if jp != jc:
+                    print(f"JSON MISMATCH variant {vi} seed {seed}")
+                    return 1
+                total += len(py)
+                for ln in py:
+                    if ln.startswith("E "):
+                        events_seen.add(" ".join(ln.split()[1:3]))
+                    elif ln.startswith("> "):
+                        reasons_seen.add(ln.rsplit("|", 1)[1].split("@")[0])
+    print(f"teach parity OK: 2 configs x 8 sessions, {total} lines identical, saved JSON identical")
+    print(f"  teach events : {sorted(events_seen)}")
+    print(f"  reasons      : {sorted(reasons_seen)}")
+    need = {"teach start", "record", "learned pose1", "reject too_similar", "cancel palm", "forget 0",
+            "recorded 40"}
+    have = {e for e in events_seen} | {" ".join(e.split()[:2]) for e in events_seen}
+    missing = {n for n in need if not any(e.startswith(n) for e in have)}
+    if missing:
+        print(f"teach coverage gap: {missing}")
         return 1
     return 0
 

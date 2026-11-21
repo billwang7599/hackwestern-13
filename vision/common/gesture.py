@@ -35,8 +35,9 @@ POINT_DOWN = "point_down"
 POINT_LEFT = "point_left"
 POINT_RIGHT = "point_right"
 PEACE = "peace"
+TEACH = "teach"          # shaka: index/middle/ring folded, pinky out (thumb ignored)
 LABELS = [NO_HAND, UNKNOWN, PALM, FIST, THUMBS_UP, THUMBS_DOWN,
-          POINT_UP, POINT_DOWN, POINT_LEFT, POINT_RIGHT, PEACE]
+          POINT_UP, POINT_DOWN, POINT_LEFT, POINT_RIGHT, PEACE, TEACH]
 
 GESTURE_MODE, FOLLOW_MODE = "gesture", "follow"
 
@@ -61,6 +62,15 @@ CONF_KEYS = [
     "follow_invert_turn",
     "flip", "infer_width",
     "min_detection_confidence", "min_tracking_confidence",
+    # actions (learned poses can map to these)
+    "spin_turns", "wiggle_ms", "arms_ms",
+    # teach-on-the-spot (vision/common/learn.py)
+    "teach_hold_ms", "teach_countdown_ms", "learn_gap_frames", "learn_cancel_frames",
+    "learn_frames", "learn_record_timeout_ms", "learn_assign_ms", "learn_assign_frames",
+    "learn_cooldown_ms", "learn_builtin_frac", "learn_similar_frac", "learn_max_classes",
+    "learn_k", "learn_augment", "learn_jitter", "learn_angle_weight",
+    "learn_thr_mult", "learn_thr_min", "learn_thr_max",
+    "feedback_speed", "feedback_ms", "nudge_ms", "feedback_led_beep",
 ]
 
 
@@ -134,6 +144,8 @@ def classify(lm, aspect: float, cfg: dict) -> str:
         d = _direction(lm, INDEX_MCP, 8, aspect, tol)
         return {"up": POINT_UP, "down": POINT_DOWN, "left": POINT_LEFT,
                 "right": POINT_RIGHT}.get(d, UNKNOWN)
+    if fold[0] and fold[1] and fold[2] and ext[3]:
+        return TEACH
     if all(fold):
         thumb_out = _dist(lm, THUMB_TIP, INDEX_MCP, aspect) / palm > cfg["thumb_out"]
         if thumb_out:
@@ -202,6 +214,11 @@ def _toward(cur: float, tgt: float, step: float) -> float:
     return tgt if abs(d) <= step else cur + (step if d > 0 else -step)
 
 
+# A move is a list of segments: ("D", l, r, ms) drives (D resent every resend_ms),
+# ("X", text, 0, ms) sends one line (e.g. "G wave", "BEEP 1") then waits ms.
+ACTIONS = ["forward", "back", "turn_left", "turn_right", "spin", "wiggle", "arms"]
+
+
 class Controller:
     """Gesture/follow state machine. Time is passed in (ms), so it's testable.
 
@@ -231,26 +248,79 @@ class Controller:
         self.f_active = False
         self.f_tgt = (0.0, 0.0)
         self.f_cur = (0.0, 0.0)
+        # multi-segment moves + learned poses
+        self.segs: list = []               # segments still to run after the current one
+        self.move_d = True                 # current segment is a D (resend it)
+        self.learned: dict[str, tuple[str, list]] = {}   # label -> (action, custom segs)
 
     @property
     def moving(self) -> str | None:
         return self.move[0] if self.move else None
 
     # -- helpers ---------------------------------------------------------------
-    def _wheels(self, intent: str) -> tuple[float, float, float]:
+    def intent_of(self, label: str) -> str | None:
+        it = INTENT.get(label)
+        if it is None and label in self.learned:
+            it = self.learned[label][0] + "@" + label
+        return it
+
+    def action_segments(self, action: str, custom: list | None = None) -> list:
         c = self.cfg
         s, ts = c["step_speed"], c["turn_speed"]
-        if intent == FORWARD:
-            return s, s, c["step_ms"]
-        if intent == BACK:
-            return -s, -s, c["step_ms"]
-        ccw = (intent == TURN_LEFT) == (c["point_left_is_left"] >= 0.5)
-        return (-ts, ts, c["turn_ms"]) if ccw else (ts, -ts, c["turn_ms"])
+        if action == FORWARD:
+            return [("D", s, s, c["step_ms"])]
+        if action == BACK:
+            return [("D", -s, -s, c["step_ms"])]
+        if action in (TURN_LEFT, TURN_RIGHT):
+            ccw = (action == TURN_LEFT) == (c["point_left_is_left"] >= 0.5)
+            return [("D", -ts, ts, c["turn_ms"])] if ccw else [("D", ts, -ts, c["turn_ms"])]
+        if action == "spin":
+            return [("D", -ts, ts, c["turn_ms"] * c["spin_turns"])]
+        if action == "wiggle":
+            w = c["wiggle_ms"]
+            return [("D", -ts, ts, w), ("D", ts, -ts, 2 * w), ("D", -ts, ts, 2 * w),
+                    ("D", ts, -ts, 2 * w), ("D", -ts, ts, w)]
+        if action == "arms":
+            return [("X", "G wave", 0.0, c["arms_ms"])]
+        if action == "custom":
+            return list(custom or [])
+        return []
+
+    def _segments(self, intent: str) -> list:
+        if "@" in intent:
+            act, label = intent.split("@", 1)
+            return self.action_segments(act, self.learned.get(label, ("", []))[1])
+        return self.action_segments(intent)
+
+    def _start_seg(self, t: float, intent: str) -> list[Cmd]:
+        """Start the next queued segment(s). Zero-length X segments chain at once."""
+        out: list[Cmd] = []
+        while self.segs:
+            kind, a, b, ms = self.segs.pop(0)
+            self.move = (intent, a if kind == "D" else 0.0, b if kind == "D" else 0.0, t + ms)
+            self.move_d = kind == "D"
+            self.last_send = t
+            self.need_stop = True
+            out.append(Cmd(_d(a, b) if kind == "D" else a, intent))
+            if ms > 0:
+                return out
+        out += self._stop(t, "done")
+        self.cooldown_until = t + self.cfg["cooldown_ms"]
+        return out
+
+    def play(self, t: float, intent: str, segs: list) -> list[Cmd]:
+        """Run a segment list now (cancels any move). Used for actions + teach feedback."""
+        out = []
+        if self.move is not None or self.need_stop or self.f_active:
+            out += self._stop(t, "preempt")
+        self.segs = list(segs)
+        return out + self._start_seg(t, intent)
 
     def _stop(self, t: float, reason: str) -> list[Cmd]:
         if self.move is not None:
             self.cooldown_until = t + self.cfg["cooldown_ms"]
         self.move = None
+        self.segs = []
         self.need_stop = False
         self.f_active = False
         self.f_tgt = self.f_cur = (0.0, 0.0)
@@ -301,7 +371,7 @@ class Controller:
             if lost and (self.need_stop or self.move is not None):
                 return self._stop(t, "lost")
             return []
-        intent = INTENT.get(label)
+        intent = self.intent_of(label)
         if intent != self.fired_intent:
             self.armed = True
         if intent == STOP:
@@ -315,13 +385,10 @@ class Controller:
                      and t >= self.cooldown_until
                      and (self.armed or c["hold_repeat"] >= 0.5))
             if ready:
-                l, r, dur = self._wheels(intent)
-                self.move = (intent, l, r, t + dur)
-                self.last_send = t
-                self.need_stop = True
                 self.fired_intent = intent
                 self.armed = False
-                return [Cmd(_d(l, r), intent)]
+                self.segs = self._segments(intent)
+                return self._start_seg(t, intent)
         return []
 
     def _follow_frame(self, t: float, label: str, feat) -> list[Cmd]:
@@ -336,7 +403,7 @@ class Controller:
                                                  or self.need_stop or self.f_active):
                 return self._stop(t, "palm")
             return []
-        if label == PEACE:                   # hold still while (maybe) switching modes
+        if label in (PEACE, TEACH):          # hold still while (maybe) switching modes / teaching
             self.f_tgt = (0.0, 0.0)
             return []
         if feat is not None:
@@ -365,10 +432,8 @@ class Controller:
             return []
         intent, l, r, end = self.move
         if t >= end:
-            out = self._stop(t, "done")
-            self.cooldown_until = t + c["cooldown_ms"]
-            return out
-        if t - self.last_send >= c["resend_ms"]:
+            return self._start_seg(t, intent)
+        if self.move_d and t - self.last_send >= c["resend_ms"]:
             self.last_send = t
             return [Cmd(_d(l, r), "resend")]
         return []

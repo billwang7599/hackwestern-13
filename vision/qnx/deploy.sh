@@ -12,6 +12,7 @@ PI_DIR="${PI_DIR:-/data/home/qnxuser}"
 echo ">> copying vision/ to $PI_HOST:$PI_DIR/vision"
 COPYFILE_DISABLE=1 tar -C "$VISION/.." -cf - \
     --exclude 'vision/.venv' --exclude 'vision/tests/build' --exclude 'vision/tests/assets' \
+    --exclude 'vision/learned.json*' --exclude 'vision/qnx/autostart/tars.env' \
     --exclude '__pycache__' --exclude '*.pyc' --exclude '.DS_Store' vision \
   | ssh "$PI_HOST" "mkdir -p '$PI_DIR' && tar -C '$PI_DIR' -xf -"
 echo ">> done. On the Pi:"
