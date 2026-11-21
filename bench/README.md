@@ -33,7 +33,9 @@ the whole simulated stack and then the bench.
 - `bench.target`: `{"name": "sim"|"usb"|"pi", "motor", "goto", "voice", "relay"}`.
 - `bench.plugins.get("robot")`: the robot link (owned by the `robot` plugin). It is the
   **only** thing that opens connections to tars_motor / goto / tars_voice (or the relay):
-  `send(dest, line) -> reply` with dest `"motor"|"goto"|"voice"`, and `stop()` (`S` to
+  `send(dest, line, data=b"") -> reply` with dest `"motor"|"goto"|"voice"` (`data`: raw
+  bytes written right after the line, for tars_voice's `AUDIO <n>` + clip; the reply is the
+  next line), and `stop()` (`S` to
   tars_motor, then `CANCEL` to goto). Other plugins call it; if it isn't loaded, they
   disable their send buttons and say so.
 
