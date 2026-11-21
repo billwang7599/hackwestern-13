@@ -437,6 +437,307 @@ def test_uno() -> None:
     uno.close()
 
 
+# ------------------------------------------------------------------ stepper moves, IO, buttons (stub)
+def wait_move(c: Client, timeout: float) -> dict:
+    end = time.monotonic() + timeout
+    st = c.status()
+    while st["move"] == "running" and time.monotonic() < end:
+        time.sleep(0.02)
+        st = c.status()
+    return st
+
+
+def test_stub_moves() -> None:
+    srv = Server("-b", "stub", "-w", "300", "-k", "600")
+    c = Client(srv.port)
+    try:
+        print("stub: boot with no client = stopped, watchdog armed")
+        time.sleep(0.4)
+        st = c.status()
+        check(st["l"] == 0.0 and st["estop"] == 1 and st["why"] == "watchdog", f"idle at boot {st}")
+        check(st["move"] == "idle" and st["move_id"] == "0" and st["btn_teach"] == "0"
+              and st["btn_forget"] == "0" and st["led"] == "-1", f"boot status {st}")
+        check(not any(re.search(r"drive L=[+-]0\.[1-9]", l) for l in srv.log), "never drove without a client")
+
+        print("stub: MOVE / TURN with simulated step timing")
+        r = c.cmd("MOVE 100")
+        check(re.fullmatch(r"OK 1 \d+", r) is not None, f"MOVE reply {r}")
+        est = int(r.split()[2])
+        check(2600 < est < 2850, f"MOVE 100 est {est} ms (12 RPM, 65 mm wheels)")
+        st = c.status()
+        check(st["move"] == "running" and st["move_kind"] == "MOVE" and st["move_req"] == "100.0", f"running {st}")
+        t0 = time.monotonic()
+        st = wait_move(c, 5)
+        took = (time.monotonic() - t0) * 1000
+        check(st["move"] == "done" and st["move_done"] == "100.0" and st["move_why"] == "-", f"done {st}")
+        check(est - 150 < took < est + 250, f"took {took:.0f} ms vs est {est}")
+        r = c.cmd("TURN 30")
+        est = int(r.split()[2])
+        check(r.startswith("OK 2 ") and 850 < est < 980, f"TURN 30 -> {r}")
+        st = wait_move(c, 3)
+        check(st["move"] == "done" and st["move_kind"] == "TURN" and st["move_done"] == "30.0", f"turn {st}")
+        r = c.cmd("TURN -90 0.5")
+        check(int(r.split()[2]) > 2 * 1000, f"half speed is slower: {r}")
+        check(srv.wait_log(r"move R -90\.0 speed 0\.50"), "speed passed to backend")
+        c.cmd("S")
+
+        print("stub: aborts")
+        c.cmd("MOVE 200")
+        time.sleep(1.0)
+        check(c.cmd("S") == "OK", "S")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "stop" and 0 < float(st["move_done"]) < 200,
+              f"S aborts {st}")
+        c.cmd("MOVE 200")
+        time.sleep(0.3)
+        for _ in range(3):
+            c.cmd("D 0 0")                    # zero D = keepalive, doesn't abort
+            time.sleep(0.05)
+        check(c.status()["move"] == "running", "D 0 0 doesn't abort a move")
+        check(c.cmd("D 0.3 0.3") == "OK", "D takes over")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "drive", f"non-zero D aborts {st}")
+        check(srv.wait_log(r"ABORT M [\d.]+ drive"), "backend saw the abort")
+        c.cmd("S")
+        r1 = c.cmd("MOVE 200")
+        r2 = c.cmd("MOVE 50")
+        check(r1.split()[1] != r2.split()[1], "new id")
+        st = wait_move(c, 3)
+        check(st["move"] == "done" and st["move_done"] == "50.0" and st["move_id"] == r2.split()[1],
+              f"replaced move: the newer one is reported {st}")
+        check(srv.wait_log(r"older move"), "older move's ABORT ignored")
+        c.cmd("MOVE 200")
+        time.sleep(0.2)
+        c.cmd("SIM T 60")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "tipped", f"tip aborts {st}")
+        check(c.cmd("MOVE 10").startswith("ERR tipped") and c.cmd("TURN 10").startswith("ERR tipped"), "refused while tipped")
+        time.sleep(1.05)
+        check(c.cmd("RESET") == "OK", "RESET")
+        c.cmd("MOVE 200")
+        time.sleep(0.2)
+        c.cmd("SIM B 1500")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "bump", f"bump aborts {st}")
+        check(c.cmd("MOVE 10").startswith("ERR bumped"), "refused during bump hold")
+        time.sleep(0.7)
+        c2 = Client(srv.port)
+        c2.cmd("MOVE 200")
+        time.sleep(0.2)
+        c2.close()
+        time.sleep(0.2)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "disconnect", f"disconnect aborts {st}")
+
+        print("stub: MOVE/TURN usage + clamps")
+        for bad in ("MOVE", "MOVE x", "MOVE 10 0", "MOVE 10 2", "MOVE nan", "TURN", "TURN 10 -1"):
+            check(c.cmd(bad).startswith("ERR usage"), f"{bad!r} rejected")
+        c.cmd("MOVE 5000")
+        check(c.status()["move_req"] == "1000.0", "MOVE clamped to 1000 mm")
+        c.cmd("TURN -9999")
+        check(c.status()["move_req"] == "-360.0", "TURN clamped to 360 deg")
+        c.cmd("S")
+
+        print("stub: WHEELCAL")
+        check(c.cmd("WHEELCAL") == "OK 65.0 100.0", "WHEELCAL query")
+        check(c.cmd("WHEELCAL 70 120") == "OK 70.0 120.0", "WHEELCAL set")
+        check(srv.wait_log(r"wheel cal diam 70\.0 track 120\.0"), "cal reaches backend")
+        check(c.cmd("WHEELCAL 5 5").startswith("ERR usage") and c.cmd("WHEELCAL 70").startswith("ERR usage"), "bad cal")
+        st = c.status()
+        check(st["wheel_d"] == "70.0" and st["wheel_t"] == "120.0", f"cal in STATUS {st}")
+        r = c.cmd("TURN 30")
+        check(950 < int(r.split()[2]) < 1050, f"wider track -> longer turn: {r}")
+        c.cmd("S")
+        c.cmd("WHEELCAL 65 100")
+
+        print("stub: LED / BEEP / buttons")
+        check(c.cmd("LED 2") == "OK" and srv.wait_log(r"\[stub\] led 2"), "LED 2")
+        check(c.status()["led"] == "2", "led in STATUS")
+        check(c.cmd("BEEP 3") == "OK" and srv.wait_log(r"\[stub\] beep 3"), "BEEP 3")
+        for name, pat in (("teach", 2), ("rec", 1), ("ok", 1), ("no", 3), ("forget", 3), ("off", 0), ("TEACH", 2)):
+            n0 = len(srv.log)
+            check(c.cmd(f"LED {name}") == "OK", f"LED {name}")
+            check(srv.wait_log(rf"\[stub\] led {pat}$"), f"LED {name} -> pattern {pat}")
+            check(c.status()["led"] == str(pat), f"LED {name} in STATUS")
+        for n in (1, 2, 3, 4):
+            check(c.cmd(f"BEEP {n}") == "OK" and srv.wait_log(rf"\[stub\] beep {n}$"), f"BEEP {n}")
+        drive_before = c.status()
+        for bad in ("LED", "LED 4", "LED -1", "LED x", "LED 1 2", "LED teach now", "LED blink",
+                    "BEEP", "BEEP 10", "BEEP 2x", "BEEP ok"):
+            check(c.cmd(bad).startswith("ERR usage"), f"{bad!r} rejected")
+        check(c.cmd("PING") == "OK PONG", "still in step after errors")
+        st = c.status()
+        check(st["l"] == drive_before["l"] and st["move"] == drive_before["move"]
+              and st["led"] == drive_before["led"], "rejected LED/BEEP change nothing")
+        for b in ("TEACH", "TEACH", "FORGET"):
+            check(c.cmd(f"SIM BTN {b}") == "OK", f"SIM BTN {b}")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["btn_teach"] == "2" and st["btn_forget"] == "1", f"button counters {st}")
+        check(c.cmd("SIM BTN X").startswith("ERR usage"), "SIM BTN bad")
+        check(srv.wait_log(r"button TEACH") and srv.wait_log(r"button FORGET"), "buttons logged")
+    finally:
+        c.close()
+    check(srv.stop() == 0, "stub exit 0")
+
+
+def test_uno_moves() -> None:
+    print("uno: MOVE/TURN/K/L/B/BTN on the wire")
+    uno = FakeUno()
+    srv = Server("-b", "uno", "-d", uno.path, "-w", "300")
+    c = Client(srv.port)
+    nd = lambda: [l for l in uno.lines if not l.startswith("D ")]
+    try:
+        uno.pump(0.3)
+        uno.send("READY\r\n")
+        check(srv.wait_log(r"co-processor READY"), "READY first")
+        uno.lines.clear()
+        r = c.cmd("MOVE 100")
+        uno.pump(0.1)
+        check(nd() == ["M 100.0 1.00"], f"M on the wire {nd()}")
+        check(all(l == "D 0.000 0.000" for l in uno.lines if l.startswith("D ")), "keepalive D 0 0 during the move")
+        check(c.status()["move"] == "running", "running until the Uno answers")
+        uno.send("DONE M 100.0\r\n")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["move"] == "done" and st["move_done"] == "100.0", f"DONE parsed {st}")
+
+        uno.lines.clear()
+        c.cmd("TURN -30 0.5")
+        uno.pump(0.1)
+        check(nd() == ["R -30.0 0.50"], f"R on the wire {nd()}")
+        c.cmd("S")
+        uno.pump(0.1)
+        check("S" in nd(), "S aborts on the wire")
+        check(c.status()["move"] == "aborted", "aborted at once")
+        uno.send("ABORT R -12.3 stop\r\n")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["move_done"] == "-12.3" and st["move_why"] == "stop", f"ABORT amount {st}")
+
+        uno.lines.clear()
+        c.cmd("MOVE 100")
+        time.sleep(0.1)
+        c.cmd("MOVE 50")
+        uno.pump(0.1)
+        check(nd() == ["M 100.0 1.00", "M 50.0 1.00"], f"both moves on the wire {nd()}")
+        uno.send("ABORT M 5.0 replaced\r\n")
+        time.sleep(0.1)
+        check(c.status()["move"] == "running", "older ABORT doesn't end the new move")
+        uno.send("DONE M 50.0\r\n")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["move"] == "done" and st["move_done"] == "50.0", f"replace accounting {st}")
+        uno.send("DONE M 7.0\r\nDONE X 1\r\nABORT M\r\n")
+        time.sleep(0.1)
+        check(c.status()["move_done"] == "50.0" and srv.wait_log(r"stray DONE"), "stray/junk DONE ignored")
+
+        c.cmd("MOVE 100")
+        time.sleep(0.05)
+        uno.send("ABORT M 0.0 nosteppers\r\n")       # the DC-wheel firmware
+        time.sleep(0.1)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "nosteppers", f"DC firmware refusal {st}")
+
+        uno.lines.clear()
+        c.cmd("WHEELCAL 70 120")
+        c.cmd("LED 3")
+        c.cmd("BEEP 2")
+        uno.pump(0.1)
+        check(nd() == ["K 70.0 120.0", "L 3", "B 2"], f"K/L/B on the wire {nd()}")
+        uno.lines.clear()
+        for name in ("teach", "rec", "ok", "no", "forget", "off"):
+            c.cmd(f"LED {name}")
+            time.sleep(0.03)
+        for n in (1, 2, 3, 4):
+            c.cmd(f"BEEP {n}")
+            time.sleep(0.03)
+        uno.pump(0.1)
+        check(nd() == ["L 2", "L 1", "L 1", "L 3", "L 3", "L 0", "B 1", "B 2", "B 3", "B 4"],
+              f"LED names / BEEP 1-4 on the wire {nd()}")
+        c.cmd("LED 3")
+
+        uno.send("BTN TEACH\r\nBTN TEACH\nBTN FORGET\r\nBTN X\r\nBTN\r\n")
+        time.sleep(0.15)
+        st = c.status()
+        check(st["btn_teach"] == "2" and st["btn_forget"] == "1" and st["bumps"] == "0", f"BTN parsed {st}")
+
+        uno.lines.clear()
+        c.cmd("MOVE 300")
+        time.sleep(0.05)
+        uno.send("READY\r\n")                         # Uno rebooted mid-move
+        uno.pump(0.1)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "reboot", f"reboot aborts {st}")
+        check("L 3" in nd(), f"LED pattern restored after reboot {nd()}")
+
+        uno.lines.clear()
+        r = c.cmd("TURN 1")                           # never answered -> timeout
+        est = int(r.split()[2])
+        time.sleep((2 * est + 2000) / 1000 + 0.3)
+        st = c.status()
+        check(st["move"] == "aborted" and st["move_why"] == "timeout", f"timeout {st}")
+        check("S" in nd(), "timeout sends S")
+    finally:
+        c.close()
+    srv.stop()
+    uno.close()
+
+
+def test_uno_reconnect() -> None:
+    print("uno: missing at boot, unplug + replug")
+    import tempfile
+    d = tempfile.mkdtemp()
+    link = os.path.join(d, "uno")
+
+    def point(target: str) -> None:
+        tmp = link + ".tmp"
+        os.symlink(target, tmp)
+        os.replace(tmp, link)
+
+    srv = Server("-b", "uno", "-d", link, "-w", "300")
+    try:
+        time.sleep(0.3)
+        check(srv.proc.poll() is None, "server stays up with no Uno")
+        check(srv.wait_log(r"not there yet"), "logs that it is waiting")
+        c = Client(srv.port)
+        check(c.cmd("PING") == "OK PONG", "TCP works without the Uno")
+        st = c.status()
+        check(st["l"] == 0.0 and st["why"] == "watchdog", f"stopped {st}")
+        time.sleep(1.2)
+        check(sum("not there yet" in l for l in srv.log) == 1, "doesn't spam the log")
+
+        u1 = FakeUno()
+        point(u1.path)
+        u1.pump(1.3)
+        ds = [l for l in u1.lines if l.startswith("D ")]
+        check(len(ds) > 5, f"found the Uno once it appeared ({len(ds)} D lines)")
+        check(srv.wait_log(r"\[uno\] opened"), "opened")
+
+        u1.close()                                    # unplugged
+        check(srv.wait_log(r"\[uno\] lost", 1.0), "loss detected")
+        u2 = FakeUno()
+        point(u2.path)
+        u2.pump(1.5)
+        ds = [l for l in u2.lines if l.startswith("D ")]
+        check(len(ds) > 5, f"reconnected after replug ({len(ds)} D lines)")
+        check(sum("[uno] opened" in l for l in srv.log) == 2, "opened twice")
+        u2.send("READY\r\nBTN TEACH\r\n")
+        time.sleep(0.1)
+        st = c.status()
+        check(st["ready"] == "1" and st["btn_teach"] == "1", f"events flow after replug {st}")
+        check(c.cmd("PING") == "OK PONG" and srv.proc.poll() is None, "server never went down")
+        c.close()
+        u2.close()
+    finally:
+        rc = srv.stop()
+    check(rc == 0, f"clean exit {rc}")
+
+
 def test_pico_still_builds() -> None:
     print("pico backend still selectable")
     srv = Server("-b", "pico", "-d", "/nonexistent")
@@ -448,6 +749,9 @@ if __name__ == "__main__":
     t0 = time.monotonic()
     test_stub()
     test_uno()
+    test_stub_moves()
+    test_uno_moves()
+    test_uno_reconnect()
     test_pico_still_builds()
     print(f"{checks - failures}/{checks} checks passed ({time.monotonic() - t0:.1f} s)")
     sys.exit(1 if failures else 0)

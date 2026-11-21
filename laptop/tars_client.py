@@ -7,6 +7,8 @@
         t.arm(0, 45)          # left arm swings 45 deg forward
         t.home()
         t.stop()
+        t.move_mm(100)        # stepper wheels: exactly 10 cm forward (blocks until done)
+        t.turn_deg(30)        # exactly 30 deg to the right (+) / left (-)
 
 Set TARS_HOST / TARS_PORT env vars to change the default address.
 """
@@ -120,6 +122,58 @@ class Tars:
 
     def gestures(self) -> list[str]:
         return self.send("GESTURES").split()
+
+    # -- exact moves (stepper wheels) ----------------------------------------
+    def _exact(self, verb: str, amount: float, speed: float | None, wait: bool,
+               timeout: float | None) -> dict:
+        r = self.send(f"{verb} {amount:.1f}" + (f" {speed:.2f}" if speed else "")).split()
+        move_id, est_ms = int(r[0]), int(r[1])
+        info = {"id": move_id, "est_s": est_ms / 1000.0, "move": "running"}
+        if not wait:
+            return info
+        end = time.monotonic() + (timeout if timeout is not None else est_ms / 1000.0 * 2 + 3.0)
+        time.sleep(min(0.05, est_ms / 1000.0))
+        while time.monotonic() < end:
+            st = self.status()
+            if int(st.get("move_id", -1)) != move_id:
+                info["move"] = "replaced"
+                return info
+            if st.get("move") != "running":
+                info.update(move=st["move"], done=float(st.get("move_done", 0)), why=st.get("move_why"))
+                return info
+            time.sleep(0.05)
+        info["move"] = "timeout"
+        return info
+
+    def move_mm(self, mm: float, speed: float | None = None, wait: bool = True,
+                timeout: float | None = None) -> dict:
+        """Drive exactly mm (+ forward). speed = fraction of max RPM. With wait=True
+        blocks until done and returns {'move': 'done'|'aborted'|..., 'done': mm, 'why': ...}.
+        Without wait returns at once with {'id', 'est_s'}; S (stop()) aborts it."""
+        return self._exact("MOVE", mm, speed, wait, timeout)
+
+    def turn_deg(self, deg: float, speed: float | None = None, wait: bool = True,
+                 timeout: float | None = None) -> dict:
+        """Spin in place exactly deg: + = right (clockwise from above), - = left."""
+        return self._exact("TURN", deg, speed, wait, timeout)
+
+    def wheel_cal(self, diam_mm: float | None = None, track_mm: float | None = None) -> tuple[float, float]:
+        """Set (saved in the Uno's EEPROM) or read the wheel diameter and track width."""
+        r = self.send("WHEELCAL" + (f" {diam_mm:.1f} {track_mm:.1f}" if diam_mm else "")).split()
+        return float(r[0]), float(r[1])
+
+    # -- on-robot UI ----------------------------------------------------------
+    def led(self, pattern: int) -> None:
+        """0 off, 1 on, 2 slow blink, 3 fast blink."""
+        self.send(f"LED {pattern}")
+
+    def beep(self, n: int = 1) -> None:
+        self.send(f"BEEP {n}")
+
+    def buttons(self) -> tuple[int, int]:
+        """(teach, forget) press counters; they only count up, compare with the last read."""
+        st = self.status()
+        return int(st.get("btn_teach", 0)), int(st.get("btn_forget", 0))
 
     # -- info ---------------------------------------------------------------
     def ping(self) -> float:

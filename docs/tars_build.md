@@ -97,6 +97,32 @@ motor voltage. Check the chip markings before you pick a battery (see
 
 ## 5. Uno wiring
 
+### Stepper wheels (the default build, `WHEEL_TYPE WHEELS_STEPPER`)
+
+The two 28BYJ-48s drive the wheels (exact moves and turns), so there are **no
+stepper arms** by default. 8 wheel pins + button + LED + buzzer leave room for
+at most one arm (`ARM_COUNT 1`, on A0–A3). Full checklist: [PI_TEST.md](PI_TEST.md).
+
+| Uno pin | To |
+|---|---|
+| D8, D9, D10, D11 | left wheel ULN2003 IN1–IN4 |
+| D4, D5, D6, D7 | right wheel ULN2003 IN1–IN4 |
+| A4 / A5 | accelerometer SDA / SCL |
+| D2 | TEACH button → GND (internal pull-up) |
+| D13 | status LED (+ 220 Ω) → GND; also the on-board "L" LED |
+| D12 | buzzer + (active by default; `BUZZER_PASSIVE` for a piezo) |
+| D0, D1 | USB serial to the Pi |
+| free | D3, A0–A3 (one optional arm) |
+
+ULN2003 `+` go to a **separate 5 V supply (≥1 A)**, never the Uno's 5 V pin, with all grounds common.
+Wheel geometry: `K <diam_mm> <track_mm>` on the serial monitor (or `WHEELCAL` via the
+Pi) saves it in EEPROM. 28BYJ-48 gear ratio is 63.684:1 → **4075.77 half-steps/rev**,
+not 4096. At 12 RPM a 65 mm wheel does ~4 cm/s; 100 mm wheels ~6 cm/s.
+
+### DC wheels (`WHEEL_TYPE WHEELS_DC`, the original build)
+
+Button D2 / LED D13 / buzzer D12 in 2-PWM mode; button D10 / LED D13 / no buzzer in EN+IN mode.
+
 Firmware: `uno/tars/tars.ino`. Pins are set in its CONFIG block. Arm 1 uses
 **D4–D7 in both driver modes**, so switching driver type never means rewiring the arms.
 

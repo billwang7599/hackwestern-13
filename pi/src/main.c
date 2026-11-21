@@ -12,10 +12,27 @@
  *   GESTURES             -> "OK wave point ..."
  *   PING                 -> "OK PONG" (also feeds the watchdog)
  *   STATUS               -> "OK <l> <r> <ms_since_cmd> <dist_m> <estop> key=val..."
+ *   MOVE <mm> [speed]    stepper wheels: drive exactly <mm> (+ fwd), speed in (0,1]
+ *                        -> "OK <id> <est_ms>" at once; progress in STATUS move=...
+ *   TURN <deg> [speed]   stepper wheels: spin exactly <deg>, + = right (clockwise)
+ *                        A non-zero D, S, a new MOVE/TURN, tip, bump or the
+ *                        client disconnecting aborts a running move.
+ *   WHEELCAL [diam track] set (and save on the Uno) wheel diameter / track mm
+ *   LED <name|0-3>       on-robot status LED. Names (vision/GESTURES.md §7): off=0,
+ *                        teach=2 (slow blink), rec=1 (solid), ok=1, no=3 (fast), forget=3
+ *   BEEP <n>             n short beeps on the robot's buzzer (0 = silence)
  *   VIS <mode> <fps> <cam_ms> <stop_ms> <label>
  *                        report from the vision app (vision/), shown in STATUS as
  *                        vis_*; does NOT feed the watchdog
  *   SIM T|B|READY [n]    stub backend only: inject a co-processor event (tests)
+ *   SIM BTN TEACH|FORGET stub backend only: inject a button press
+ *
+ * STATUS also has move=idle|running|done|aborted move_id= move_kind=MOVE|TURN|-
+ * move_req= move_done= move_why= move_est_ms= wheel_d= wheel_t= and the on-robot
+ * button counters btn_teach= btn_forget= (they only ever count up).
+ *
+ * Runs unattended at boot: no client = wheels held at 0 (the watchdog starts
+ * tripped), and a missing/unplugged Uno is reopened every second.
  *
  * Threads:
  *   main      accept loop, one detached thread per client
@@ -45,6 +62,7 @@
 #include "gesture.h"
 #include "motor.h"
 #include "obstacle.h"
+#include "wheels.h"
 
 #define TICK_HZ          50
 #define SLEW_PER_TICK    0.08f   /* max change per tick: 0 -> full in ~0.25 s */
@@ -94,6 +112,23 @@ static const char *gesture_name = "none";
 static int   tipped, tilt_deg, bumps;
 static long long last_tip_ms, bump_until_ms;
 static int   ready_count;
+
+/* exact moves (MOVE/TURN). State under `lock`; uno_pending is control-thread only. */
+typedef enum { MV_IDLE, MV_RUNNING, MV_DONE, MV_ABORTED } mv_state_t;
+static const char *mv_names[] = { "idle", "running", "done", "aborted" };
+static mv_state_t mv_state;
+static int   mv_id, mv_est_ms;
+static char  mv_kind;                     /* 'M' | 'R' | 0 */
+static float mv_req, mv_done, mv_speed;
+static char  mv_why[16] = "-";
+static long long mv_deadline_ms;
+static int   req_move;                    /* client asked: send mv_* to the device */
+static const char *req_move_abort;        /* client/thread asked: abort, with this why */
+static float wheel_d = WHEEL_DIAM_MM, wheel_t = WHEEL_TRACK_MM;
+static int   req_wheelcal;
+static int   led_pattern = -1, req_led = -1, req_beep = -1;
+static int   btn_teach, btn_forget;
+static int   uno_pending;                 /* moves sent to the device, not yet answered */
 
 static volatile sig_atomic_t running = 1;
 static const motor_backend_t *motor;
@@ -200,6 +235,8 @@ static void ctl_arm_model(float dt)
     }
 }
 
+static void ctl_move_abort_locked(const char *why);
+
 static void ctl_event(const motor_event_t *ev, long long now)
 {
     switch (ev->kind) {
@@ -210,6 +247,7 @@ static void ctl_event(const motor_event_t *ev, long long now)
         tilt_deg = ev->value;
         last_tip_ms = now;
         target_l = target_r = 0.0f;
+        ctl_move_abort_locked("tipped");
         pthread_mutex_unlock(&lock);
         if (!was) {
             fprintf(stderr, "[ctl] TIPPED (%d deg) -> stop, latched until RESET\n", ev->value);
@@ -222,13 +260,21 @@ static void ctl_event(const motor_event_t *ev, long long now)
         bumps++;
         bump_until_ms = now + cfg_bump_ms;
         target_l = target_r = 0.0f;
+        ctl_move_abort_locked("bump");
         pthread_mutex_unlock(&lock);
         fprintf(stderr, "[ctl] BUMP (%d mg) -> stop, drive refused for %d ms\n", ev->value, cfg_bump_ms);
         break;
     case MOTOR_EV_READY:
         pthread_mutex_lock(&lock);
         int n = ++ready_count;
+        if (mv_state == MV_RUNNING) {     /* a rebooted Uno forgot the move */
+            mv_state = MV_ABORTED;
+            snprintf(mv_why, sizeof mv_why, "reboot");
+        }
+        uno_pending = 0;
+        int led = led_pattern;
         pthread_mutex_unlock(&lock);
+        if (led >= 0 && motor->led) motor->led(led);   /* restore the LED it forgot */
         if (n > 1)
             fprintf(stderr, "[ctl] co-processor READY again (it rebooted): arm angles reset to 0, "
                             "re-zero the arms by hand if they were not at 0\n");
@@ -237,9 +283,49 @@ static void ctl_event(const motor_event_t *ev, long long now)
         ctl_gesture_stop("cancelled (co-processor reboot)");
         ctl_pos[0] = ctl_pos[1] = ctl_tgt[0] = ctl_tgt[1] = 0.0f;
         break;
+    case MOTOR_EV_MOVE_DONE:
+    case MOTOR_EV_MOVE_ABORT: {
+        int ok = ev->kind == MOTOR_EV_MOVE_DONE;
+        if (uno_pending <= 0) {
+            fprintf(stderr, "[ctl] stray %s %c %.1f ignored\n", ok ? "DONE" : "ABORT", ev->what, ev->amount);
+            break;
+        }
+        if (--uno_pending > 0) {          /* answer to an older, replaced move */
+            fprintf(stderr, "[ctl] %s %c %.1f (older move)\n", ok ? "DONE" : "ABORT", ev->what, ev->amount);
+            break;
+        }
+        pthread_mutex_lock(&lock);
+        mv_state = ok ? MV_DONE : MV_ABORTED;
+        mv_done = ev->amount;
+        if (ok) snprintf(mv_why, sizeof mv_why, "-");
+        else if (!strcmp(mv_why, "-")) snprintf(mv_why, sizeof mv_why, "%s", ev->why[0] ? ev->why : "?");
+        int id = mv_id;
+        pthread_mutex_unlock(&lock);
+        fprintf(stderr, "[ctl] move %d %s: %c %.1f %s\n", id, ok ? "done" : "aborted", ev->what,
+                ev->amount, ok ? "" : ev->why);
+        break;
+    }
+    case MOTOR_EV_BTN:
+        pthread_mutex_lock(&lock);
+        if (ev->value == MOTOR_BTN_TEACH) btn_teach++;
+        else if (ev->value == MOTOR_BTN_FORGET) btn_forget++;
+        pthread_mutex_unlock(&lock);
+        fprintf(stderr, "[ctl] button %s\n", ev->value == MOTOR_BTN_TEACH ? "TEACH" : "FORGET");
+        break;
     default:
         break;
     }
+}
+
+/* Abort the running move (if any). Called with `lock` held, from the control
+ * thread. The local state flips at once; the device's ABORT fills in how far it got. */
+static void ctl_move_abort_locked(const char *why)
+{
+    if (mv_state != MV_RUNNING) return;
+    mv_state = MV_ABORTED;
+    snprintf(mv_why, sizeof mv_why, "%s", why);
+    if (motor->move_abort) motor->move_abort();
+    fprintf(stderr, "[ctl] move %d abort (%s)\n", mv_id, why);
 }
 
 static void *control_thread(void *arg)
@@ -285,12 +371,34 @@ static void *control_thread(void *arg)
         req_gesture = NULL;
         req_dev_gesture[0] = '\0';
 
+        /* exact moves: abort first, then a new one, then the timeout */
+        if (req_move_abort) { ctl_move_abort_locked(req_move_abort); req_move_abort = NULL; }
+        if (req_move && motor->move) {
+            motor->move(mv_kind, mv_req, mv_speed);
+            uno_pending++;
+            mv_deadline_ms = now + 2LL * mv_est_ms + 2000;
+            fprintf(stderr, "[ctl] move %d: %s %.1f speed %.2f (~%d ms)\n", mv_id,
+                    mv_kind == 'M' ? "MOVE" : "TURN", mv_req, mv_speed, mv_est_ms);
+        }
+        req_move = 0;
+        if (mv_state == MV_RUNNING && now > mv_deadline_ms) {
+            ctl_move_abort_locked("timeout");   /* device never answered */
+            uno_pending = 0;
+        }
+        int moving = mv_state == MV_RUNNING;
+        if (req_wheelcal && motor->wheel_cal) motor->wheel_cal(wheel_d, wheel_t);
+        req_wheelcal = 0;
+        int led = req_led, beep = req_beep;
+        req_led = req_beep = -1;
+
         /* 3. wheels: watchdog, obstacle, tip latch, bump hold */
         float tl = target_l, tr = target_r;
         int wd_tripped = ms_since(&last_cmd) > cfg_wd_ms;
         if (wd_tripped) { tl = tr = 0.0f; target_l = target_r = 0.0f; }
         /* Obstacle: allow turning/reversing, block net forward motion. */
         int blocked = dist >= 0.0f && dist < OBSTACLE_STOP_M && (tl + tr) > 0.0f;
+        if (moving && dist >= 0.0f && dist < OBSTACLE_STOP_M && mv_kind == 'M' && mv_req > 0)
+            ctl_move_abort_locked("obstacle");
         int bumped = now < bump_until_ms;
         if (blocked || tipped || bumped) { tl = tr = 0.0f; }
         estop = wd_tripped || blocked || tipped || bumped;
@@ -326,7 +434,11 @@ static void *control_thread(void *arg)
         }
         ctl_arm_model(dt);
 
+        /* During a move this is D 0 0 = keepalive; a non-zero D aborts it on
+         * the device (which answers ABORT ... drive). */
         motor->drive(l, r);
+        if (led >= 0 && motor->led) motor->led(led);
+        if (beep >= 0 && motor->beep) motor->beep(beep);
         if (hard) {
             long ms = (long)(now_ms() - hard_rx);
             pthread_mutex_lock(&lock);
@@ -342,6 +454,7 @@ static void *control_thread(void *arg)
 
         sleep_until(&next);
     }
+    if (mv_state == MV_RUNNING && motor->move_abort) motor->move_abort();
     motor->drive(0, 0);
     if (motor->arm_halt) motor->arm_halt();
     return NULL;
@@ -383,6 +496,12 @@ static void handle_line(char *line, char *reply, size_t rlen)
         } else {
             target_l = clampf(a, -1, 1);
             target_r = clampf(b, -1, 1);
+            /* a real drive command takes over from an exact move (the device
+             * aborts it itself when it sees the non-zero D) */
+            if (mv_state == MV_RUNNING && (fabsf(target_l) >= 0.03f || fabsf(target_r) >= 0.03f)) {
+                mv_state = MV_ABORTED;
+                snprintf(mv_why, sizeof mv_why, "drive");
+            }
             snprintf(reply, rlen, "OK\n");
         }
         pthread_mutex_unlock(&lock);
@@ -392,6 +511,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
         req_stop_gesture = req_halt = 1;
         req_hard_stop = 1;
         stop_rx_ms = now_ms();
+        if (mv_state == MV_RUNNING) req_move_abort = "stop";
         req_gesture = NULL;
         memset(&arm_req, 0, sizeof arm_req);
         feed_watchdog();
@@ -477,6 +597,81 @@ static void handle_line(char *line, char *reply, size_t rlen)
             snprintf(reply, rlen, "OK\n");
         }
         pthread_mutex_unlock(&lock);
+    } else if (!strcasecmp(cmd, "MOVE") || !strcasecmp(cmd, "TURN")) {
+        char kind = (cmd[0] == 'M' || cmd[0] == 'm') ? 'M' : 'R';
+        int n = sscanf(line, "%*s %f %f", &a, &c);
+        if (n < 1 || isnan(a) || (n == 2 && !(c > 0 && c <= 1))) {
+            snprintf(reply, rlen, "ERR usage: %s <%s> [speed 0-1]\n", kind == 'M' ? "MOVE" : "TURN",
+                     kind == 'M' ? "mm" : "deg");
+            return;
+        }
+        if (!motor->move) { snprintf(reply, rlen, "ERR backend has no exact moves (stepper wheels only)\n"); return; }
+        float lim = kind == 'M' ? MOVE_MAX_MM : TURN_MAX_DEG;
+        float amt = clampf(a, -lim, lim), spd = n == 2 ? c : 1.0f;
+        pthread_mutex_lock(&lock);
+        feed_watchdog();
+        long long left = bump_until_ms - now_ms();
+        if ((why = motion_refused()) != NULL) {
+            snprintf(reply, rlen, "ERR %s\n", why);
+        } else if (left > 0) {
+            snprintf(reply, rlen, "ERR bumped: driving paused %lld ms\n", left);
+        } else {
+            target_l = target_r = 0.0f;       /* the D stream becomes keepalives */
+            mv_id++;
+            mv_state = MV_RUNNING;
+            mv_kind = kind;
+            mv_req = amt;
+            mv_speed = spd;
+            mv_done = 0;
+            snprintf(mv_why, sizeof mv_why, "-");
+            mv_est_ms = wheel_move_ms(wheel_move_steps(kind, amt, wheel_d, wheel_t), spd);
+            req_move = 1;
+            req_move_abort = NULL;            /* the device replaces a running move itself */
+            snprintf(reply, rlen, "OK %d %d\n", mv_id, mv_est_ms);
+        }
+        pthread_mutex_unlock(&lock);
+    } else if (!strcasecmp(cmd, "WHEELCAL")) {
+        int n = sscanf(line, "%*s %f %f", &a, &b);
+        if (n == 2 && a >= 10 && a <= 300 && b >= 20 && b <= 500) {
+            pthread_mutex_lock(&lock);
+            wheel_d = a;
+            wheel_t = b;
+            req_wheelcal = 1;
+            pthread_mutex_unlock(&lock);
+        } else if (n > 0) {
+            snprintf(reply, rlen, "ERR usage: WHEELCAL [diam_mm 10-300 track_mm 20-500]\n");
+            return;
+        }
+        pthread_mutex_lock(&lock);
+        snprintf(reply, rlen, "OK %.1f %.1f\n", wheel_d, wheel_t);
+        pthread_mutex_unlock(&lock);
+    } else if (!strcasecmp(cmd, "LED") || !strcasecmp(cmd, "BEEP")) {
+        int led = !strcasecmp(cmd, "LED"), v = -1, n2 = 0;
+        char word[16] = "";
+        /* vision/GESTURES.md §7 names -> Uno L patterns (0 off, 1 on, 2 slow, 3 fast) */
+        static const struct { const char *name; int pat; } led_names[] = {
+            { "off", 0 }, { "teach", 2 }, { "rec", 1 }, { "ok", 1 }, { "no", 3 }, { "forget", 3 },
+        };
+        if (led && sscanf(line, "%*s %15s%n", word, &n2) == 1 && !(word[0] >= '0' && word[0] <= '9')) {
+            for (size_t i = 0; i < sizeof led_names / sizeof *led_names; i++)
+                if (!strcasecmp(word, led_names[i].name)) v = led_names[i].pat;
+            if (line[n2 + strspn(line + n2, " \t")] != '\0') v = -1;
+        } else if (sscanf(line, "%*s %d%n", &v, &n2) != 1 || line[n2 + strspn(line + n2, " \t")] != '\0') {
+            v = -1;
+        }
+        if (v < 0 || v > (led ? 3 : 9)) {
+            snprintf(reply, rlen, led ? "ERR usage: LED <off|teach|rec|ok|no|forget|0-3>\n"
+                                      : "ERR usage: BEEP <0-9>\n");
+            return;
+        }
+        if (led ? !motor->led : !motor->beep) {
+            snprintf(reply, rlen, "ERR backend has no %s\n", led ? "LED" : "buzzer");
+            return;
+        }
+        pthread_mutex_lock(&lock);
+        if (led) { led_pattern = v; req_led = v; } else req_beep = v;
+        pthread_mutex_unlock(&lock);
+        snprintf(reply, rlen, "OK\n");
     } else if (!strcasecmp(cmd, "GESTURES")) {
         size_t off = (size_t)snprintf(reply, rlen, "OK");
         for (int i = 0; gesture_at(i) && off < rlen; i++)
@@ -494,12 +689,17 @@ static void handle_line(char *line, char *reply, size_t rlen)
                  "OK %.2f %.2f %ld %.2f %d why=%s arm0=%.1f arm1=%.1f arm0_tgt=%.1f arm1_tgt=%.1f "
                  "gesture=%s tipped=%d tilt=%d bump_ms=%lld bumps=%d ready=%d backend=%s "
                  "stop_ms=%ld vis=%s vis_fps=%.1f vis_cam_ms=%d vis_stop_ms=%d vis_see=%s "
-                 "vis_age_ms=%lld\n",
+                 "vis_age_ms=%lld move=%s move_id=%d move_kind=%s move_req=%.1f move_done=%.1f "
+                 "move_why=%s move_est_ms=%d wheel_d=%.1f wheel_t=%.1f btn_teach=%d btn_forget=%d "
+                 "led=%d\n",
                  out_l, out_r, ms_since(&last_cmd), last_dist, estop, estop_why,
                  arm_pos[0], arm_pos[1], arm_tgt[0], arm_tgt[1], gesture_name,
                  tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name,
                  stop_ms, vis_mode, vis_fps, vis_cam_ms, vis_stop_ms, vis_see,
-                 vis_at_ms ? now_ms() - vis_at_ms : -1LL);
+                 vis_at_ms ? now_ms() - vis_at_ms : -1LL,
+                 mv_names[mv_state], mv_id, mv_kind == 'M' ? "MOVE" : mv_kind == 'R' ? "TURN" : "-",
+                 mv_req, mv_done, mv_why, mv_est_ms, wheel_d, wheel_t, btn_teach, btn_forget,
+                 led_pattern);
         pthread_mutex_unlock(&lock);
     } else if (!strcasecmp(cmd, "VIS")) {
         char m[16], see[24];
@@ -523,11 +723,20 @@ static void handle_line(char *line, char *reply, size_t rlen)
         int v = 0;
         if (motor != &motor_stub) { snprintf(reply, rlen, "ERR SIM is only for -b stub\n"); return; }
         if (sscanf(line, "%*s %15s %d", kind, &v) < 1) { snprintf(reply, rlen, "ERR usage: SIM T|B|READY [n]\n"); return; }
-        motor_event_t ev = { MOTOR_EV_NONE, v };
+        motor_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.value = v;
         if (!strcasecmp(kind, "T")) ev.kind = MOTOR_EV_TIP;
         else if (!strcasecmp(kind, "B")) ev.kind = MOTOR_EV_BUMP;
         else if (!strcasecmp(kind, "READY")) ev.kind = MOTOR_EV_READY;
-        else { snprintf(reply, rlen, "ERR usage: SIM T|B|READY [n]\n"); return; }
+        else if (!strcasecmp(kind, "BTN")) {
+            char b2[16] = "";
+            sscanf(line, "%*s %*s %15s", b2);
+            ev.kind = MOTOR_EV_BTN;
+            ev.value = !strcasecmp(b2, "TEACH") ? MOTOR_BTN_TEACH : !strcasecmp(b2, "FORGET") ? MOTOR_BTN_FORGET : 0;
+            if (!ev.value) { snprintf(reply, rlen, "ERR usage: SIM BTN TEACH|FORGET\n"); return; }
+        }
+        else { snprintf(reply, rlen, "ERR usage: SIM T|B|READY [n] | SIM BTN TEACH|FORGET\n"); return; }
         pthread_mutex_lock(&lock);
         if (simq_n < SIMQ) simq[simq_n++] = ev;
         pthread_mutex_unlock(&lock);
@@ -542,7 +751,7 @@ static void handle_line(char *line, char *reply, size_t rlen)
 static void *client_thread(void *arg)
 {
     int fd = (int)(long)arg;
-    char buf[512], reply[640];
+    char buf[512], reply[1024];
     size_t used = 0;
 
     fprintf(stderr, "[net] client connected\n");
@@ -568,6 +777,7 @@ static void *client_thread(void *arg)
      * watchdog. Arms finish their current move (a gesture is harmless). */
     pthread_mutex_lock(&lock);
     target_l = target_r = 0.0f;
+    if (mv_state == MV_RUNNING) req_move_abort = "disconnect";
     pthread_mutex_unlock(&lock);
     fprintf(stderr, "[net] client disconnected -> stop\n");
     close(fd);
@@ -612,6 +822,7 @@ int main(int argc, char **argv)
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);            /* started from ssh/boot script: keep running */
 
     clock_gettime(CLOCK_MONOTONIC, &last_cmd);
     last_cmd.tv_sec -= 10;              /* start in watchdog-stop state */

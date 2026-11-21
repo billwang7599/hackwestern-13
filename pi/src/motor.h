@@ -12,11 +12,20 @@ typedef enum {
     MOTOR_EV_READY,   /* co-processor (re)booted: arm zero is lost */
     MOTOR_EV_TIP,     /* tipped over; value = tilt in degrees */
     MOTOR_EV_BUMP,    /* bump; value = peak deviation in milli-g */
+    MOTOR_EV_MOVE_DONE,   /* exact move finished: what = 'M'|'R', amount = mm|deg moved */
+    MOTOR_EV_MOVE_ABORT,  /* exact move aborted: same + why */
+    MOTOR_EV_BTN,         /* on-robot button: value = MOTOR_BTN_TEACH | MOTOR_BTN_FORGET */
 } motor_event_kind_t;
+
+#define MOTOR_BTN_TEACH  1
+#define MOTOR_BTN_FORGET 2
 
 typedef struct {
     motor_event_kind_t kind;
     int value;
+    char what;          /* MOVE_*: 'M' or 'R' */
+    float amount;       /* MOVE_*: mm or deg actually moved (signed) */
+    char why[16];       /* MOVE_ABORT: stop|drive|replaced|tipped|link|nosteppers|... */
 } motor_event_t;
 
 typedef struct motor_backend {
@@ -39,6 +48,18 @@ typedef struct motor_backend {
     int  (*arm_halt)(void);   /* stop both arms where they are */
     int  (*arm_zero)(void);   /* current position := 0 deg */
     int  (*level)(void);      /* "robot is upright now": recapture tilt reference */
+
+    /* ---- exact moves (stepper wheels). NULL if unsupported. ----
+     * kind 'M' = straight, amount mm (+ fwd); 'R' = spin, amount deg (+ = right/cw).
+     * speed in (0, 1]. The device answers with a MOVE_DONE / MOVE_ABORT event.
+     * While a move runs, drive(0, 0) is a keepalive; non-zero drive aborts it. */
+    int  (*move)(char kind, float amount, float speed);
+    int  (*move_abort)(void);                      /* answered by MOVE_ABORT */
+    int  (*wheel_cal)(float diam_mm, float track_mm);
+
+    /* ---- on-robot UI. NULL if unsupported. ---- */
+    int  (*led)(int pattern);   /* 0 off, 1 on, 2 slow blink, 3 fast blink */
+    int  (*beep)(int n);        /* n short beeps, 0 = silence */
 
     /* ---- events from the co-processor. NULL = none. 1 = *ev filled. ---- */
     int  (*poll)(motor_event_t *ev);

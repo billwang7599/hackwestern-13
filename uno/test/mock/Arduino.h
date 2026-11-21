@@ -13,6 +13,7 @@
 #define LOW 0
 #define OUTPUT 1
 #define INPUT 0
+#define INPUT_PULLUP 2
 #define HEX 16
 #define DEC 10
 #define A0 14
@@ -27,11 +28,16 @@ extern uint64_t mock_now_us;
 extern int mock_pin_mode[32];
 extern int mock_pin_digital[32];   // last digitalWrite level, -1 = never
 extern int mock_pin_pwm[32];       // last analogWrite value, -1 = digital mode
+extern int mock_pin_input[32];     // level digitalRead() returns (tests set it)
+extern int mock_tone_hz[32];       // tone() frequency, 0 = off
 
 inline unsigned long millis() { return (unsigned long)(uint32_t)(mock_now_us / 1000); }
 inline unsigned long micros() { return (unsigned long)(uint32_t)mock_now_us; }
 inline void delay(unsigned long ms) { mock_now_us += (uint64_t)ms * 1000; }
 inline void pinMode(uint8_t p, uint8_t m) { mock_pin_mode[p] = m; }
+inline int digitalRead(uint8_t p) { return mock_pin_input[p]; }
+inline void tone(uint8_t p, unsigned int hz) { mock_tone_hz[p] = (int)hz; }
+inline void noTone(uint8_t p) { mock_tone_hz[p] = 0; }
 inline void digitalWrite(uint8_t p, uint8_t v) { mock_pin_digital[p] = v; mock_pin_pwm[p] = -1; }
 // Like the real core: 0 and 255 become plain digital writes.
 inline void analogWrite(uint8_t p, int v) {
@@ -61,6 +67,9 @@ class MockSerial {
   }
   void print(int v, int base = DEC) { print((long)v, base); }
   void print(uint8_t v, int base = DEC) { print((unsigned long)v, base); }
+  void print(char c) { out += c; }
+  void print(double v, int digits) { char b[32]; snprintf(b, sizeof b, "%.*f", digits, v); out += b; }
+  void print(float v, int digits) { print((double)v, digits); }
   template <typename T> void println(T v) { print(v); out += "\r\n"; }
   template <typename T> void println(T v, int base) { print(v, base); out += "\r\n"; }
 };

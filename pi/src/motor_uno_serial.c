@@ -3,12 +3,17 @@
  *
  *   Pi -> Uno   "D <l> <r>"  every tick (also feeds the Uno's 200 ms watchdog)
  *               "S"  "A <arm> <deg> <dps>"  "X" (halt arms)  "Z"  "U"
- *   Uno -> Pi   "READY"  "T <deg>"  "B <mg>"  "# ..." (diagnostics, logged only)
+ *               "M <mm> <speed>"  "R <deg> <speed>"  "K <diam> <track>"
+ *               "L <pattern>"  "B <n>" (beeps)
+ *   Uno -> Pi   "READY"  "T <deg>"  "B <mg>"  "DONE M|R <amt>"
+ *               "ABORT M|R <amt> <why>"  "BTN TEACH|FORGET"
+ *               "# ..." (diagnostics, logged only)
  *
  * Fully non-blocking: output goes through a small buffer so a partial write
  * never splits a line; input is split into lines and parsed into events that
- * the control thread drains with poll(). If the device disappears (USB
- * unplugged, Uno reset), it is reopened every second. */
+ * the control thread drains with poll(). If the device is missing at start
+ * (booting before USB enumerates) or disappears later (unplugged, read/write
+ * error, hang-up), it is (re)opened every second; the server keeps running. */
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -36,6 +41,7 @@ static motor_event_t evq[EV_CAP];
 static int  ev_head, ev_tail;
 static long long last_open_try;
 static unsigned dropped;
+static int  waiting_logged;
 
 static long long now_ms(void)
 {
@@ -48,7 +54,13 @@ static int uno_open(void)
 {
     last_open_try = now_ms();
     fd = open(dev_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        if (!waiting_logged++)
+            fprintf(stderr, "[uno] %s not there yet (%s), retrying every %d ms\n",
+                    dev_path, strerror(errno), REOPEN_MS);
+        return -1;
+    }
+    waiting_logged = 0;
     struct termios t;
     if (tcgetattr(fd, &t) == 0) {
         cfmakeraw(&t);
@@ -74,13 +86,16 @@ static void uno_lost(const char *why)
     fd = -1;
 }
 
-static void ev_push(motor_event_kind_t k, int v)
+static motor_event_t *ev_push(motor_event_kind_t k, int v)
 {
     int next = (ev_head + 1) % EV_CAP;
-    if (next == ev_tail) return;          /* full: drop (they repeat anyway) */
-    evq[ev_head].kind = k;
-    evq[ev_head].value = v;
+    if (next == ev_tail) return NULL;     /* full: drop (they repeat anyway) */
+    motor_event_t *e = &evq[ev_head];
+    memset(e, 0, sizeof *e);
+    e->kind = k;
+    e->value = v;
     ev_head = next;
+    return e;
 }
 
 static void parse_line(char *s)
@@ -89,9 +104,23 @@ static void parse_line(char *s)
         fprintf(stderr, "[uno] %s\n", s);
         return;
     }
-    char *end;
+    char *end, what, why[16] = "";
+    float amt;
+    int n;
     if (!strcmp(s, "READY")) {
         ev_push(MOTOR_EV_READY, 0);
+    } else if (!strcmp(s, "BTN TEACH")) {
+        ev_push(MOTOR_EV_BTN, MOTOR_BTN_TEACH);
+    } else if (!strcmp(s, "BTN FORGET")) {
+        ev_push(MOTOR_EV_BTN, MOTOR_BTN_FORGET);
+    } else if (sscanf(s, "DONE %c %f%n", &what, &amt, &n) == 2 && !s[n]
+               && (what == 'M' || what == 'R')) {
+        motor_event_t *e = ev_push(MOTOR_EV_MOVE_DONE, 0);
+        if (e) { e->what = what; e->amount = amt; }
+    } else if (sscanf(s, "ABORT %c %f %15s%n", &what, &amt, why, &n) == 3 && !s[n]
+               && (what == 'M' || what == 'R')) {
+        motor_event_t *e = ev_push(MOTOR_EV_MOVE_ABORT, 0);
+        if (e) { e->what = what; e->amount = amt; snprintf(e->why, sizeof e->why, "%s", why); }
     } else if ((s[0] == 'T' || s[0] == 'B') && s[1] == ' ') {
         long v = strtol(s + 2, &end, 10);
         if (end == s + 2 || *end) return;  /* malformed */
@@ -109,7 +138,7 @@ static void read_input(void)
             if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) uno_lost(strerror(errno));
             return;
         }
-        if (n == 0) return;
+        if (n == 0) { uno_lost("hang-up"); return; }   /* EOF on a tty = device gone */
         for (ssize_t i = 0; i < n; i++) {
             char c = buf[i];
             if (c == '\n' || c == '\r') {
@@ -162,11 +191,10 @@ static int send_line(const char *line)
 static int uno_init(const char *dev)
 {
     snprintf(dev_path, sizeof dev_path, "%s", dev);
-    if (uno_open() != 0) {
-        fprintf(stderr, "[uno] open %s: %s\n", dev, strerror(errno));
-        return -1;
-    }
-    return send_line("S\n");
+    /* A missing device is NOT fatal: at boot the USB serial port may appear
+     * seconds after tars_motor starts. send_line() keeps retrying. */
+    if (uno_open() == 0) send_line("S\n");
+    return 0;
 }
 
 static int uno_drive(float l, float r)
@@ -185,6 +213,35 @@ static int uno_arm(int arm, float deg, float dps)
     return send_line(line);
 }
 
+static int uno_move(char kind, float amount, float speed)
+{
+    char line[48];
+    snprintf(line, sizeof line, "%c %.1f %.2f\n", kind, amount, speed);
+    return send_line(line);
+}
+
+static int uno_wheel_cal(float d, float t)
+{
+    char line[48];
+    snprintf(line, sizeof line, "K %.1f %.1f\n", d, t);
+    return send_line(line);
+}
+
+static int uno_led(int p)
+{
+    char line[16];
+    snprintf(line, sizeof line, "L %d\n", p);
+    return send_line(line);
+}
+
+static int uno_beep(int n)
+{
+    char line[16];
+    snprintf(line, sizeof line, "B %d\n", n);
+    return send_line(line);
+}
+
+static int uno_move_abort(void) { return send_line("S\n"); }
 static int uno_arm_halt(void) { return send_line("X\n"); }
 static int uno_arm_zero(void) { return send_line("Z\n"); }
 static int uno_level(void)    { return send_line("U\n"); }
@@ -224,5 +281,10 @@ const motor_backend_t motor_uno_serial = {
     .arm_halt = uno_arm_halt,
     .arm_zero = uno_arm_zero,
     .level = uno_level,
+    .move = uno_move,
+    .move_abort = uno_move_abort,
+    .wheel_cal = uno_wheel_cal,
+    .led = uno_led,
+    .beep = uno_beep,
     .poll = uno_poll,
 };

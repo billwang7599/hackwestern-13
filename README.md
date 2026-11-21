@@ -1,5 +1,10 @@
 # TARS: four slabs on wheels
 
+> **Testing on the real Pi?** Start with **[docs/PI_TEST.md](docs/PI_TEST.md)**: build, wire,
+> bring-up, WASD teleop, calibration and troubleshooting, step by step from a fresh clone.
+> The wheels are now **two 28BYJ-48 steppers** (exact `MOVE`/`TURN`); the DC-motor build is still
+> available with `WHEEL_TYPE WHEELS_DC` in `uno/tars/tars.ino`.
+
 A TARS-inspired robot (from *Interstellar*) for Hack Western 13.
 
 Four 30 cm foam-board slabs. The middle two stand on a wheeled base (two DC
@@ -33,7 +38,7 @@ pi/       C motor server for QNX (Makefile: make / deploy / run / host / test)
 uno/      Arduino Uno firmware (uno/tars/tars.ino) + host unit tests (uno/test)
 laptop/   tars_client.py (lib), teleop.py, switch_teleop.py, voice.py (LLM brain)
 vision/   MediaPipe hand gestures + hand-follow, on the Pi under QNX (see vision/README.md)
-docs/     tars_build.md (slabs, power, wiring), tars_stub_run.txt (sample run)
+docs/     PI_TEST.md (hands-on checklist), tars_build.md (slabs, power, wiring), tars_stub_run.txt
 pico/     legacy MicroPython motor firmware (backend `-b pico`, if a Pico turns up)
 goalie/   separate project ("Beat the Goalie"), see goalie/README.md
 .clangd   clangd config for nvim
@@ -125,7 +130,8 @@ make -C pi run              # ssh + run (BACKEND=uno UART=/dev/serusb1 PORT=5555
 make -C pi run BACKEND=stub # no hardware: just prints motor/arm commands
 
 python laptop/tars_client.py tars.local     # ping + status
-python laptop/teleop.py tars.local          # keys: WASD drive, q/e z/c arms, g/p/u/n/t/f gestures
+python laptop/teleop.py tars.local          # window: HOLD WASD to drive, release = stop (--terminal: old mode)
+python laptop/wheel_cal.py move 1000         # exact moves / calibration (see docs/PI_TEST.md §5)
 python laptop/switch_teleop.py tars.local   # Switch controller (--show to map buttons)
 python laptop/voice.py --no-robot           # brain only
 python laptop/voice.py --host tars.local    # the whole thing
@@ -139,8 +145,9 @@ run is in `docs/tars_stub_run.txt`.
 ```sh
 make -C pi test     # server: protocol, watchdog, gestures, tip/bump (stub)
                     # + the real uno backend against a fake Uno on a pty
-make -C uno/test    # firmware on a mock Arduino core: both driver types,
-                    # both accelerometers (ADXL345 / MPU6050)
+make -C uno/test    # firmware on a mock Arduino core: stepper wheels (+/- one arm),
+                    # DC wheels (both driver types), both accelerometers
+python3 laptop/test_teleop.py   # hold-to-drive key logic, -> stub server, pygame window
 ```
 
 Root may be needed for SCHED_RR priority > the user limit. If the thread can't
@@ -173,9 +180,13 @@ get it, the server warns and continues at default priority.
 | `RESET` | clear the tip-over latch (refused while the Uno still reports tipped) | `OK` / `ERR still tipped` |
 | `GESTURES` | | `OK wave point …` |
 | `PING` | keepalive | `OK PONG` |
-| `STATUS` | | `OK <l> <r> <ms_since_cmd> <dist_m> <estop> why=… arm0=… arm1=… gesture=… tipped=… tilt=… bump_ms=… bumps=… ready=… backend=… stop_ms=… vis=… vis_fps=… vis_cam_ms=… vis_stop_ms=… vis_see=… vis_age_ms=…` |
+| `STATUS` | | `OK <l> <r> <ms_since_cmd> <dist_m> <estop> why=… arm0=… arm1=… gesture=… tipped=… tilt=… bump_ms=… bumps=… ready=… backend=… stop_ms=… vis=… vis_fps=… vis_cam_ms=… vis_stop_ms=… vis_see=… vis_age_ms=… move=… move_id=… move_kind=… move_req=… move_done=… move_why=… move_est_ms=… wheel_d=… wheel_t=… btn_teach=… btn_forget=… led=…` |
+| `MOVE <mm> [speed]` | stepper wheels: drive exactly mm (+ fwd), speed 0–1 of max. Non-blocking; a non-zero `D`, `S`, tip, bump or disconnect aborts it | `OK <id> <est_ms>`; progress in STATUS `move=running\|done\|aborted` |
+| `TURN <deg> [speed]` | stepper wheels: spin in place exactly, **+ = right** (clockwise) | `OK <id> <est_ms>` |
+| `WHEELCAL [diam track]` | read / set (saved in the Uno's EEPROM) wheel diameter and track, mm | `OK <diam> <track>` |
+| `LED <name\|0-3>` / `BEEP <n>` | on-robot LED: `off`=0 `teach`=2 slow blink, `rec`/`ok`=1 solid, `no`/`forget`=3 fast blink (vision/GESTURES.md §7); n beeps (0–9) | `OK`, `ERR usage` / `ERR backend has no LED` (nothing changes) |
 | `VIS <mode> <fps> <cam_ms> <stop_ms> <label>` | report from the hand-gesture app (`vision/`); shown in STATUS, doesn't feed the watchdog | `OK` |
-| `SIM T\|B\|READY [n]` | **stub backend only**: inject an Uno event (tests) | `OK` |
+| `SIM T\|B\|READY [n]`, `SIM BTN TEACH\|FORGET` | **stub backend only**: inject an Uno event (tests) | `OK` |
 | anything else | | `ERR <reason>` |
 
 Safety, in layers:
@@ -185,7 +196,10 @@ Safety, in layers:
   until `RESET`, which is only accepted 1 s after the last `T` report.
 - **bump** (|accel| spike > 1.2 g) → wheels stop, driving refused for 1 s (`-k`)
 - obstacle closer than 0.25 m blocks forward motion (`pi/src/obstacle.c`, a stub for now)
-- the Uno stops the wheels on its own after 200 ms without a `D` line
+- the Uno stops the wheels on its own after 200 ms without a `D` line (exact moves are
+  self-terminating, and abort if the Pi goes quiet for 500 ms mid-move)
+- runs unattended: with no client the wheels stay stopped; a missing or unplugged Uno is
+  reopened every second
 
 Pi → Uno serial protocol: see the header of `uno/tars/tars.ino`. The Pi sends
 `D` every tick (50 Hz). Lines from the Uno starting with `#` are logged, never acted on.

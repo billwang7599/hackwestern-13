@@ -3,8 +3,12 @@
 // The sketch is compiled as-is against mock/Arduino.h + mock/Wire.h.
 #include "Arduino.h"
 #include "Wire.h"
+#include "EEPROM.h"
 
 uint64_t mock_now_us = 0;
+int mock_pin_input[32];
+int mock_tone_hz[32];
+MockEeprom EEPROM;
 int mock_pin_mode[32];
 int mock_pin_digital[32];
 int mock_pin_pwm[32];
@@ -16,6 +20,8 @@ MockMpu mock_mpu;
 
 #include <cmath>
 #include <cstdlib>
+#include <set>
+#include <vector>
 
 static int failures = 0, checks = 0;
 #define CHECK(cond)                                                          \
@@ -30,9 +36,13 @@ static int g_sensor = 0;
 static const char *sensorName() { return g_sensor ? "adxl345" : "mpu6050"; }
 static uint8_t sensorAddr() { return g_sensor ? 0x53 : 0x68; }
 
-static void boot(bool withMpu, int addrOverride = -1) {
+static void boot(bool withMpu, int addrOverride = -1, bool keepEeprom = false) {
   mock_now_us = 1000000;
-  for (int i = 0; i < 32; i++) { mock_pin_mode[i] = -1; mock_pin_digital[i] = -1; mock_pin_pwm[i] = -1; }
+  for (int i = 0; i < 32; i++) {
+    mock_pin_mode[i] = -1; mock_pin_digital[i] = -1; mock_pin_pwm[i] = -1;
+    mock_pin_input[i] = HIGH; mock_tone_hz[i] = 0;   // button released (pull-up)
+  }
+  if (!keepEeprom) EEPROM.clear();
   Serial.in.clear(); Serial.out.clear();
   mock_mpu = MockMpu();
   mock_mpu.present = withMpu;
@@ -56,7 +66,12 @@ static void run(uint32_t ms) {
 static void send(const char *s) { Serial.feed(s); loop(); }
 
 static int lvl(int p) { return mock_pin_pwm[p] >= 0 ? mock_pin_pwm[p] : (mock_pin_digital[p] == HIGH ? 255 : 0); }
-#if DRIVER_TYPE == DRIVER_2PWM
+// motorL/R: the commanded wheel speed on a 0..255 scale, so the same drive tests
+// run against DC PWM and stepper velocity targets.
+#if WHEEL_TYPE == WHEELS_STEPPER
+static int motorL() { return (int)lround(wheels[0].vel / wheelMaxSps() * 255.0f); }
+static int motorR() { return (int)lround(wheels[1].vel / wheelMaxSps() * 255.0f); }
+#elif DRIVER_TYPE == DRIVER_2PWM
 static int motorL() { int a = lvl(PIN_L_IN1), b = lvl(PIN_L_IN2); return (a && b) ? 0 : a - b; }
 static int motorR() { int a = lvl(PIN_R_IN1), b = lvl(PIN_R_IN2); return (a && b) ? 0 : a - b; }
 #else
@@ -68,6 +83,15 @@ static int enIn(int en, int in1, int in2) {
 static int motorL() { return enIn(PIN_L_EN, PIN_L_IN1, PIN_L_IN2); }
 static int motorR() { return enIn(PIN_R_EN, PIN_R_IN1, PIN_R_IN2); }
 #endif
+static int wcoils(int w) {
+#if WHEEL_TYPE == WHEELS_STEPPER
+  int c = 0;
+  for (int k = 0; k < 4; k++) if (mock_pin_digital[PIN_WHEEL[w][k]] == HIGH) c |= 1 << k;
+  return c;
+#else
+  (void)w; return 0;
+#endif
+}
 static int coils(int arm) {
   int c = 0;
   for (int k = 0; k < 4; k++) if (mock_pin_digital[PIN_ARM[arm][k]] == HIGH) c |= 1 << k;
@@ -90,8 +114,13 @@ static void test_boot() {
   CHECK(Serial.out.find("# no accelerometer") != std::string::npos);
   CHECK(Serial.out.find("READY\r\n") != std::string::npos);
   CHECK(Serial.out.rfind("READY") > Serial.out.find("#"));
-  CHECK(motorL() == 0 && motorR() == 0 && coils(0) == 0 && coils(1) == 0);
-  for (int k = 0; k < 4; k++) CHECK(mock_pin_mode[PIN_ARM[1][k]] == OUTPUT);
+  CHECK(motorL() == 0 && motorR() == 0 && wcoils(0) == 0 && wcoils(1) == 0);
+  for (int a = 0; a < ARM_COUNT; a++) {
+    CHECK(coils(a) == 0);
+    for (int k = 0; k < 4; k++) CHECK(mock_pin_mode[PIN_ARM[a][k]] == OUTPUT);
+  }
+  if (PIN_BUTTON != NO_PIN) CHECK(mock_pin_mode[PIN_BUTTON] == INPUT_PULLUP);
+  if (PIN_LED != NO_PIN) CHECK(mock_pin_mode[PIN_LED] == OUTPUT && mock_pin_digital[PIN_LED] == LOW);
 
   boot(true);
   {
@@ -105,15 +134,21 @@ static void test_boot() {
   CHECK(fabsf(baselineMg - 1000.0f) < 5.0f);   // 1 g read back correctly
   CHECK(fabsf(upZ - 1.0f) < 1e-3f);
 
-  // Pins: arm 1 must not clash with the drive or I2C/serial pins in this mode.
-  int used[] = {PIN_L_IN1, PIN_L_IN2, PIN_R_IN1, PIN_R_IN2, 0, 1, 18 /*A4*/, 19 /*A5*/,
+  // Pins: every pin in use in this build is distinct, and none is serial/I2C.
+  std::vector<int> used = {0, 1, 18 /*A4*/, 19 /*A5*/};
+#if WHEEL_TYPE == WHEELS_STEPPER
+  for (int w = 0; w < 2; w++) for (int k = 0; k < 4; k++) used.push_back(PIN_WHEEL[w][k]);
+#else
+  used.insert(used.end(), {PIN_L_IN1, PIN_L_IN2, PIN_R_IN1, PIN_R_IN2});
 #if DRIVER_TYPE == DRIVER_EN_IN
-                PIN_L_EN, PIN_R_EN,
+  used.insert(used.end(), {PIN_L_EN, PIN_R_EN});
 #endif
-  };
-  for (int a = 0; a < 2; a++)
-    for (int k = 0; k < 4; k++)
-      for (int u : used) CHECK(PIN_ARM[a][k] != u);
+#endif
+  for (int a = 0; a < ARM_COUNT; a++) for (int k = 0; k < 4; k++) used.push_back(PIN_ARM[a][k]);
+  for (int p : {PIN_BUTTON, PIN_LED, PIN_BUZZER}) if (p != NO_PIN) used.push_back(p);
+  std::set<int> uniq(used.begin(), used.end());
+  CHECK(uniq.size() == used.size());
+  for (int p : used) CHECK(p >= 0 && p <= 19);
 }
 
 static void test_drive() {
@@ -164,6 +199,9 @@ static void test_watchdog() {
 }
 
 static void test_arms() {
+#if ARM_COUNT < 2
+  return;
+#endif
   puts("arms");
   boot(false);
   send("A 0 90\n");                       // default 45 dps -> 2 s
@@ -237,6 +275,10 @@ static void test_status() {
   Serial.out.clear();
   send("?\n");
   CHECK(Serial.out.find(std::string("# arms 0 0 tilt 0 tipped 0 accel ") + sensorName()) != std::string::npos);
+#if WHEEL_TYPE == WHEELS_STEPPER
+  CHECK(Serial.out.find("wheels 0 0 move -") != std::string::npos);
+#endif
+  if (ARM_COUNT == 0) return;
   send("A 0 -20 60\n");
   run(600);
   Serial.out.clear();
@@ -350,7 +392,7 @@ static void test_no_mpu() {
   CHECK(motorL() == 128);
   send("A 0 10 60\n");
   run(300);
-  CHECK(arms[0].pos == degSteps(10));
+  CHECK(arms[0].pos == (ARM_COUNT ? degSteps(10) : 0));
 }
 
 static void test_sensor_detect() {
@@ -392,6 +434,357 @@ static void test_overflow() {
   CHECK(motorL() == 128);
 }
 
+
+// ------------------------------------------------------------------ stepper wheels
+static bool contains(const char *needle) { return Serial.out.find(needle) != std::string::npos; }
+// Runs until `needle` shows up in Serial.out (or maxMs). Returns elapsed ms, -1 on timeout.
+static long runUntil(const char *needle, uint32_t maxMs) {
+  uint64_t start = mock_now_us;
+  while (mock_now_us - start < (uint64_t)maxMs * 1000) {
+    if (contains(needle)) return (long)((mock_now_us - start) / 1000);
+    loop();
+    mock_now_us += 100;
+  }
+  return contains(needle) ? (long)maxMs : -1;
+}
+static float lastAmount(const char *prefix) {   // "DONE M " -> the number after it
+  size_t p = Serial.out.rfind(prefix);
+  return p == std::string::npos ? NAN : (float)atof(Serial.out.c_str() + p + strlen(prefix));
+}
+
+#if WHEEL_TYPE == WHEELS_STEPPER
+static long mmSteps(float mm) { return lround(mm * 4075.7728f / (3.14159265f * wheelDiamMm)); }
+static long degWheelSteps(float deg) { return mmSteps(3.14159265f * wheelTrackMm * deg / 360.0f); }
+
+static void test_gear_ratio() {
+  puts("stepper: gear ratio");
+  double ratio = (32.0 / 9) * (22.0 / 11) * (26.0 / 9) * (31.0 / 10);
+  CHECK(fabs(ratio * 64 - WHEEL_STEPS_PER_REV) < 0.01);
+  CHECK(fabsf(wheelMaxSps() - 815.15f) < 0.1f);         // 12 RPM
+}
+
+static void test_wheel_velocity() {
+  puts("stepper: D velocity, ramp, watchdog, release");
+  boot(false);
+  // ramp: 50 ms after D 1 1 the rate is ~150 sps, not the 815 max
+  send("D 1 1\n");
+  run(50);
+  CHECK(wheels[0].rate > 130 && wheels[0].rate < 170);
+  CHECK(wcoils(0) != 0 && wcoils(1) != 0);
+  for (int i = 0; i < 10; i++) { send("D 1 1\n"); run(50); }   // 0.55 s: at full speed
+  CHECK(fabsf(wheels[0].rate - wheelMaxSps()) < 1);
+  long p0 = wheels[0].pos, q0 = wheels[1].pos;
+  for (int i = 0; i < 20; i++) { send("D 1 1\n"); run(50); }   // 1 s steady
+  long n = wheels[0].pos - p0;
+  CHECK(labs(n - 815) <= 10);                                 // average rate kept exact
+  CHECK(wheels[1].pos - q0 == n);                             // both wheels in step
+  // right wheel is mirrored: + steps walk its phase backwards
+  CHECK(wheels[0].phase == (uint8_t)(((wheels[0].pos % 8) + 8) % 8));
+  CHECK(wheels[1].phase == (uint8_t)(((-wheels[1].pos % 8) + 8) % 8));
+  // watchdog: no D for 200 ms -> hard stop, coils off 100 ms later
+  run(150);
+  CHECK(wheels[0].rate > 0);
+  run(100);
+  CHECK(wheels[0].rate == 0 && wheels[0].vel == 0 && !driveActive);
+  long hold = wheels[0].pos;
+  run(150);
+  CHECK(wheels[0].pos == hold && wcoils(0) == 0 && wcoils(1) == 0);
+  // D 0 0 ramps down (not a hard stop) and reversal goes through zero
+  for (int i = 0; i < 12; i++) { send("D 0.5 0.5\n"); run(50); }
+  CHECK(fabsf(wheels[0].rate - 0.5f * wheelMaxSps()) < 1);
+  send("D 0 0\n");
+  run(30);
+  CHECK(wheels[0].rate > 200 && wheels[0].rate < 0.5f * wheelMaxSps());   // ramping, not dead stop
+  send("S\n");
+
+  // hold-to-drive feel: full speed -> D 0 0 reaches 0 within 150 ms, and the
+  // step interval never jumps (no step "lost" to a sudden stop)
+  for (int i = 0; i < 12; i++) { send("D 1 1\n"); run(50); }
+  CHECK(fabsf(wheels[0].rate - wheelMaxSps()) < 1);
+  send("D 0 0\n");
+  uint64_t t0 = mock_now_us;
+  float prev = wheels[0].rate, maxDrop = 0;
+  while (wheels[0].rate > 0 && mock_now_us - t0 < 400000) {
+    loop(); mock_now_us += 100;
+    if (prev - wheels[0].rate > maxDrop) maxDrop = prev - wheels[0].rate;
+    prev = wheels[0].rate;
+  }
+  long stopMs = (long)((mock_now_us - t0) / 1000);
+  CHECK(stopMs >= 120 && stopMs <= 150);
+  CHECK(maxDrop <= 6000 * 0.0011f + 1);                      // never more than one ramp tick
+  // reversal ramps through zero: braking at the decel rate, then accelerating
+  for (int i = 0; i < 12; i++) { send("D 0.5 0.5\n"); run(50); }
+  send("D -0.5 -0.5\n");
+  bool sawZero = false;
+  long posAtZero = 0;
+  for (int i = 0; i < 400; i++) {
+    run(1);
+    if (wheels[0].rate == 0 && !sawZero) { sawZero = true; posAtZero = wheels[0].pos; }
+    if (i % 50 == 0) send("D -0.5 -0.5\n");
+  }
+  CHECK(sawZero);
+  CHECK(fabsf(wheels[0].rate + 0.5f * wheelMaxSps()) < 1);
+  CHECK(wheels[0].pos < posAtZero);                            // now going backwards
+  for (int i = 0; i < 12; i++) { send("D -0.5 0.5\n"); run(50); }
+  CHECK(wheels[0].rate < -400 && wheels[1].rate > 400);       // spin in place
+  send("S\n");
+  CHECK(wheels[0].rate == 0 && wheels[1].rate == 0);
+}
+
+static void test_wheel_moves() {
+  puts("stepper: M / R exact moves");
+  boot(false);
+  Serial.out.clear();
+  send("M 100\n");
+  CHECK(moveKind == 'M' && wheels[0].target == mmSteps(100) && wheels[1].target == mmSteps(100));
+  long maxSkew = 0;
+  uint64_t t0 = mock_now_us;
+  while (!contains("DONE") && mock_now_us - t0 < 5000000ULL) {
+    loop(); mock_now_us += 100;
+    long sk = labs(wheels[0].pos - wheels[1].pos);
+    if (sk > maxSkew) maxSkew = sk;
+  }
+  long ms = (long)((mock_now_us - t0) / 1000);
+  CHECK(contains("DONE M 100.0\r\n"));
+  CHECK(wheels[0].pos == mmSteps(100) && wheels[1].pos == mmSteps(100));   // exact
+  CHECK(maxSkew <= 1);                                         // wheels in sync
+  CHECK(ms > 2600 && ms < 3200);                               // ~2.85 s at 12 RPM
+  CHECK(moveKind == 0 && wcoils(0) != 0);
+  run(120);
+  CHECK(wcoils(0) == 0 && wcoils(1) == 0);                     // released when done
+  CHECK(wheels[0].pos == mmSteps(100) && wheels[1].pos == mmSteps(100));   // no creep after DONE
+
+  // R +30 = clockwise: left forward, right back
+  Serial.out.clear();
+  long l0 = wheels[0].pos, r0 = wheels[1].pos;
+  send("R 30\n");
+  long t = runUntil("DONE", 3000);
+  CHECK(contains("DONE R 30.0\r\n"));
+  CHECK(wheels[0].pos - l0 == degWheelSteps(30) && wheels[1].pos - r0 == -degWheelSteps(30));
+  CHECK(t > 500 && t < 1200);
+  Serial.out.clear();
+  l0 = wheels[0].pos; r0 = wheels[1].pos;
+  send("r -90 0.5\n");                                         // left, half speed
+  runUntil("DONE", 6000);
+  CHECK(contains("DONE R -90.0\r\n"));
+  CHECK(wheels[0].pos - l0 == -degWheelSteps(90) && wheels[1].pos - r0 == degWheelSteps(90));
+  Serial.out.clear();
+  l0 = wheels[0].pos;
+  send("M -50\n");
+  runUntil("DONE", 4000);
+  CHECK(contains("DONE M -50.0\r\n") && wheels[0].pos - l0 == -mmSteps(50));
+  // half speed is slower
+  Serial.out.clear();
+  send("M 100 0.5\n");
+  long slow = runUntil("DONE", 9000);
+  CHECK(slow > 4500 && contains("DONE M 100.0"));
+  // zero-length move finishes at once; clamps
+  Serial.out.clear();
+  send("M 0\n");
+  CHECK(contains("DONE M 0.0\r\n") && moveKind == 0);
+  send("M 5000\n");
+  CHECK(moveReq == 1000.0f && wheels[0].target - wheels[0].start == mmSteps(1000));
+  send("R -1000\n");
+  CHECK(contains("ABORT M ") && contains(" replaced"));
+  CHECK(moveKind == 'R' && moveReq == -360.0f);
+  send("S\n");
+  // malformed
+  Serial.out.clear();
+  const char *bad[] = {"M\n", "M 1 2 3\n", "M x\n", "R\n", "MX 10\n", "M 10 abc\n"};
+  for (const char *b : bad) { send(b); CHECK(moveKind == 0); }
+  CHECK(Serial.out.empty());
+}
+
+static void test_wheel_aborts() {
+  puts("stepper: aborts (S, D, tip, link) and keepalives");
+  boot(false);
+  Serial.out.clear();
+  send("M 100\n");
+  run(1000);
+  send("S\n");
+  CHECK(contains("ABORT M "));
+  float a = lastAmount("ABORT M ");
+  CHECK(a > 10 && a < 60);
+  CHECK(contains(" stop\r\n") && moveKind == 0 && wheels[0].rate == 0);
+  long p = wheels[0].pos;
+  run(200);
+  CHECK(wheels[0].pos == p);
+
+  // typed on the bench (no D stream): no watchdog / link abort mid-move;
+  // D 0 0 is a keepalive, non-zero D aborts and takes over
+  boot(false);
+  Serial.out.clear();
+  send("R 90\n");
+  run(800);
+  CHECK(moveKind == 'R');
+  send("D 0 0\n");
+  run(50);
+  CHECK(moveKind == 'R' && !contains("ABORT"));
+  send("D 0.5 0.5\n");
+  CHECK(contains("ABORT R ") && contains(" drive\r\n") && moveKind == 0);
+  CHECK(wheels[0].vel > 0 && driveActive);
+  send("S\n");
+
+  // Pi streaming D: the move runs while D 0 0 keeps coming, aborts when it stops
+  boot(false);
+  for (int i = 0; i < 5; i++) { send("D 0 0\n"); run(20); }
+  Serial.out.clear();
+  send("M 50\n");
+  CHECK(moveLinkGuard);
+  long t = 0;
+  while (!contains("DONE") && t < 3000) { send("D 0.000 0.000\n"); run(20); t += 20; }
+  CHECK(contains("DONE M 50.0"));
+  Serial.out.clear();
+  send("M 100\n");
+  run(300);
+  CHECK(moveKind == 'M');
+  run(600);                                                   // Pi went quiet
+  CHECK(contains(" link\r\n") && moveKind == 0 && wheels[0].rate == 0);
+
+  // tip mid-move
+  boot(true);
+  run(50);
+  Serial.out.clear();
+  send("M 200\n");
+  run(500);
+  tilt(60);
+  run(400);
+  CHECK(tipped && contains(" tipped\r\n") && moveKind == 0);
+  CHECK(Serial.out.find("ABORT M") < Serial.out.find("T "));
+  Serial.out.clear();
+  send("M 10\n");
+  CHECK(contains("ABORT M 0.0 tipped") && moveKind == 0);
+}
+
+static void test_wheel_cal() {
+  puts("stepper: K calibration in EEPROM");
+  boot(false);
+  CHECK(contains("# wheels diam 65.0 track 100.0 steps/rev 4075.8"));
+  Serial.out.clear();
+  send("K 70 120\n");
+  CHECK(contains("# wheels diam 70.0 track 120.0") && wheelDiamMm == 70.0f);
+  send("K 5 120\n");                                          // out of range: ignored
+  send("K 70\n");
+  CHECK(wheelDiamMm == 70.0f && wheelTrackMm == 120.0f);
+  boot(false, -1, true);                                       // reboot keeps EEPROM
+  CHECK(wheelDiamMm == 70.0f && wheelTrackMm == 120.0f);
+  CHECK(contains("# wheels diam 70.0 track 120.0"));
+  Serial.out.clear();
+  send("M 100\n");
+  CHECK(wheels[0].target == mmSteps(100) && mmSteps(100) == lround(100 * 4075.7728f / (3.14159265f * 70)));
+  runUntil("DONE", 4000);
+  CHECK(contains("DONE M 100.0"));
+  boot(false);                                                 // erased EEPROM -> defaults
+  CHECK(wheelDiamMm == 65.0f && wheelTrackMm == 100.0f);
+}
+#endif
+
+#if WHEEL_TYPE == WHEELS_DC
+static void test_dc_no_moves() {
+  puts("dc: M/R refused");
+  boot(false);
+  Serial.out.clear();
+  send("M 100\n");
+  send("R 30\n");
+  CHECK(contains("ABORT M 0.0 nosteppers\r\n") && contains("ABORT R 0.0 nosteppers\r\n"));
+  CHECK(motorL() == 0);
+}
+#endif
+
+#if ARM_COUNT == 1
+static void test_one_arm() {
+  puts("one arm (A0-A3)");
+  boot(false);
+  send("A 0 30 60\n");
+  send("A 1 30 60\n");                                         // no arm 1: ignored
+  run(700);
+  CHECK(arms[0].pos == degSteps(30) && arms[1].target == 0);
+  send("M 20\n");
+  runUntil("DONE", 2000);
+  CHECK(contains("DONE M 20.0"));
+}
+#endif
+
+// ------------------------------------------------------------------ button / LED / buzzer
+static void test_io() {
+  puts("button / LED / buzzer");
+  boot(false);
+  if (PIN_BUTTON != NO_PIN) {
+    Serial.out.clear();
+    // short press with contact bounce
+    for (int i = 0; i < 6; i++) { mock_pin_input[PIN_BUTTON] = (i & 1) ? HIGH : LOW; run(3); }
+    mock_pin_input[PIN_BUTTON] = LOW;
+    run(300);
+    CHECK(!contains("BTN"));                                   // nothing until release
+    mock_pin_input[PIN_BUTTON] = HIGH;
+    run(10);
+    CHECK(!contains("BTN"));                                   // debounce
+    run(40);
+    CHECK(countOf(Serial.out, "BTN TEACH\r\n") == 1);
+    // a 10 ms glitch is not a press
+    Serial.out.clear();
+    mock_pin_input[PIN_BUTTON] = LOW; run(10); mock_pin_input[PIN_BUTTON] = HIGH; run(100);
+    CHECK(Serial.out.empty());
+    // long press: FORGET at 2 s while held, and no TEACH on release
+    mock_pin_input[PIN_BUTTON] = LOW;
+    run(1900);
+    CHECK(!contains("BTN"));
+    run(200);
+    CHECK(countOf(Serial.out, "BTN FORGET\r\n") == 1);
+    run(1000);
+    mock_pin_input[PIN_BUTTON] = HIGH;
+    run(100);
+    CHECK(countOf(Serial.out, "BTN") == 1);
+    // button works while the wheels are busy
+    Serial.out.clear();
+#if WHEEL_TYPE == WHEELS_STEPPER
+    send("M 50\n");
+#endif
+    mock_pin_input[PIN_BUTTON] = LOW; run(100); mock_pin_input[PIN_BUTTON] = HIGH; run(100);
+    CHECK(contains("BTN TEACH"));
+    send("S\n");
+  }
+  if (PIN_LED != NO_PIN) {
+    send("L 1\n"); run(5);
+    CHECK(mock_pin_digital[PIN_LED] == HIGH);
+    send("L 0\n"); run(5);
+    CHECK(mock_pin_digital[PIN_LED] == LOW);
+    send("L 2\n");
+    int changes = 0, last = -1;
+    for (int i = 0; i < 2000; i++) { run(1); if (mock_pin_digital[PIN_LED] != last) { changes++; last = mock_pin_digital[PIN_LED]; } }
+    CHECK(changes >= 4 && changes <= 5);                      // 500 ms half-period
+    send("L 3\n");
+    changes = 0;
+    for (int i = 0; i < 2000; i++) { run(1); if (mock_pin_digital[PIN_LED] != last) { changes++; last = mock_pin_digital[PIN_LED]; } }
+    CHECK(changes >= 19 && changes <= 21);                    // 100 ms half-period
+    send("L 4\n"); send("L 1.5\n"); send("L -1\n"); send("L\n");
+    CHECK(ledPattern == 3);                                    // bad patterns ignored
+  }
+  if (PIN_BUZZER != NO_PIN) {
+    send("B 3\n");
+    int rises = 0, last = mock_pin_digital[PIN_BUZZER], onMs = 0;
+    for (int i = 0; i < 1500; i++) {
+      run(1);
+      int v = mock_pin_digital[PIN_BUZZER];
+      if (v == HIGH) onMs++;
+      if (v == HIGH && last != HIGH) rises++;
+      last = v;
+    }
+    CHECK(rises == 2 && onMs >= 230 && onMs <= 245);          // 1st beep starts at once: 3 x 80 ms
+    CHECK(mock_pin_digital[PIN_BUZZER] == LOW && beepsLeft == 0);
+    send("B 5\n"); run(100);
+    send("B 0\n"); run(5);                                     // silence
+    CHECK(mock_pin_digital[PIN_BUZZER] == LOW && beepsLeft == 0);
+    send("B 99\n");
+    CHECK(beepsLeft == 9);                                     // capped
+    send("B 0\n");
+    send("B x\n"); send("B 2 3\n");
+    CHECK(beepsLeft == 0);
+  }
+  // L / B never move anything
+  CHECK(motorL() == 0);
+}
+
 int main() {
   test_drive();
   test_malformed();
@@ -399,6 +792,20 @@ int main() {
   test_arms();
   test_overflow();
   test_sensor_detect();
+  test_io();
+#if WHEEL_TYPE == WHEELS_STEPPER
+  test_gear_ratio();
+  test_wheel_velocity();
+  test_wheel_moves();
+  test_wheel_cal();
+  g_sensor = 0;
+  test_wheel_aborts();
+#else
+  test_dc_no_moves();
+#endif
+#if ARM_COUNT == 1
+  test_one_arm();
+#endif
   for (g_sensor = 0; g_sensor < 2; g_sensor++) {
     printf("== accelerometer: %s ==\n", sensorName());
     test_boot();
@@ -407,6 +814,7 @@ int main() {
     test_bump();
     test_no_mpu();
   }
-  printf("%d/%d checks passed\n", checks - failures, checks);
+  printf("%d/%d checks passed  [wheels=%s arms=%d driver=%d]\n", checks - failures, checks,
+         WHEEL_TYPE == WHEELS_STEPPER ? "stepper" : "dc", ARM_COUNT, DRIVER_TYPE);
   return failures ? 1 : 0;
 }
