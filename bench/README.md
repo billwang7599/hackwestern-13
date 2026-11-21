@@ -78,7 +78,8 @@ unless a test picks free ports.
 | 5591 | virtual car (UDP) | **car control**, one JSON per datagram: `{"set": {<profile key>: value}}`, `{"pose": {"x","y","th"}}` (teleport), `{"fault": "push"\|"lift_left"\|"lift_right"\|"tip"\|"bump"\|"unplug"\|"brownout"\|"clear", …}`, `{"walls": [[x1,y1,x2,y2], …]}` (the car stops against walls and the firmware feels a bump) |
 | 5592 | world sim | world control (format in `world/README.md`) |
 | 5593 | bench (UDP) | world state for the 2D view (format in `world/README.md`) |
-| 5594–5595 | phone part | reserved (`phone/README.md`) |
+| 5594 | phone part (HTTP) | Andrew's room view (`room_view.serve_room`, unchanged) showing the bench's map; the `map3d` panel iframes it (`TARS_BENCH_PHONE_ROOM_PORT`) |
+| 5595 | phone part (TCP) | scene source in the phone's 5561 format (usbmux forwarder / your `iproxy` / replay / sim) that Andrew's `SceneFeed` reads (`TARS_BENCH_PHONE_SCENE_PORT`) |
 | 5596–5599 | | spare: add a row here before using one |
 
 **World frame** (car truth, world sim, 2D view): metres, right-handed, z up, x = the car's
@@ -89,3 +90,13 @@ from +x. Converting to ARKit (y up) or goto's frames is the world sim's job.
 
 Say exactly what ran: the sim, a recording, the real Uno on USB, the iPhone. The bench
 proving something in sim does not mean the car does it.
+
+## iPhone 3D map (`phone/`)
+
+Andrew's mapping (`mapping.SceneFeed` + `Map`) and room view run unchanged on the laptop.
+The source can be the live iPhone on this Mac's USB (stdlib usbmux client, no install), a
+recording, or a ray-cast sim room. The sim room follows topic `world` live (rooms in the
+`bench/world/rooms/*.json` shape), and falls back to a built-in room when no world is loaded.
+The sim takes its pose from topic `car`. `/api/phone/*` and topic `map3d` are documented in
+`plugins/phone.py`; details, frames and the live-phone checklist are in `phone/README.md`.
+Test: `python3 bench/tests/test_phone.py`.
