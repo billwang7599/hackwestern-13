@@ -425,6 +425,63 @@ static void test_big_map(void)
     if (k > 0) CHECK(legs_free(cw(8), cw(8), p, k), "serpentine legs free");
 }
 
+
+/* cost-to-go field (goto's in-place recovery): agrees with A*, descends to the ring, honours
+ * temp marks, the guard box and the error cases */
+static void test_field(void)
+{
+    room();
+    fill(99, 60, 101, 125, NAV_OCC);                /* wall, open at the top */
+    nav_pt_t p[NAV_MAX_PATH], q[NAV_MAX_PATH];
+    float sx = cw(75), sz = cw(100), tx = cw(125), tz = cw(100);
+    int k = nav_plan(N, sx, sz, tx, tz, p, NAV_MAX_PATH);
+    double alen = 0; float ax = sx, az = sz;
+    for (int i = 0; i < k; i++) { alen += hypot(p[i].x - ax, p[i].z - az); ax = p[i].x; az = p[i].z; }
+    int r = nav_field_build(N, tx, tz, (float)NAV_RING_MIN, (float)NAV_RING_MAX);
+    CHECK(r > 100, "field reaches many cells (%d)", r);
+    double c = nav_field_cost(N, sx, sz);
+    CHECK(isfinite(c) && fabs(c * NAV_RES - alen) < 0.05, "cost-to-go = A* length (%.2f vs %.2f m)", c * NAV_RES, alen);
+    int unk = -1, m = nav_field_path(N, sx, sz, q, NAV_MAX_PATH, &unk);
+    CHECK(m > 1 && unk == 0, "descent route (%d)", m);
+    if (m > 0) {
+        double d = hypot(q[m - 1].x - tx, q[m - 1].z - tz);
+        CHECK(d >= 0.6 - 1e-6 && d <= 0.85 + 1e-6, "descent ends on the ring (%.3f)", d);
+        CHECK(legs_free(sx, sz, q, m), "descent legs over observed free floor");
+        CHECK(fabs(nav_field_cost(N, q[m - 1].x, q[m - 1].z)) < 1e-9, "ring cost 0");
+    }
+    CHECK(nav_field_clear(N, sx, sz) == 1 && nav_field_clear(N, cw(100), cw(100)) == 0, "field clear flags");
+    CHECK(!isfinite(nav_field_cost(N, cw(100), cw(100))), "a wall cell can't reach the goal");
+    /* a plan invalidates the field */
+    nav_plan(N, sx, sz, tx, tz, p, NAV_MAX_PATH);
+    CHECK(!isfinite(nav_field_cost(N, sx, sz)) && nav_field_path(N, sx, sz, q, NAV_MAX_PATH, NULL) == NAV_ERR_ARG,
+          "nav_plan invalidates the field");
+    /* temp marks close the gap over the wall: no route; cleared: back */
+    for (int x = 95; x < 106; x++) for (int z = 125; z < 140; z++) nav_temp_block(N, cw(x), cw(z));
+    nav_field_build(N, tx, tz, (float)NAV_RING_MIN, (float)NAV_RING_MAX);
+    CHECK(!isfinite(nav_field_cost(N, sx, sz)), "marks block the only way: unreachable");
+    CHECK(nav_field_path(N, sx, sz, q, NAV_MAX_PATH, NULL) == NAV_ERR_NO_PATH, "no descent");
+    nav_temp_clear(N);
+    /* goal enclosed in a wall box: NO_GOAL */
+    fill(120, 95, 131, 106, NAV_OCC);
+    CHECK(nav_field_build(N, tx, tz, (float)NAV_RING_MIN, (float)NAV_RING_MAX) == NAV_ERR_NO_GOAL, "goal ring all inflated: NO_GOAL");
+    room();
+    /* guard box on: the field from right next to a wall facing it is never cheaper than A* */
+    nav_set_guard_box(N, 0.6f, 0.45f, 60.0f);
+    fill(99, 60, 101, 125, NAV_OCC);
+    k = nav_plan(N, sx, sz, tx, tz, p, NAV_MAX_PATH);
+    alen = 0; ax = sx; az = sz;
+    for (int i = 0; i < k; i++) { alen += hypot(p[i].x - ax, p[i].z - az); ax = p[i].x; az = p[i].z; }
+    nav_field_build(N, tx, tz, (float)NAV_RING_MIN, (float)NAV_RING_MAX);
+    c = nav_field_cost(N, sx, sz);
+    CHECK(k > 0 && isfinite(c) && fabs(c * NAV_RES - alen) < 0.05, "guard-aware: field = A* (%.2f vs %.2f)", c * NAV_RES, alen);
+    nav_set_guard_box(N, 0, 0, 0);
+    /* bad args */
+    CHECK(nav_field_build(NULL, 0, 0, 0.6f, 0.85f) == NAV_ERR_ARG && nav_field_build(N, NAN, 0, 0.6f, 0.85f) == NAV_ERR_ARG &&
+          nav_field_build(N, 0, 0, 0.9f, 0.6f) == NAV_ERR_ARG, "bad args");
+    nav_reset(N);
+    CHECK(nav_field_build(N, 0, 0, 0.6f, 0.85f) == NAV_ERR_NO_MAP, "empty map");
+}
+
 int main(int argc, char **argv)
 {
     int iters = argc > 1 ? atoi(argv[1]) : 200000;
@@ -440,6 +497,7 @@ int main(int argc, char **argv)
     test_pose();
     test_ldr1();
     test_recovery();
+    test_field();
     test_big_map();
     test_fuzz(iters);
     nav_free(N);

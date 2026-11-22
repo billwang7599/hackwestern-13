@@ -79,6 +79,8 @@ void goto_cfg_defaults(goto_cfg *c)
     c->safety_margin_m = 0.08;
     c->nav_guard_plan = 1;
     c->nav_backtrack = 1;
+    c->nav_replan_here = 1;
+    c->nav_here_turn_cost = 0.3;   /* metres of route a 90 deg pivot is worth (in-place recovery ranking) */
     c->nav_block_s = 30;
     c->nav_optimistic = 1;
     c->nav_unknown_penalty = 1.0;
@@ -140,6 +142,7 @@ int goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen)
         {"car_length_m", &c->car_length_m, 0}, {"car_width_m", &c->car_width_m, 0},
         {"safety_margin_m", &c->safety_margin_m, 0}, {"guard_stop_m", &c->nav_guard_stop_m, 0},
         {"nav_guard_plan", &c->nav_guard_plan, 0}, {"nav_backtrack", &c->nav_backtrack, 0},
+        {"nav_replan_here", &c->nav_replan_here, 0}, {"nav_here_turn_cost", &c->nav_here_turn_cost, 0},
         {"nav_block_s", &c->nav_block_s, 0}, {"nav_optimistic", &c->nav_optimistic, 0},
         {"nav_unknown_penalty", &c->nav_unknown_penalty, 0}, {"nav_unknown_leg_mm", &c->nav_unknown_leg_mm, 0},
         {"nav_travel_cap_m", &c->nav_travel_cap_m, 0}, {"nav_max_opt_replans", &c->nav_max_opt_replans, 0},
@@ -1845,6 +1848,126 @@ static int route_guard_clear(const goto_sm *s, double sx, double sz, int from)
     return 1;
 }
 
+static void take_route(goto_sm *s, int n, double x, double z);
+static void plan_failed(goto_sm *s, int n);
+
+/* Recovery step 0, before the backtrack ladder (user's call: backing up and re-planning the whole
+ * thing is slow). The guard just stopped a path MOVE and mark_refused blocked its zone. With
+ * those marks, a Dijkstra cost-to-go field from the goal (nav_field_build: same footprint, guard
+ * box and unknown-floor rules as A*), then candidate first legs from where the robot stands:
+ * straight lines to cells 0.5-1.0 m away in 24 headings, legal if every step keeps the robot's
+ * footprint clear (the first 0.2 m may cross inflation only if it starts inside it), the centre
+ * line has no wall, and the guard's box stays clear (nav_guard_clear, as the planner checks it).
+ * Ranked by leg cost + cost-to-go at its end + a turn cost (|deg|, so no 150 deg pivot for a tiny
+ * gain); headings within 20 deg of a leg already refused in this recovery are out (their marks
+ * may expire after nav_block_s mid-recovery). The rest of the route is steepest descent on the
+ * field. The first motion is a pivot (allowed under a fresh guard_blocked), then a forward MOVE.
+ * A guard stop of that leg marks more cells and tries the next cheapest; at most 3 tries per
+ * stuck spot (reset by a finished path MOVE), 8 per GOTO, and none whose total exceeds
+ * max(2 x, +1 m) the route that was refused. Then the ladder a/b/c, unchanged.
+ * 1 = new route taken, 0 = ladder please (s->path untouched).
+ * EVENT replan_here <target> #id <try> <turn deg> <leg mm> <cost m>. */
+static int replan_here(goto_sm *s, double ref_yaw)
+{
+    /* the refused-cell marks (mark_refused, nav_backtrack) are what make it go another way */
+    if (s->cfg.nav_replan_here <= 0 || s->cfg.nav_backtrack <= 0 || !s->map_mode || !s->nav) return 0;
+    double x, z, yaw;
+    if (!nav_pose(s, &x, &z, &yaw)) return 0;
+    const char *why = NULL;
+    if (s->here_tries == 0) {                    /* the refused route's remaining length, cells */
+        double len = 0, px = x, pz = z;
+        for (int i = s->path_i; i < s->path_n; i++) { len += hypot(s->path[i].x - px, s->path[i].z - pz); px = s->path[i].x; pz = s->path[i].z; }
+        s->here_base = len / NAV_RES;
+        s->here_nref = 0;
+    }
+    if (s->here_nref < 4) s->here_ref[s->here_nref++] = ref_yaw;
+    if (s->here_tries >= 3) why = "tries";
+    else if (s->replans_here >= 8) why = "goto_cap";
+    char t[128];
+    if (why) {
+        snprintf(t, sizeof t, "replan_here_no %s #%d %s", target_name(s), s->mem_id, why);
+        emit(s, ACT_EVENT, 0, 0, t);
+        return 0;
+    }
+    s->here_tries++;
+    mark_footprint_free(s, x, z);
+    int opt = s->cfg.nav_optimistic > 0;
+    if (opt) nav_set_optimistic(s->nav, 1, (float)s->cfg.nav_unknown_penalty);
+    double gx = s->vantage ? s->vx : s->goal_x, gz = s->vantage ? s->vz : s->goal_z;
+    int obj = !s->vantage && !s->exploring;
+    int reach = s->vantage ? nav_field_build(s->nav, (float)gx, (float)gz, 0.0f, 0.11f)
+                           : nav_field_build(s->nav, (float)gx, (float)gz, (float)NAV_RING_MIN, (float)NAV_RING_MAX);
+    double pen = opt ? s->cfg.nav_unknown_penalty : 0.0;
+    double best = INFINITY, bx = 0, bz = 0, bturn = 0, bleg = 0;
+    int start_in = nav_field_clear(s->nav, (float)x, (float)z) == 0;
+    float ir = obj ? (float)NAV_GUARD_IGNORE_R : 0.0f;
+    if (reach <= 0) why = reach == NAV_ERR_NO_GOAL ? "no_goal" : "no_field";
+    else {
+        static const double R[3] = {0.5, 0.75, 1.0};
+        for (int j = 0; j < 24; j++) {           /* 0, +15, -15, +30, ... from the heading now: ties -> smaller turn */
+            double turn = ((j + 1) / 2) * (j % 2 ? 15.0 : -15.0);
+            if (fabs(turn) > 180.0) continue;
+            double h = yaw + RAD(turn);
+            int skip = 0;
+            for (int r = 0; r < s->here_nref; r++) skip |= fabs(wrap180(DEG(h - s->here_ref[r]))) < 20.0;
+            if (skip) continue;
+            double hx = sin(h), hz = cos(h);
+            for (int ri = 0; ri < 3; ri++) {
+                double L = R[ri], ex = x + L * hx, ez = z + L * hz;
+                int cx, cz;
+                if (!nav_world_to_cell((float)ex, (float)ez, &cx, &cz)) break;
+                ex = NAV_ORIGIN_X + (cx + 0.5) * NAV_RES; ez = NAV_ORIGIN_Z + (cz + 0.5) * NAV_RES;
+                double ctg = nav_field_cost(s->nav, (float)ex, (float)ez);
+                if (!isfinite(ctg)) continue;
+                double lh = atan2(ex - x, ez - z), LL = hypot(ex - x, ez - z), unk = 0;
+                int ok = LL > 0.2, blocked_out = 0;
+                for (double p = 0.05; p <= LL + 1e-9 && ok; p += 0.05) {
+                    double qx = x + p * sin(lh), qz = z + p * cos(lh);
+                    int c = nav_field_clear(s->nav, (float)qx, (float)qz);
+                    if (c == 0) { if (!(start_in && p <= 0.2 && !blocked_out)) ok = 0; }
+                    else { blocked_out = 1; if (c == 2) unk += 0.05; }
+                    if (ok && !nav_guard_clear(s->nav, (float)qx, (float)qz, (float)lh, (float)gx, (float)gz, ir)) ok = 0;
+                }
+                if (!ok || !nav_guard_clear(s->nav, (float)x, (float)z, (float)lh, (float)gx, (float)gz, ir)) continue;
+                if (nav_line_clear_ex(s->nav, (float)x, (float)z, (float)ex, (float)ez, 0.0f) == 0) continue;
+                if (unk > 0 && LL * 1000.0 > s->cfg.nav_unknown_leg_mm + 1e-6) continue;
+                double cost = (LL + unk * pen) / NAV_RES + ctg + s->cfg.nav_here_turn_cost * fabs(wrap180(DEG(lh - yaw))) / 90.0 / NAV_RES;
+                if (cost < best - 1e-9) { best = cost; bx = ex; bz = ez; bturn = wrap180(DEG(lh - yaw)); bleg = LL; }
+            }
+        }
+        double cap = fmax(2.0 * s->here_base, s->here_base + 1.0 / NAV_RES);
+        if (!isfinite(best)) why = "no_leg";
+        else if (s->here_base > 0 && best > cap) why = "too_costly";
+    }
+    nav_pt_t rest[63];
+    int unknown = 0, n = 0;
+    if (!why) {
+        n = nav_field_path(s->nav, (float)bx, (float)bz, rest, 63, &unknown);
+        if (n < 0) why = "no_descent";
+    }
+    if (opt) nav_set_optimistic(s->nav, 0, 0);
+    if (why) {
+        snprintf(t, sizeof t, "replan_here_no %s #%d %s", target_name(s), s->mem_id, why);
+        emit(s, ACT_EVENT, 0, 0, t);
+        return 0;
+    }
+    s->path[0].x = (float)bx; s->path[0].z = (float)bz;
+    memcpy(s->path + 1, rest, (size_t)n * sizeof rest[0]);
+    s->replans_here++;
+    s->relaxed = 0;
+    s->optimistic = unknown || nav_field_clear(s->nav, (float)bx, (float)bz) == 2;
+    s->ref_valid = 0;
+    s->path_ver = nav_version(s->nav);
+    set_state(s, ST_PLAN);
+    s->plan_wait = 0;
+    snprintf(t, sizeof t, "replan_here %s #%d %d %.0f %.0f %.1f", target_name(s), s->mem_id, s->here_tries, bturn,
+             bleg * 1000.0, best * NAV_RES);
+    emit(s, ACT_EVENT, 0, 0, t);
+    take_route(s, n + 1, x, z);
+    next_leg(s);
+    return 1;
+}
+
 static void do_plan(goto_sm *s)
 {
     double x, z, yaw;
@@ -1857,6 +1980,24 @@ static void do_plan(goto_sm *s)
                        : plan_from_robot(s, x, z, s->goal_x, s->goal_z, 1);
     s->path_ver = nav_version(s->nav);
     if (n >= 0) {
+        take_route(s, n, x, z);
+        /* the same first leg the guard just refused, from the same spot: it would be refused again */
+        if (s->ref_valid && n > 0 && hypot(x - s->ref_sx, z - s->ref_sz) < 0.15 &&
+            hypot(s->path[0].x - s->ref_wx, s->path[0].z - s->ref_wz) < 0.15) {
+            s->ref_valid = 0;
+            map_event(s, "same_leg");
+            if (on_stuck(s, "same_leg")) return;
+        }
+        next_leg(s);
+        return;
+    }
+    plan_failed(s, n);
+}
+
+/* a plan_from_robot result (n >= 0 waypoints in s->path, from (x, z)) becomes the route */
+static void take_route(goto_sm *s, int n, double x, double z)
+{
+    {
         s->path_n = n;
         s->path_i = 0;
         s->plan_sx = x;
@@ -1872,16 +2013,11 @@ static void do_plan(goto_sm *s)
         snprintf(t, sizeof t, "route %s #%d %d%s%s", target_name(s), s->mem_id, n, s->relaxed ? " relaxed" : "",
                  s->optimistic ? " optimistic" : "");
         emit(s, ACT_EVENT, 0, 0, t);
-        /* the same first leg the guard just refused, from the same spot: it would be refused again */
-        if (s->ref_valid && n > 0 && hypot(x - s->ref_sx, z - s->ref_sz) < 0.15 &&
-            hypot(s->path[0].x - s->ref_wx, s->path[0].z - s->ref_wz) < 0.15) {
-            s->ref_valid = 0;
-            map_event(s, "same_leg");
-            if (on_stuck(s, "same_leg")) return;
-        }
-        next_leg(s);
-        return;
     }
+}
+
+static void plan_failed(goto_sm *s, int n)
+{
     {
         char t[96];
         snprintf(t, sizeof t, "plan_fail %s #%d %d%s", target_name(s), s->mem_id, n, s->vantage ? " vantage" : "");
@@ -2014,8 +2150,11 @@ static void path_guard_stop(goto_sm *s, const char *why, int at_issue)
     int back = s->leg == 6 || s->leg == 7;
     int stuck = 0;
     if (turn && ++s->turn_stops >= 2) { stuck = 1; s->turn_stops = 0; }
+    double ref_yaw = 0;
+    int here_ok = 0;
     if (obstacle && !back && (s->leg == 1 || s->leg == 5)) {
         stuck = 1;
+        here_ok = nav_pose(s, NULL, NULL, &ref_yaw) != 0;
         if (s->map_mode && s->cfg.nav_backtrack) mark_refused(s);
         double x, z;
         if (s->leg == 1 && s->path_i < s->path_n && nav_pose(s, &x, &z, NULL)) {
@@ -2028,6 +2167,7 @@ static void path_guard_stop(goto_sm *s, const char *why, int at_issue)
     snprintf(t, sizeof t, "blocked:%s %s #%d", at_issue ? "guard" : why, target_name(s), s->mem_id);
     if (stuck && !back) {
         emit(s, ACT_EVENT, 0, 0, t);
+        if (here_ok && replan_here(s, ref_yaw)) return;
         if (on_stuck(s, obstacle ? "guard" : "turn")) return;
         leg_blocked_quiet(s);
         return;
@@ -2097,6 +2237,7 @@ static void leg_done(goto_sm *s)
         /* a leg longer than tars_motor's MOVE limit only went part of the way: the rest from
          * where we are now (next_leg re-measures it), same waypoint */
         s->bt_rung = 0;                         /* progress: the stuck ladder starts over */
+        s->here_tries = 0;                      /* ... and a guard stop may re-plan in place again */
         s->ref_valid = 0;
         if (travel_capped(s)) return;
         if (s->leg_cut) { next_leg(s); return; }  /* only part of the way: re-measure, same waypoint */
@@ -2444,6 +2585,7 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->crumb_head = s->crumb_n = 0;
     s->bt_rung = s->backtracks = s->bt_n = s->bt_i = 0;
     s->ref_valid = s->turn_stops = 0;
+    s->here_tries = s->here_nref = s->replans_here = 0;
     s->relaxed = s->route_guard_ok = 0;
     s->have_goal = s->los_standoffs = s->plan_depth = 0;
     s->search_hops = s->search_hop = 0;
@@ -2946,7 +3088,7 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
     snprintf(out, len,
              "state=%s target=%s result=%s seen=%d bearing=%.1f h=%.2f searched=%.0f fps=%.1f "
              "elapsed=%.1f frames=%d hits=%d l=%.2f r=%.2f mode=%s mem=%s map=%s path=%d/%d replans=%d "
-             "guard=%s guard_refusals=%d guard_aborts=%d guard_stops_other=%d backtracks=%d",
+             "guard=%s guard_refusals=%d guard_aborts=%d guard_stops_other=%d backtracks=%d replans_here=%d",
              goto_state_name(s->st), tn, s->result,
              s->st == ST_APPROACH && s->now - s->last_seen < 0.5, s->last_bearing,
              s->have_track ? s->ema_h : 0.0, s->searched_deg, s->fps_ema,
@@ -2957,5 +3099,5 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
              !s->nav ? "off" : s->map_mode ? (s->vantage ? "detour" : "route") : "ready",
              s->path_i, s->path_n, s->replans,
              !s->guard_known ? "-" : s->guard_ok ? "clear" : "denied",
-             s->guard_refusals, s->guard_aborts, s->guard_other_stops, s->backtracks);
+             s->guard_refusals, s->guard_aborts, s->guard_other_stops, s->backtracks, s->replans_here);
 }

@@ -162,6 +162,18 @@ int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, in
 int nav_plan_ring(nav_t *n, float sx, float sz, float tx, float tz, float ring_min, float ring_max,
                   nav_pt_t *out, int max_out);
 
+/* Cost-to-go field for recovery (goto's in-place re-plan after a guard stop): Dijkstra from the
+ * approach ring [ring_min, ring_max] around (tx,tz), with the same rules as A* (footprint
+ * inflation, temp blocks, guard box if active, unknown floor at its penalty if optimistic).
+ * Costs are in cells (0.1 m). Returns the number of cells that can reach the goal, or NAV_ERR_*.
+ * Valid until the next nav_plan / nav_plan_ring / nav_field_build. */
+int    nav_field_build(nav_t *n, float tx, float tz, float ring_min, float ring_max);
+double nav_field_cost(const nav_t *n, float x, float z);    /* INFINITY = can't reach the goal */
+int    nav_field_clear(const nav_t *n, float x, float z);   /* 1 observed clear, 2 unknown-clear, 0 no */
+/* steepest descent from (sx,sz) to the ring: corners like nav_plan (start excluded). *unknown = 1
+ * if it crosses unknown floor. */
+int    nav_field_path(nav_t *n, float sx, float sz, nav_pt_t *out, int max_out, int *unknown);
+
 /* Line of sight over the grid, ignoring the start cell and cells within
  * NAV_LOS_END_MARGIN of the end (the object itself is occupied).
  * 1 all FREE, 0 an OCC cell in between (occluded), -1 unknown/off-map cells

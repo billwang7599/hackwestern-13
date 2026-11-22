@@ -1696,6 +1696,92 @@ static void test_map_stop_mid_path(void)
     CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1 && !find(ACT_TURN) && !find(ACT_MOVE), "CANCEL mid-path: S, nothing else");
 }
 
+
+/* guard stop of a path MOVE on something the map doesn't hold: re-plan in place on the cost-to-go
+ * field (pivot + a new forward leg), no reversing; repeated stops try the next cheapest up to 3,
+ * then the ladder; CANCEL mid-recovery wins */
+static int abort_next_move(int id)
+{
+    for (int k = 0; k < 6 && !find(ACT_MOVE) && find(ACT_TURN); k++) run_legs_ev(1);
+    const goto_act *m = find(ACT_MOVE);
+    if (!m || m->a <= 0) return 0;
+    clear();
+    goto_sm_move_started(&S, T, id, 1.0);
+    goto_sm_guard_reason(&S, "guard_blocked");
+    goto_sm_move_status(&S, T, id, "aborted", "lidar_guard");
+    grab_events();
+    goto_sm_guard_reason(&S, "clear");
+    return 1;
+}
+
+static void test_map_replan_here(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(2.0, 0.8, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(S.st == ST_FOLLOW_PATH, "route (%s)", goto_state_name(S.st));
+    CHECK(abort_next_move(700), "a forward path MOVE to stop");
+    CHECK(had_event("blocked_cells", EV) && had_event("replan_here trash can #1 1 ", EV),
+          "guard stop -> marks + replan_here (%.300s)", EV);
+    CHECK(S.backtracks == 0 && S.replans_here == 1 && S.st == ST_FOLLOW_PATH, "no backtrack, following the new route (bt %d)", S.backtracks);
+    const goto_act *tn = find(ACT_TURN);
+    CHECK(tn && fabs(tn->a) >= 20.0 && fabs(tn->a) <= 180.0, "pivots off the refused heading (%.0f deg)", tn ? tn->a : 0.0);
+    CHECK(!find(ACT_MOVE) || find(ACT_MOVE)->a > 0, "no reverse MOVE");
+    run_legs_ev(40);
+    grab_events();
+    CHECK(S.backtracks == 0 && reverse_moves == 0, "reached it with zero backtracks / reverses (%d, %d)", S.backtracks, reverse_moves);
+    CHECK(S.st == ST_LOOK || S.st == ST_IDLE, "drove on to the target (%s, %.200s)", goto_state_name(S.st), S.result);
+    char d[512];
+    goto_sm_describe(&S, d, sizeof d);
+    CHECK(strstr(d, "replans_here=1") != NULL, "STATUS replans_here= (%s)", d);
+    goto_sm_cancel(&S, T, "x");
+
+    /* every in-place leg stopped too: 3 tries (next cheapest each time), then the ladder */
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(2.0, 0.8, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    int k = 0;
+    while (k < 5 && S.st == ST_FOLLOW_PATH && abort_next_move(710 + k)) k++;
+    CHECK(S.replans_here >= 2 && S.replans_here <= 3 &&
+          (had_event("replan_here_no trash can #1 tries", EV) || had_event("replan_here_no trash can #1 too_costly", EV)),
+          "next cheapest each time, then (3 tries or > 2x the route) the ladder (%d, %.400s)", S.replans_here, EV);
+    CHECK(S.st != ST_FOLLOW_PATH || S.leg == 6 || S.leg == 7 || S.st == ST_PLAN, "no further in-place leg after the cap");
+    CHECK(reverse_moves == 0 && crossed_occ == 0, "no reversing during the in-place tries");
+    goto_sm_cancel(&S, T, "x");
+
+    /* CANCEL right after an in-place re-plan: S, idle, nothing more */
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(2.0, 0.8, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+    start("trash can");
+    CHECK(abort_next_move(730) && S.replans_here == 1, "in-place re-plan");
+    clear();
+    goto_sm_cancel(&S, T, "stop");
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) >= 1 && !find(ACT_MOVE) && !find(ACT_TURN), "CANCEL mid-recovery: S, idle (%s)", goto_state_name(S.st));
+    for (int i = 0; i < 5; i++) advance(0.2);
+    CHECK(!find(ACT_MOVE) && !find(ACT_TURN), "and stays stopped");
+
+    /* nav_replan_here 0: the old ladder straight away */
+    map_setup();
+    S.cfg.nav_replan_here = 0;
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(2.0, 0.8, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+    start("trash can");
+    abort_next_move(740);
+    CHECK(S.replans_here == 0, "off: no in-place re-plan");
+    goto_sm_cancel(&S, T, "x");
+}
+
 static void test_map_guard_and_replan(void)
 {
     map_setup();
@@ -2004,6 +2090,7 @@ int main(void)
     test_map_memory_route_by_route_length();
     test_map_stop_mid_path();
     test_map_guard_and_replan();
+    test_map_replan_here();
     test_leased_approach();
     test_map_fallbacks();
     test_memory_merge_by_map();

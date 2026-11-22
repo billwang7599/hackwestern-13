@@ -137,6 +137,18 @@ re-plan and `failed:blocked`. Reverses re-aim at each trail point (TURN so the b
 `MOVE -mm` at speed 0.5). tars_motor allows a reverse MOVE under a fresh guard_blocked (*pending
 Andrew*). S, CANCEL, ✋, bump and tip stop it like any move. EVENT `backtrack <a|b|c> <mm>`.
 
+**Before backtracking: re-plan in place** (`nav_replan_here = 1`, default; needs `nav_backtrack`). When
+the guard stops a forward path leg, goto first marks the zone, then builds a Dijkstra cost-to-go field
+from the goal (`nav_field_build`: same footprint, temp marks, guard box and unknown-floor rules as A*).
+It ranks straight legs 0.5-1.0 m long in 24 headings from where the robot stands by leg cost +
+cost-to-go + turn cost (`nav_here_turn_cost`, metres per 90 deg, default 0.3). Headings within 20 deg of
+a refused one are skipped. It takes the cheapest legal leg: a pivot, then a forward MOVE, no reversing.
+The rest of the route is steepest descent on the field. If that leg is stopped too, it marks more
+cells and takes the next cheapest. Limits: 3 tries per stuck spot (reset by a finished path MOVE), 8
+per GOTO, and nothing over max(2x, +1 m) the refused route. Past those limits the ladder above runs
+unchanged. EVENT `replan_here <obj> #id <try> <turn deg> <leg mm> <cost m>` / `replan_here_no <obj> #id
+<why>` (why: tries, goto_cap, no_goal, no_field, no_leg, too_costly, no_descent). STATUS `replans_here=`.
+
 **Not there means seen-not-there.** A guard stop on a route or detour leg is never "not there": a failed
 re-plan to a vantage cell tries another stand-off cell or the approach ring first. A LOOK that fails
 while the map says a wall hides the spot reports `occluded` and leaves the memory alone. A search spin
