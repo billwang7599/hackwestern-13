@@ -267,10 +267,11 @@ int main(int argc, char **argv) {
     Car c(1);
     load(c, "sm11");
     const double hl = c.P("length_m") / 2, hw = c.P("width_m") / 2;
-    c.walls = {{-1, 0.12, 1, 0.12}};   // wall alongside: ~3 cm off the wheels, inside the half-diagonal
+    const double wy = hw + 0.03;        // wall alongside: 3 cm off the wheels, inside the half-diagonal
+    c.walls = {{-1, wy, 1, wy}};
     Run idle = run(c, 0, 0, 0.1);
-    check(hw < 0.12 && c.half_diag() > 0.12 + 0.005, "geometry puts 0.12 m between half-width %.4f and half-diagonal %.4f", hw, c.half_diag());
-    check(!idle.contact, "box %.3f x %.3f parked 0.12 m from a wall: no contact (half-width %.4f)", 2 * hl, 2 * hw, hw);
+    check(hw < wy && c.half_diag() > wy + 0.005, "geometry puts %.2f m between half-width %.4f and half-diagonal %.4f", wy, hw, c.half_diag());
+    check(!idle.contact, "box %.3f x %.3f parked %.2f m from a wall: no contact (half-width %.4f)", 2 * hl, 2 * hw, wy, hw);
     Run sp = run(c, 1.0, -1.0, 1.0);
     check(sp.contact && c.y < -0.004, "spin in place there: a corner (half-diagonal %.3f) hits it, car shoved %.0f mm away",
           c.half_diag(), -c.y * 1000);
@@ -278,7 +279,7 @@ int main(int argc, char **argv) {
     Car o(1);
     load(o, "sm11");
     o.p["length_m"] = 0; o.p["car_r_m"] = 0.11;
-    o.walls = {{-1, 0.12, 1, 0.12}};
+    o.walls = {{-1, wy, 1, wy}};
     Run sc = run(o, 1.0, -1.0, 1.0);
     check(!sc.contact, "the same spin with the old 0.11 m circle: no contact (what a circle body misses)");
     Car h(1);
