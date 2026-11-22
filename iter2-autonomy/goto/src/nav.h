@@ -91,6 +91,11 @@ void   nav_free(nav_t *n);
 void   nav_reset(nav_t *n);               /* all cells UNKNOWN, pose/anchor/floor forgotten */
 void   nav_set_robot_radius(nav_t *n, float metres);  /* footprint for inflation (default 0.35) */
 float  nav_robot_radius(const nav_t *n);
+/* the footprint square's half-size in cells: by default ceil(radius / 0.1) (mapping.py parity). With 0.1 m
+ * cells that rounds a 0.27 m radius up to 3 cells (0.35 m to a wall cell's edge); cells > 0 sets it
+ * directly (goto.conf nav_foot_cells; 0 = back to the radius). */
+void   nav_set_foot_cells(nav_t *n, int cells);
+int    nav_foot_cells(const nav_t *n);
 
 /* Guard-aware planning (off by default, so plans match mapping.py exactly).
  * lidar_guard refuses a forward move while an obstacle is within stop_m ahead and

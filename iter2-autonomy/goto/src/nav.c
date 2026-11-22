@@ -35,6 +35,7 @@ struct nav {
     unsigned char frame[N_CELLS], clear_hits[N_CELLS];
     uint64_t clear_since[N_CELLS], clear_last[N_CELLS];
     double robot_radius;
+    int    foot_cells;          /* > 0: footprint half-size in cells (nav_set_foot_cells); 0 = ceil(radius / res) */
     /* guard-aware planning (nav_set_guard_box) */
     double guard_stop, guard_half_w, guard_hfov;
     int    guard_on;
@@ -137,6 +138,19 @@ void nav_set_robot_radius(nav_t *n, float metres)
 }
 
 float nav_robot_radius(const nav_t *n) { return n ? (float)n->robot_radius : (float)NAV_DEFAULT_ROBOT_RADIUS; }
+
+void nav_set_foot_cells(nav_t *n, int cells)
+{
+    if (!n || cells < 0 || cells > 10) return;
+    if (n->foot_cells != cells) { n->foot_cells = cells; n->version++; }
+}
+
+int nav_foot_cells(const nav_t *n)
+{
+    if (!n) return (int)ceil(NAV_DEFAULT_ROBOT_RADIUS / NAV_RES);
+    if (n->foot_cells > 0) return n->foot_cells;
+    return (int)ceil(n->robot_radius / NAV_RES);
+}
 
 /* the 8 A* directions, same order as the planner */
 static const int GDX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
@@ -255,7 +269,7 @@ int nav_footprint_blocked(const nav_t *n, float x, float z)
 {
     int cx, cz;
     if (!n || !nav_world_to_cell(x, z, &cx, &cz)) return 1;
-    int r = (int)ceil(n->robot_radius / NAV_RES);
+    int r = nav_foot_cells(n);
     for (int i = -r; i <= r; i++)
         for (int k = -r; k <= r; k++) {
             int ax = cx + i, az = cz + k;
@@ -611,7 +625,7 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
 static void build_clear(nav_t *n)
 {
     /* footprint inflation: the (2r+1)^2 square must be all observed FREE */
-    int radius = (int)ceil(n->robot_radius / NAV_RES);
+    int radius = nav_foot_cells(n);
     memset(n->clear, 0, sizeof n->clear);
     memset(n->prefix, 0, sizeof n->prefix);
     for (int z = 0; z < NAV_SIZE; z++) {
