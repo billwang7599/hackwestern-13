@@ -1,6 +1,6 @@
 {
  "name": "pocket_mouth",
- "about": "Your 5th demo: '<' pocket open toward +x, bin inside, car behind the point. Expect: route round the outside and in through the opening.",
+ "about": "Your 5th demo: '<' pocket open toward +x, bin inside, car behind the point. goto starts out remembering the bin where it really is (behind the wall). Expect: route round the outside and in through the opening.",
  "start": {
   "x": -0.67,
   "y": 0.0,
@@ -79,7 +79,7 @@
    "solid": true
   }
  ],
- "memory": [],
+ "memory": [{"id": "bin"}],
  "labels": [
   "trash can",
   "chair",
