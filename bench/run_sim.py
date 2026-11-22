@@ -293,6 +293,7 @@ class Stack:
             t = getattr(self.a, "goto_timeout", 0) or 0
             if t > 0:   # sim only: the robot keeps goto.conf's strict timeout_s
                 extra += f"timeout_s = {t:g}\n"
+                extra += "nav_max_opt_replans = 100\n"   # long sim mazes; robot keeps 25
             for kv in getattr(self.a, "goto_conf", None) or []:   # sim experiments: --goto-conf key=value
                 extra += kv.split("=", 1)[0].strip() + " = " + kv.split("=", 1)[1].strip() + "\n"
             with open(p, "w") as f:
