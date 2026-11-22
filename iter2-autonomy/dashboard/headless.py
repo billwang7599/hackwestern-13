@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import signal
 import socket
 import threading
@@ -50,6 +51,63 @@ class MissionTee:
             sock.close()
 
 
+class VoiceRelay:
+    """Phone voice commands (speech-to-text on the iPhone) -> tars_voice's HEAR input (127.0.0.1:5574).
+
+    tars_voice's intent classifier decides (MOVE/TURN/GOTO/SCAN/...), exactly like the mic path.
+    A stop word is also applied here before anything is queued, so a stop never waits on voice.
+    One worker thread; a full queue drops the oldest-but-unsent command, never a stop.
+    """
+    STOP_WORDS = {'stop', 'halt', 'freeze', 'whoa', 'wait'}
+
+    def __init__(self, port=5574):
+        self.port = port
+        self.queue = queue.Queue(maxsize=4)
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.latest = {}
+
+    @classmethod
+    def is_stop(cls, text):
+        return any(word in cls.STOP_WORDS for word in re.findall(r"[a-z']+", text.lower()))
+
+    def submit(self, text):
+        text = ' '.join(str(text).split())[:200]
+        if not text:
+            return
+        while True:
+            try:
+                self.queue.put_nowait(text)
+                break
+            except queue.Full:
+                try: self.queue.get_nowait()
+                except queue.Empty: pass
+        with self.lock:
+            self.latest = dict(text=text, state='sent', reply=None, at=time.time())
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                text = self.queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                with socket.create_connection(('127.0.0.1', self.port), timeout=0.5) as sock:
+                    sock.settimeout(3)
+                    sock.sendall(b'HEAR ' + text.encode('utf-8', 'replace') + b'\n')
+                    reply = sock.makefile('rb').readline(1024).decode('utf-8', 'replace').strip()
+                state = 'ok' if reply.startswith('OK') else 'error'
+            except OSError as error:
+                reply, state = f'voice service unavailable ({type(error).__name__})', 'error'
+            with self.lock:
+                if self.latest.get('text') == text:
+                    self.latest.update(reply=reply or 'no reply', state=state)
+
+    def snapshot(self):
+        with self.lock:
+            return dict(self.latest)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--seconds', type=float, default=0)
@@ -65,6 +123,8 @@ def main():
     keyboard_thread = threading.Thread(target=keyboard.run, daemon=True)
     keyboard_thread.start()
     last_keyboard_generation = -1
+    voice = VoiceRelay()
+    threading.Thread(target=voice.run, daemon=True).start()
     edge = EdgeStatus()
     edge_thread = threading.Thread(target=edge.run, daemon=True)
     edge_thread.start()
@@ -119,6 +179,15 @@ def main():
                     motors.request_stop()
                     keyboard.drive.stop()
                     keyboard.armed = False
+                if command['op'] == 'voice':
+                    text = str(command.get('text', ''))
+                    if VoiceRelay.is_stop(text):   # stop first, locally; tars_voice also sends S + CANCEL
+                        motors.request_stop()
+                        keyboard.drive.stop()
+                        keyboard.armed = False
+                        drive.command({'op': 'halt'}, now)
+                    voice.submit(text)
+                    continue
                 if command['op'] == 'drive' and keyboard.drive.claimed:
                     continue
                 drive.command(command, now)
@@ -155,7 +224,7 @@ def main():
             was_claimed = keyboard.drive.claimed
             previous_mask = keyboard.previous
             keyboard_ready = enabled and native.get('connected', False)
-            override_ready = keyboard_ready and classified_obstacle(edge_snapshot['safety'])
+            override_ready = keyboard_ready  # Explicit Shift+WASD also works without phone data.
             keyboard_live = keyboard.sample(keyboard_ready and permitted, override_ready)
             if keyboard_live and keyboard.previous & 16 and not previous_mask & 16:
                 motors.request_stop()
@@ -173,7 +242,7 @@ def main():
             motor_status['serial_device_present'] = os.path.exists(os.environ.get('TARS_MOTOR_DEVICE', ''))
             link.publish(dict(type='status', mode='headless', streaming=enabled,
                               keyboard_live=keyboard_live, keyboard_local=keyboard.drive.claimed,
-                              keyboard=keyboard.snapshot(),
+                              keyboard=keyboard.snapshot(), voice=voice.snapshot(),
                               motion_hz=round(motion_hz, 1), camera_fps=round(camera_fps, 1),
                               samples=samples, gaps=gaps, frames=frames,
                               motion_live=enabled and age < 0.5,
@@ -186,6 +255,7 @@ def main():
         if tee is not None:
             tee.stop.set()
         keyboard.close()
+        voice.stop.set()
         motors.stop.set()
         motor_thread.join(timeout=1)
         stop_feed(feed)

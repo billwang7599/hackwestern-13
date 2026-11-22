@@ -41,6 +41,12 @@ def parse_command(message):
         if not isinstance(target, str) or not 1 <= len(target) <= 64:
             raise ValueError('Invalid target id')
         return dict(op=op, id=target)
+    if op == 'voice':
+        # Speech-to-text from the phone; tars_voice's classifier decides what it means.
+        text = message.get('text')
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 200 or any(c in text for c in '\r\n\0'):
+            raise ValueError('Invalid voice text')
+        return dict(op=op, text=text.strip())
     if op == 'drive':
         values = [message.get('left'), message.get('right')]
         if not all(type(v) in (int, float) and math.isfinite(v) and -1 <= v <= 1 for v in values):
@@ -127,7 +133,9 @@ class DebugDrive:
     def command(self, command, now):
         if command['op'] == 'drive':
             self.generation += 1
-            self.left, self.right = command['left'], command['right']
+            # Phone directional buttons are full-power manual intent, including older apps.
+            self.left, self.right = (math.copysign(1.0, command[k]) if command[k] else 0.0
+                                     for k in ('left', 'right'))
             self.expires = now + 0.5
         elif command['op'] in ('halt', 'stop'):
             self.left = self.right = 0.0
@@ -318,7 +326,7 @@ class MotorLink:
                                 self.latest, self.received = status, time.monotonic()
                                 # STATUS can still describe the idle watchdog tick
                                 # immediately after the first accepted DL refreshed it.
-                                if driving and status['inhibited'] and not (starting_drive and (status['reason'] == 'watchdog' or (key and status['reason'] == 'guard_blocked'))):
+                                if driving and status['inhibited'] and not (starting_drive and (status['reason'] == 'watchdog' or (key and status['reason'].startswith('guard_')))):
                                     self.denied_generation = generation
                             self.stop.wait(0.05)
                         exchange('S')

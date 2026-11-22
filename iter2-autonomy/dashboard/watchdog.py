@@ -22,6 +22,10 @@ def main():
     opts = STATE / 'gpio-options'
     device = (opts.read_text().strip() if opts.is_file() else '') if backend == 'gpio' else str(STATE / 'uno-serial')
     env = dict(os.environ, TARS_MOTOR_BACKEND=backend, TARS_MOTOR_DEVICE=device)
+    # Voice (tars_voice + phone voice commands): on when state/voice-dir names its folder.
+    voice = STATE / 'voice-dir'
+    if voice.is_file() and 'TARS_ENABLE_VOICE' not in os.environ:
+        env.update(TARS_ENABLE_VOICE='1', TARS_VOICE_DIR=voice.read_text().strip())
     proc = None
     misses = 0
     while True:

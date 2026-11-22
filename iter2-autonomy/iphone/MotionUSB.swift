@@ -19,6 +19,7 @@ struct MotionUSBApp: App {
     @StateObject private var pi = PiStatusServer()
     @StateObject private var speech = SpeechLink()
     @StateObject private var mic = PhoneMic()
+    @StateObject private var voice = VoiceCommander()
     @AppStorage("robotMic") private var robotMic = false
     @State private var inspectionExpanded = false
     @State private var activeTab = isInspectionFixture && ProcessInfo.processInfo.arguments.contains("--map") ? "map" : "camera"
@@ -140,6 +141,7 @@ struct MotionUSBApp: App {
                         Toggle("Robot mic (AirPods)", isOn: Binding(get: { mic.enabled },
                                                                      set: { robotMic = $0; mic.setEnabled($0) }))
                             .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. TARS replies from the phone speaker.")
+                        VoiceCommandPanel(pi: pi, voice: voice, micBusy: mic.enabled)
                         ManualDrivePanel(pi: pi)
                         Button("Reset scan") { camera.resetMap() }
                         ForEach(["start","stop"], id: \.self) { op in

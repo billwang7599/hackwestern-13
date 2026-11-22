@@ -47,11 +47,17 @@ class CommandTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_command({'op': 'select_target', 'id': target})
 
+    def test_voice_commands(self):
+        self.assertEqual(parse_command({'op': 'voice', 'text': ' turn left '}), {'op': 'voice', 'text': 'turn left'})
+        for text in ('', '   ', 'x' * 201, 'stop\nS', None, 3):
+            with self.assertRaises(ValueError):
+                parse_command({'op': 'voice', 'text': text})
+
     def test_deadman_and_disconnect(self):
         drive = DebugDrive()
         command = parse_command(dict(op='drive', left=0.2, right=-0.2))
         drive.command(command, 10)
-        self.assertEqual(drive.state(10.4, True), (0.2, -0.2))
+        self.assertEqual(drive.state(10.4, True), (1.0, -1.0))  # phone buttons = full-power intent (Pi field change)
         self.assertEqual(drive.state(10.51, True), (0, 0))
         drive.command(command, 11)
         self.assertEqual(drive.state(11.1, False), (0, 0))

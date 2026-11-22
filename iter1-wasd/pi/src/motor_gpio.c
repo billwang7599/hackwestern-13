@@ -11,7 +11,13 @@
  *
  * -d options (comma separated, all optional): invl, invr (flip a side's
  * direction), swap (left<->right), min=<0..1> (duty for the smallest non-zero
- * drive, default 0.35: below that the SM11 motors just hum).
+ * drive, default 0.35: below that the SM11 motors just hum), mm_s=, deg_s=
+ * (speeds at D 1, default 150 / 120, the SM11 kit numbers).
+ *
+ * MOVE/TURN are timed open loop like the Uno's DC firmware: MOVE at full
+ * duty, TURN at full (speed >= 0.99) or slow (0.40) duty, for amount / rate.
+ * Reported to tars_motor as WHEELS DC + DCSLOW, so its pose and move-time
+ * estimates match. A non-zero drive() aborts a running move.
  *
  * Fail safe: if drive() isn't called for 300 ms (control thread stuck) the PWM
  * thread turns both sides off. shutdown() leaves every pin low. A SIGKILL or a
@@ -45,6 +51,16 @@ static long long fed_ns;              /* protected by mu */
 static int inv_l, inv_r, swap_lr;
 static float min_duty = 0.35f;
 static int write_errors;
+static float rate_mm_s = 150.0f, rate_deg_s = 120.0f;
+#define SLOW_TURN 0.40f
+
+/* timed exact move, protected by mu */
+static char mv_kind;
+static float mv_amount, mv_l, mv_r;
+static long long mv_start_ns, mv_dur_ns;
+#define EQ 8
+static motor_event_t evq[EQ];
+static int evq_n, wheels_sent;
 
 static long long mono_ns(void)
 {
@@ -108,7 +124,7 @@ static void *pwm_main(void *arg)
     long long start = mono_ns();
     while (pwm_running) {
         pthread_mutex_lock(&mu);
-        float l = want_l, r = want_r;
+        float l = mv_kind ? mv_l : want_l, r = mv_kind ? mv_r : want_r;
         int stale = mono_ns() - fed_ns > FEED_TIMEOUT_NS;
         pthread_mutex_unlock(&mu);
         if (stale) l = r = 0.0f;
@@ -150,6 +166,8 @@ static void parse_opts(const char *dev)
         else if (!strcmp(tok, "invr")) inv_r = 1;
         else if (!strcmp(tok, "swap")) swap_lr = 1;
         else if (!strncmp(tok, "min=", 4)) min_duty = fminf(fmaxf(strtof(tok + 4, NULL), 0.0f), 1.0f);
+        else if (!strncmp(tok, "mm_s=", 5) && strtof(tok + 5, NULL) > 0) rate_mm_s = strtof(tok + 5, NULL);
+        else if (!strncmp(tok, "deg_s=", 6) && strtof(tok + 6, NULL) > 0) rate_deg_s = strtof(tok + 6, NULL);
         else if (*tok) fprintf(stderr, "[gpio] ignoring option '%s'\n", tok);
     }
 }
@@ -189,9 +207,83 @@ static int gpio_init(const char *dev)
     return 0;
 }
 
+static void push_locked(motor_event_t ev) { if (evq_n < EQ) evq[evq_n++] = ev; }
+
+/* end the running move (mu held): DONE with the full amount, or ABORT with the part that ran */
+static void mv_end_locked(int ok, const char *why)
+{
+    if (!mv_kind) return;
+    motor_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = ok ? MOTOR_EV_MOVE_DONE : MOTOR_EV_MOVE_ABORT;
+    ev.what = mv_kind;
+    double f = ok ? 1.0 : (double)(mono_ns() - mv_start_ns) / (double)mv_dur_ns;
+    ev.amount = mv_amount * (float)fmin(fmax(f, 0.0), 1.0);
+    snprintf(ev.why, sizeof ev.why, "%s", ok ? "" : why);
+    mv_kind = 0;
+    push_locked(ev);
+}
+
+static int gpio_move(char kind, float amount, float speed)
+{
+    float v = kind == 'R' && speed < 0.99f ? SLOW_TURN : 1.0f;
+    float rate = (kind == 'M' ? rate_mm_s : rate_deg_s) * duty_of(v);
+    if ((kind != 'M' && kind != 'R') || rate <= 0) return -1;
+    pthread_mutex_lock(&mu);
+    mv_end_locked(0, "replaced");
+    float sign = amount < 0 ? -1.0f : 1.0f;
+    mv_l = sign * v;                    /* + TURN = right (clockwise): left fwd, right back */
+    mv_r = kind == 'M' ? sign * v : -sign * v;
+    mv_kind = kind;
+    mv_amount = amount;
+    mv_start_ns = mono_ns();
+    mv_dur_ns = (long long)(fabsf(amount) / rate * 1e9);
+    fed_ns = mv_start_ns;
+    pthread_mutex_unlock(&mu);
+    return 0;
+}
+
+static int gpio_move_abort(void)
+{
+    pthread_mutex_lock(&mu);
+    if (mv_kind) mv_end_locked(0, "stop");
+    else {   /* nothing running: still answer, like the Uno */
+        motor_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.kind = MOTOR_EV_MOVE_ABORT;
+        snprintf(ev.why, sizeof ev.why, "idle");
+        push_locked(ev);
+    }
+    pthread_mutex_unlock(&mu);
+    return 0;
+}
+
+static int gpio_poll(motor_event_t *ev)
+{
+    int got = 0;
+    pthread_mutex_lock(&mu);
+    if (wheels_sent < 2) {
+        memset(ev, 0, sizeof *ev);
+        ev->kind = MOTOR_EV_WHEELS;
+        if (wheels_sent++ == 0) { ev->what = 'D'; ev->amount = rate_mm_s; ev->amount2 = rate_deg_s; }
+        else { ev->what = 'S'; ev->amount = rate_deg_s * duty_of(SLOW_TURN); }
+        pthread_mutex_unlock(&mu);
+        return 1;
+    }
+    if (mv_kind && mono_ns() - mv_start_ns >= mv_dur_ns) mv_end_locked(1, "");
+    if (evq_n) {
+        *ev = evq[0];
+        memmove(evq, evq + 1, (size_t)(--evq_n) * sizeof *evq);
+        got = 1;
+    }
+    pthread_mutex_unlock(&mu);
+    return got;
+}
+
 static int gpio_drive(float left, float right)
 {
     pthread_mutex_lock(&mu);
+    if (mv_kind && (fabsf(left) >= 0.03f || fabsf(right) >= 0.03f)) mv_end_locked(0, "drive");
     want_l = left;
     want_r = right;
     fed_ns = mono_ns();
@@ -201,6 +293,9 @@ static int gpio_drive(float left, float right)
 
 static void gpio_shutdown(void)
 {
+    pthread_mutex_lock(&mu);
+    mv_kind = 0;
+    pthread_mutex_unlock(&mu);
     gpio_drive(0, 0);
     if (pwm_running) {
         pwm_running = 0;
@@ -216,4 +311,7 @@ const motor_backend_t motor_gpio = {
     .init = gpio_init,
     .drive = gpio_drive,
     .shutdown = gpio_shutdown,
+    .move = gpio_move,
+    .move_abort = gpio_move_abort,
+    .poll = gpio_poll,
 };
