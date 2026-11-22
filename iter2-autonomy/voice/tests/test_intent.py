@@ -185,7 +185,41 @@ def test_regressions(m: I.Model) -> list[str]:
     for t, want in nums.items():
         d = I.decide(m, t)
         check(first_line(d) == want, f"number {t!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f})")
-    return texts + bare + list(still) + list(nums)
+    # 3. a dropped article must not kill a go-to ("go to bottle" was 0.48 -> rejected, "go to water
+    #    bottle" 0.42, "go to backpack" -> back). Punctuation never reaches the model (normalize).
+    print("regressions: articles / punctuation in go-to")
+    check(I.normalize("TARS, Go to bottle.") == I.normalize("tars go to bottle"), "punctuation + capitals dropped")
+    check(I.normalize("go to the bottle?!") == ["go", "to", "the", "bottle"], "trailing ?! dropped")
+    goto_cases = {}
+    for verb in ("go to", "drive to", "head to", "find"):
+        for art in ("the ", ""):
+            for obj, canon in (("bottle", "water bottle"), ("water bottle", "water bottle"),
+                               ("trash can", "trash can"), ("trash", "trash can"), ("bin", "trash can"),
+                               ("chair", "chair"), ("backpack", "backpack"), ("laptop", "laptop"), ("box", "box")):
+                for punct in ("", "."):
+                    goto_cases[f"tars {verb} {art}{obj}{punct}"] = f"GOTO {canon}"
+    goto_cases.update({"Tars, go to bottle.": "GOTO water bottle", "TARS. Go to the bottle.": "GOTO water bottle",
+                       "tars go to kitchen": "LED no", "tars go to the kitchen": "LED no",
+                       "tars go to giraffe": "LED no", "tars go back to the bin": "RECALL trash can",
+                       "tars go back to bin": "RECALL trash can", "tars turn to left": "TURN -30",
+                       "tars go back to the chair": "RECALL chair"})
+    for t, want in goto_cases.items():
+        d = I.decide(m, t)
+        check(first_line(d) == want, f"article {t!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f} {d.why})")
+    # the goto safety net (goto on top + a known object, under the threshold) must not let chatter
+    # that mentions an object move the robot, and stop still wins
+    chatter = ["tars the coffee is cold", "tars nice laptop", "tars I need water", "tars that's my backpack",
+               "tars hello judges this is our robot", "tars the bin is full", "tars who left this box here",
+               "tars the chair is broken", "tars thanks for the water", "tars where did I put my laptop yesterday lol",
+               "the trash can is over there", "go to the bottle", "bottle"]
+    for t in chatter:
+        d = I.decide(m, t)
+        check(not any(l.startswith(MOTION) for l in d.lines), f"chatter does not move {t!r}: {d.lines} ({d.intent} {d.prob:.2f})")
+    stops = ["tars go to bottle stop", "tars stop go to the bottle", "stop. go to water bottle",
+             "tars go to backpack no", "tars, go to bin. Wait!", "tars freeze go to trash"]
+    for t in stops:
+        check(I.decide(m, t).lines == ["S", I.CANCEL], f"stop wins over go-to {t!r}")
+    return texts + bare + list(still) + list(nums) + list(goto_cases) + chatter + stops
 
 
 # ------------------------------------------------------------------ 2. held-out accuracy

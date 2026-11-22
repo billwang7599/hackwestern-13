@@ -104,7 +104,7 @@ Live mic on a Mac (dev only): `ffmpeg -f avfoundation -i ":0" -ac 1 -ar 16000 -f
   `n180`, `n360`), so "turn right one hundred and eighty degrees" looks like "turn right n180 degrees".
   The amount is the slot parser's job. Weights go into `intent_model.h` (~450 KB of `float`s);
   `intent.py` parses that same header, so Python and C use identical weights.
-- **Confidence cutoff:** picked automatically on validation data (currently 0.60): +1 per correct
+- **Confidence cutoff:** picked automatically on validation data, never below 0.52 (currently 0.52): +1 per correct
   command, −4 per wrong one. Below it: nothing moves, `LED no` + `BEEP 3`.
 - **Slots (C, `intent_parse_amount` / `intent_find_object`):** digits, number words, "one eighty",
   "one hundred and twenty", "half a metre", "one and a half feet", "a bit", "two steps" (100 mm each),
@@ -116,47 +116,58 @@ Live mic on a Mac (dev only): `ffmpeg -f avfoundation -i ":0" -ac 1 -ar 16000 -f
 ### Accuracy (Mac, `make -C iter2-autonomy/voice test-intent`)
 
 **Held-out phrasings**: test templates hashed out of training, so the model has **never seen these
-phrasings**, only the vocabulary. 2250 sentences with simulated whisper errors:
+phrasings**, only the vocabulary. 3090 sentences with simulated whisper errors (about 40% with their
+articles dropped, "go to bottle"):
 
 | intent | test sentences | precision | recall |
 |---|---|---|---|
-| forward | 210 | 0.83 | 0.85 |
-| back | 300 | 0.92 | 0.98 |
-| left | 120 | 0.98 | 0.98 |
-| right | 210 | 0.99 | 0.99 |
-| turn_around | 150 | 0.94 | 0.99 |
-| stop | 150 | 0.98 | 1.00 |
-| goto | 210 | 0.92 | 0.99 |
-| spin | 120 | 0.89 | 0.98 |
-| status | 210 | 0.87 | 0.55 |
-| unknown | 570 | 0.78 | 0.79 |
-| **all** | **2250** | | **accuracy 0.885** |
+| forward | 210 | 0.99 | 0.94 |
+| back | 360 | 0.96 | 0.89 |
+| left | 120 | 0.92 | 1.00 |
+| right | 210 | 0.96 | 0.99 |
+| turn_around | 150 | 0.90 | 1.00 |
+| stop | 150 | 0.82 | 1.00 |
+| goto | 270 | 0.82 | 0.99 |
+| spin | 120 | 0.86 | 0.86 |
+| status | 210 | 0.78 | 0.81 |
+| scan | 180 | 0.94 | 0.64 |
+| forget | 150 | 0.96 | 0.77 |
+| memory | 240 | 0.84 | 0.96 |
+| recall | 90 | 0.72 | 0.87 |
+| unknown | 630 | 0.90 | 0.82 |
+| **all** | **3090** | | **accuracy 0.887** |
 
-Confusion matrix (classifier only, before the threshold):
+Confusion matrix (classifier only, before thresholds):
 
-| true \ predicted | fwd | back | left | right | around | stop | goto | spin | status | unk |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **fwd** | 178 | 1 | · | · | · | · | · | · | · | 31 |
-| **back** | 4 | 295 | · | · | · | · | · | · | · | 1 |
-| **left** | · | · | 118 | · | 1 | · | · | · | · | 1 |
-| **right** | · | · | 2 | 208 | · | · | · | · | · | · |
-| **around** | · | · | · | · | 149 | · | 1 | · | · | · |
-| **stop** | · | · | · | · | · | 150 | · | · | · | · |
-| **goto** | 2 | · | · | · | · | · | 208 | · | · | · |
-| **spin** | · | · | · | · | · | · | · | 118 | · | 2 |
-| **status** | · | · | · | · | · | · | · | · | 116 | 94 |
-| **unk** | 31 | 24 | · | 3 | 8 | 3 | 17 | 15 | 17 | 452 |
+| true \ predicted | fwd | back | left | right | around | stop | goto | spin | status | scan | forget | mem | recall | unk |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **fwd** | 198 | 2 | 1 | · | · | · | · | · | · | · | · | · | · | 9 |
+| **back** | · | 319 | · | · | · | 1 | 2 | · | · | · | · | · | 29 | 9 |
+| **left** | · | · | 120 | · | · | · | · | · | · | · | · | · | · | · |
+| **right** | · | · | 1 | 208 | · | · | · | · | · | · | · | · | · | 1 |
+| **around** | · | · | · | · | 150 | · | · | · | · | · | · | · | · | · |
+| **stop** | · | · | · | · | · | 150 | · | · | · | · | · | · | · | · |
+| **goto** | 1 | 1 | · | · | · | · | 266 | 1 | · | · | · | · | 1 | · |
+| **spin** | · | · | · | · | · | · | · | 103 | · | · | · | · | · | 17 |
+| **status** | · | · | · | · | · | · | · | · | 171 | · | · | 26 | · | 13 |
+| **scan** | · | · | · | · | 3 | · | 21 | · | 28 | 116 | 3 | 3 | · | 6 |
+| **forget** | · | · | · | · | · | 30 | · | 1 | · | 2 | 116 | 1 | · | · |
+| **mem** | · | · | · | · | · | · | · | · | 3 | 3 | 1 | 230 | · | 3 |
+| **recall** | · | 2 | · | · | · | · | 10 | · | · | · | · | · | 78 | · |
+| **unk** | 2 | 8 | 9 | 8 | 14 | 1 | 24 | 15 | 16 | 3 | 1 | 14 | · | 515 |
 
-After the threshold, on the same set: **58.5% correct command, 1.3% wrong command, 40% rejected**
-(LED no, "say it again"). The model is deliberately cautious on new phrasings. Most misses are
+After the threshold, on the same set: **59.1% correct command, 2.2% wrong command, 39% rejected**
+(LED no, "say it again"). Most wrong commands are safe ones: "start fresh" (forget) heard as stop, goto/recall swaps (same
+object, live search vs map)
+or chatter read as `spin`. The model is deliberately cautious on new phrasings: most misses are
 status/unknown phrasings it has never seen, and they are rejected, not acted on.
 
 | Test | Result |
 |---|---|
-| Hand-written realistic whisper transcripts (`intent/data/realistic.tsv`, not used in training) | **113/114** exact, **0 wrong motions** (the miss is a safe rejection) |
+| Hand-written realistic whisper transcripts (`intent/data/realistic.tsv`, not used in training) | **112/114** exact, **0 wrong motions** (both misses are safe rejections: "go bag" 0.51, "where is the exit" 0.34) |
 | **Stop recall** (every stop sentence, generated + hand-written) | **1131/1131 = 100%** |
-| Python ↔ C parity (3674 sentences incl. fuzz + regressions, wake required and not) | **3674/3674 identical**, both modes |
-| Decision latency (normalise + safety + classifier + slots) | **C 1.8 µs**, Python 48 µs per sentence (M4 Pro). Pi 5 estimate ~5–10 µs |
+| Python ↔ C parity (3951 sentences incl. fuzz + regressions, wake required and not) | **3951/3951 identical**, both modes |
+| Decision latency (normalise + safety + classifier + slots) | **C 2.5 µs**, Python 63 µs per sentence (M4 Pro). Pi 5 estimate ~5–10 µs |
 
 ### End to end: speech → whisper → intent → real `tars_motor` (Mac, `make -C iter2-autonomy/voice e2e`)
 
