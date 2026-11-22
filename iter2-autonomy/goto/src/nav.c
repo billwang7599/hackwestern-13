@@ -44,6 +44,9 @@ struct nav {
     unsigned char tblock[N_CELLS];
     int    n_tblock;
     int    ign_on;
+    int    optimistic;
+    double opt_penalty;
+    int32_t prefix_b[STRIDE * STRIDE];   /* OCC / temporarily blocked counts (optimistic mode) */
     double ign_x, ign_z, ign_r;
     int    have_floor;
     double floor_y;
@@ -236,6 +239,28 @@ void nav_temp_clear(nav_t *n)
 }
 
 int nav_temp_count(const nav_t *n) { return n ? n->n_tblock : 0; }
+
+void nav_set_optimistic(nav_t *n, int on, float penalty)
+{
+    if (!n) return;
+    n->optimistic = on != 0;
+    n->opt_penalty = isfinite(penalty) && penalty >= 0 ? penalty : 1.0;
+}
+int nav_optimistic(const nav_t *n) { return n && n->optimistic; }
+
+int nav_footprint_blocked(const nav_t *n, float x, float z)
+{
+    int cx, cz;
+    if (!n || !nav_world_to_cell(x, z, &cx, &cz)) return 1;
+    int r = (int)ceil(n->robot_radius / NAV_RES);
+    for (int i = -r; i <= r; i++)
+        for (int k = -r; k <= r; k++) {
+            int ax = cx + i, az = cz + k;
+            if (ax < 0 || az < 0 || ax >= NAV_SIZE || az >= NAV_SIZE) return 1;
+            if (blocked_idx(n, az * NAV_SIZE + ax)) return 1;
+        }
+    return 0;
+}
 
 int nav_cell_at(const nav_t *n, int ix, int iz)
 {
@@ -612,6 +637,17 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
         }
     }
     int32_t required = (2 * radius + 1) * (2 * radius + 1);
+    int opt = n->optimistic;
+    if (opt) {                                  /* blocked-cell counts: only known obstacles inflate */
+        memset(n->prefix_b, 0, sizeof n->prefix_b);
+        for (int z = 0; z < NAV_SIZE; z++) {
+            int32_t row = 0;
+            for (int x = 0; x < NAV_SIZE; x++) {
+                row += blocked_idx(n, z * NAV_SIZE + x);
+                n->prefix_b[(z + 1) * STRIDE + x + 1] = n->prefix_b[z * STRIDE + x + 1] + row;
+            }
+        }
+    }
     for (int z = radius; z < NAV_SIZE - radius; z++) {
         int top = (z - radius) * STRIDE, bottom = (z + radius + 1) * STRIDE;
         for (int x = radius; x < NAV_SIZE - radius; x++) {
@@ -619,6 +655,11 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
             int32_t c = n->prefix[bottom + right] - n->prefix[top + right]
                       - n->prefix[bottom + left] + n->prefix[top + left];
             if (c == required) n->clear[z * NAV_SIZE + x] = 1;
+            else if (opt) {
+                int32_t b = n->prefix_b[bottom + right] - n->prefix_b[top + right]
+                          - n->prefix_b[bottom + left] + n->prefix_b[top + left];
+                if (b == 0) n->clear[z * NAV_SIZE + x] = 2;     /* no known obstacle, some unknown */
+            }
         }
     }
 
@@ -665,7 +706,8 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
             /* never cut diagonally between blocked or unknown cells */
             if (DX[k] && DZ[k] && (!is_clear(n, x + DX[k], z) || !is_clear(n, x, z + DZ[k]))) continue;
             if (guard && !guard_step_ok(n, x, z, k)) continue;
-            double ng = n->g[cur] + (DX[k] && DZ[k] ? sqrt(2.0) : 1.0);
+            double ng = n->g[cur] + (DX[k] && DZ[k] ? sqrt(2.0) : 1.0) *
+                        (n->clear[nz * NAV_SIZE + nx] == 2 ? 1.0 + n->opt_penalty : 1.0);
             int nxt = nz * NAV_SIZE + nx;
             if (ng < n->g[nxt]) {
                 n->g[nxt] = ng;

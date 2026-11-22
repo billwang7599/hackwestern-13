@@ -81,6 +81,12 @@ typedef struct {
     double nav_guard_plan;    /* 1 = A* only plans legs the guard's box allows (nav_set_guard_box) */
     double nav_backtrack;     /* 1 = when stuck, retrace the breadcrumb trail, then re-plan */
     double nav_block_s;       /* cells a guard refusal marked blocked are forgotten after this */
+    /* optimistic planning: no route over observed floor -> plan through UNKNOWN (penalised) */
+    double nav_optimistic;    /* 1 = on */
+    double nav_unknown_penalty;/* extra cost per step on not-yet-observed floor (1 = twice the cost) */
+    double nav_unknown_leg_mm;/* a leg through unknown floor drives at most this far, then re-plans */
+    double nav_travel_cap_m;  /* optimistic routes: give up after driving this far (0 = 3 x first route + 2 m) */
+    double nav_max_opt_replans;/* optimistic routes: re-plans because the map showed a wall on the route */
     /* per-object arrive override, e.g. person is tall: arrive_h.person = 0.85 */
     int    n_arrive_over;
     char   arrive_over_label[16][32];
@@ -348,6 +354,11 @@ typedef struct {
     int los_standoffs;                /* searches moved to a cell that can see the spot, this GOTO */
     int plan_depth;                   /* do_plan nesting guard */
     int search_hops, search_hop;      /* search relocations this GOTO; 1 = driving to one, spin on arrival */
+    int optimistic;                   /* the current route goes through unknown floor */
+    int opt_failed;                   /* the last goal plan failed even through unknown floor */
+    int unreachable;                  /* ... for some instance this GOTO: fail reason unreachable */
+    double travel_m, opt_len0, last_move_mm;
+    int opt_replans, leg_cut;
     int gone_ids[8], n_gone;          /* instances looked at this GOTO with a clear view: not there */
     /* lidar_guard via tars_motor STATUS */
     int guard_known, guard_ok;

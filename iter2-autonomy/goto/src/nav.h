@@ -110,6 +110,15 @@ int    nav_guard_active(const nav_t *n);
  * OCC/temporarily blocked cell in it. ignore_r > 0: cells within ignore_r of (ix, iz) don't count. */
 int    nav_guard_clear(const nav_t *n, float x, float z, float yaw, float ix, float iz, float ignore_r);
 
+/* Optimistic planning (off by default): UNKNOWN floor is traversable. Only known OCC (and
+ * temporarily blocked) cells are inflated; a step onto a cell whose footprint isn't all observed
+ * FREE costs (1 + penalty) x the step. The start may stand on unknown floor. A plan that fails
+ * even so means the goal is enclosed by known walls (or too tight for the footprint). */
+void   nav_set_optimistic(nav_t *n, int on, float penalty);
+int    nav_optimistic(const nav_t *n);
+/* 1 if the footprint square at (x, z) holds an OCC or temporarily blocked cell */
+int    nav_footprint_blocked(const nav_t *n, float x, float z);
+
 /* Temporarily blocked cells (a guard refusal the map can't explain): planned around like OCC
  * (inflation and guard box) but never written into the map. The caller decays them. */
 void   nav_temp_block(nav_t *n, float x, float z);

@@ -803,7 +803,9 @@ def sc_wall_moved(hidden: bool = False):
         inside = any(1.2 < p[0] < 1.4 and abs(p[1]) < 0.7 for p in st.sens.trace)
         check(not inside, f"{tag}: never drove through the wall")
         check(any(e.startswith("route trash can #1") for e in ev), f"{tag}: routed over the map to A")
-        check(any(e.startswith("not_there trash can #1") for e in ev), f"{tag}: clear view at A, nothing -> not_there")
+        # at A: a clear view and nothing -> not_there; or (B in view from A) it sees B there and goes straight on
+        check(any(e.startswith("not_there trash can #1") for e in ev) or (not hidden and s["result"] == "arrived"),
+              f"{tag}: clear view at A: not_there, or B seen from A")
         check(not any(e.startswith("occluded trash can #1") for e in ev), f"{tag}: A not reported occluded")
         check(s["result"] == "arrived" and d < 0.95, f"{tag}: found B and docked ({s['result']}, {d:.2f} m from B)")
         if hidden:
@@ -815,6 +817,66 @@ def sc_wall_moved(hidden: bool = False):
                       if m.group(2) == "fresh" and math.hypot(int(m.group(3)) / 1000 - 2.5, int(m.group(4)) / 1000) < 0.5]
         check(not fresh_at_a, f"{tag}: A downgraded in memory (no fresh bin at A: {mem[:220]})")
         check_no_refusals(st, s, tag)
+    finally:
+        st.close()
+
+
+def pocket_mouth_world():
+    """bench room tests/rooms/pocket_mouth.json (user's 5th demo), shifted so the car starts at the origin"""
+    import json
+    r = json.load(open(os.path.join(HERE, "rooms", "pocket_mouth.json")))
+    sx, sy = r["start"]["x"], r["start"]["y"]
+    w = World()
+    w.walls = [((a - sx, b - sy), (c - sx, d - sy)) for a, b, c, d in r["walls"]]
+    for o in r["objects"]:
+        if o["label"] == "trash can":
+            w.cans.append([o["x"] - sx, o["y"] - sy])
+        else:
+            w.walls.extend(box(o["x"] - sx, o["y"] - sy, o["r"], o["r"]))
+    return w
+
+
+def sc_pocket_mouth():
+    """user's 5th demo: '<' pocket open only toward +x, car behind the apex, bin remembered inside.
+    The way in is round an arm's end through floor never seen: main's goto said no_route, spun, and
+    failed:not_found. Optimistic planning: route through unknown floor, re-plan as walls appear."""
+    print("full-stack: POCKET_MOUTH: bin in a '<' pocket, the way in through unseen floor (optimistic planning)")
+    w = pocket_mouth_world()
+    bx, by = w.cans[0]
+    st = Stack(w, mem_file([(bx, by)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("pocket_mouth")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - bx, y - by)
+        ev = st.goto.events
+        check(any("optimistic" in e for e in ev), "routed through unknown floor (route ... optimistic)")
+        check(not any(e.startswith(("search_here", "next_candidate")) for e in ev), "never spun / gave up from behind the wall")
+        check(st.min_wall_clearance() > 0.15, f"never closer than 0.15 m to a wall ({st.min_wall_clearance():.2f} m)")
+        check(s["result"] == "arrived" and d < 0.95, f"pocket_mouth: arrived at the bin ({s['result']}, {d:.2f} m)")
+        check_no_refusals(st, s, "pocket_mouth")
+    finally:
+        st.close()
+
+
+def sc_enclosed():
+    """the bin sits in a fully walled box: no route even through unknown floor once the walls are
+    mapped -> failed:unreachable within the caps (no endless wandering / spinning)"""
+    print("full-stack: ENCLOSED: remembered bin inside a closed box -> failed:unreachable")
+    w = World(size=7.0, x0=-2.0, y0=-3.5)
+    w.cans.append([2.5, 0.0])
+    w.walls.extend(box(2.5, 0.0, 0.5, 0.5))
+    st = Stack(w, mem_file([(2.5, 0.0)]))
+    try:
+        t0 = time.monotonic()
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("enclosed")
+        inside = any(2.0 < p[0] < 3.0 and -0.5 < p[1] < 0.5 for p in st.sens.trace)
+        check(not inside, "never drove into the box")
+        check(s["result"] == "failed:unreachable", f"enclosed: failed:unreachable ({s['result']}, {time.monotonic() - t0:.0f} s)")
+        check(not any(e.startswith("search_here") for e in st.goto.events), "no search spin from behind the walls")
     finally:
         st.close()
 
@@ -1050,7 +1112,7 @@ def sc_voice():
 SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion,
              "occlusion_close": lambda: sc_occlusion(ahead=0.39), "dropbox": sc_dropbox, "wallmem": sc_wallmem, "wallmem_search": sc_wallmem_search, "diagwall": sc_diagwall, "moved": sc_moved, "stop": sc_stop,
              "visual": sc_visual_only, "voice": sc_voice, "shortwall": sc_shortwall, "offsetwall": sc_offsetwall,
-             "openbin": sc_openbin, "lpocket": sc_lpocket, "wall_moved": sc_wall_moved,
+             "openbin": sc_openbin, "lpocket": sc_lpocket, "pocket_mouth": sc_pocket_mouth, "enclosed": sc_enclosed, "wall_moved": sc_wall_moved,
              "wall_moved_hidden": lambda: sc_wall_moved(hidden=True), "glass": sc_glass, "stop_backtrack": sc_stop_backtrack}
 
 
@@ -1077,8 +1139,15 @@ def main() -> int:
     t0 = time.monotonic()
     names = only.split(",") if only else list(SCENARIOS)
     threads = []
-    for n in names:                       # independent stacks on their own ports: run them together
-        t = threading.Thread(target=run_scenario, args=(n,))
+    # independent stacks on their own ports: run them together, but not all 20 at once: on a laptop
+    # that starves the fake guard (> 100 ms between GAT1 packets = tars_motor guard_stale stops)
+    gate = threading.Semaphore(int(os.environ.get("FULLSTACK_PARALLEL", "7")))
+
+    def gated(n):
+        with gate:
+            run_scenario(n)
+    for n in names:
+        t = threading.Thread(target=gated, args=(n,))
         t.start()
         threads.append(t)
         time.sleep(0.5)

@@ -80,6 +80,11 @@ void goto_cfg_defaults(goto_cfg *c)
     c->nav_guard_plan = 1;
     c->nav_backtrack = 1;
     c->nav_block_s = 30;
+    c->nav_optimistic = 1;
+    c->nav_unknown_penalty = 1.0;
+    c->nav_unknown_leg_mm = 500;
+    c->nav_travel_cap_m = 0;
+    c->nav_max_opt_replans = 25;
     snprintf(c->memory_path, sizeof c->memory_path, "memory.txt");
     c->n_arrive_over = 1;
     snprintf(c->arrive_over_label[0], sizeof c->arrive_over_label[0], "person");
@@ -135,7 +140,9 @@ int goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen)
         {"car_length_m", &c->car_length_m, 0}, {"car_width_m", &c->car_width_m, 0},
         {"safety_margin_m", &c->safety_margin_m, 0}, {"guard_stop_m", &c->nav_guard_stop_m, 0},
         {"nav_guard_plan", &c->nav_guard_plan, 0}, {"nav_backtrack", &c->nav_backtrack, 0},
-        {"nav_block_s", &c->nav_block_s, 0},
+        {"nav_block_s", &c->nav_block_s, 0}, {"nav_optimistic", &c->nav_optimistic, 0},
+        {"nav_unknown_penalty", &c->nav_unknown_penalty, 0}, {"nav_unknown_leg_mm", &c->nav_unknown_leg_mm, 0},
+        {"nav_travel_cap_m", &c->nav_travel_cap_m, 0}, {"nav_max_opt_replans", &c->nav_max_opt_replans, 0},
     };
     char line[256];
     while (fgets(line, sizeof line, f)) {
@@ -1135,7 +1142,7 @@ static void start_leg(goto_sm *s, goto_act_kind k, double amount)
     s->move_deadline = s->now + 5.0;
     s->cmd_l = s->cmd_r = 0;
     if (k == ACT_TURN) emit(s, ACT_TURN, amount, s->cfg.search_speed, NULL);
-    else emit(s, ACT_MOVE, amount, 1.0, NULL);   /* always forward: we turn to face each waypoint */
+    else { s->last_move_mm = fabs(amount); emit(s, ACT_MOVE, amount, 1.0, NULL); }   /* always forward: we turn to face each waypoint */
 }
 
 /* at the end of the route: turn to face the remembered spot, then LOOK (YOLO confirms) */
@@ -1160,6 +1167,22 @@ static double leg_move_mm(const goto_sm *s, double d)
     return s->cfg.nav_move_max_mm > 0 && d > s->cfg.nav_move_max_mm ? s->cfg.nav_move_max_mm : d;
 }
 
+/* a path leg's MOVE toward the current waypoint: tars_motor's limit, and on an optimistic route
+ * at most nav_unknown_leg_mm when the leg crosses floor the phone hasn't seen (it maps ahead
+ * while we stop, re-measure and maybe re-plan). leg_cut = 1 if it's only part of the way. */
+static double path_move_mm(goto_sm *s, double d)
+{
+    double mm = leg_move_mm(s, d);
+    if (s->optimistic && s->cfg.nav_unknown_leg_mm > 0 && mm > s->cfg.nav_unknown_leg_mm && s->path_i < s->path_n) {
+        double x, z;
+        if (nav_pose(s, &x, &z, NULL) &&
+            nav_line_clear_ex(s->nav, (float)x, (float)z, s->path[s->path_i].x, s->path[s->path_i].z, 0.0f) != 1)
+            mm = s->cfg.nav_unknown_leg_mm;
+    }
+    s->leg_cut = mm < d - 1.0;
+    return mm;
+}
+
 static void crumb_note(goto_sm *s, int force, int corner);
 
 static void next_leg(goto_sm *s)
@@ -1172,7 +1195,7 @@ static void next_leg(goto_sm *s)
         if (guard_escape(s, b)) return;
         s->leg_mm = d;
         if (fabs(b) > s->cfg.nav_turn_min_deg) { s->leg = 0; start_leg(s, ACT_TURN, b); }
-        else { s->leg = 1; start_leg(s, ACT_MOVE, leg_move_mm(s, d)); }
+        else { s->leg = 1; start_leg(s, ACT_MOVE, path_move_mm(s, d)); }
         return;
     }
     if (s->search_hop) {                        /* search hop done: spin and look from here */
@@ -1226,18 +1249,24 @@ static void search_fallback(goto_sm *s)
      * search spun on the wrong side of the wall, failed:not_found with the bin right there).
      * First move to a stand-off cell with a clear line of sight to it, look there; the normal
      * LOOK / not_there / search flow carries on from that cell. */
-    if (goal_hidden(s) && s->los_standoffs < 2) {
-        s->los_standoffs++;
-        int mm = s->map_mode;
-        s->map_mode = 1;
-        if (pick_vantage(s)) {
-            s->vantage = 1;
+    if (goal_hidden(s)) {
+        if (s->los_standoffs < 2 && !s->unreachable) {
+            s->los_standoffs++;
+            s->map_mode = 1;
             s->mem_phase = 1;
-            map_event(s, "standoff_search");
+            if (pick_vantage(s)) {
+                s->vantage = 1;
+                map_event(s, "standoff_search");
+            } else {                            /* no cell with a view: go to the spot itself, then LOOK */
+                s->vantage = s->exploring = 0;
+                map_event(s, "route_to_look");
+            }
             do_plan(s);
             return;
         }
-        s->map_mode = mm;
+        /* never spin where a known wall hides the spot */
+        goto_sm_fail(s, s->now, s->unreachable ? "unreachable" : "no line of sight");
+        return;
     }
     s->map_mode = 0;
     s->mem_phase = 3;
@@ -1432,7 +1461,7 @@ static int plan_from_robot_1(goto_sm *s, double x, double z, double tx, double t
 /* Guard-aware plan (nav_set_guard_box) first. If the guard's box leaves no route at all, the
  * old plan (inflation only) as a fallback: legs the guard may refuse, handled by the escape,
  * the refused-cell marks and backtracking. EVENT route_relaxed says so. */
-static int plan_from_robot(goto_sm *s, double x, double z, double tx, double tz, int ring_default)
+static int plan_known(goto_sm *s, double x, double z, double tx, double tz, int ring_default)
 {
     s->relaxed = 0;
     int n = plan_from_robot_1(s, x, z, tx, tz, ring_default);
@@ -1442,6 +1471,26 @@ static int plan_from_robot(goto_sm *s, double x, double z, double tx, double tz,
     nav_set_guard_active(s->nav, 1);
     if (m >= 0) s->relaxed = 1;
     return m >= 0 ? m : n;
+}
+
+/* Over observed floor first. No route there (unmapped floor round a wall's end: bench pocket_mouth)
+ * -> OPTIMISTIC: unknown floor counts as passable at a cost, only known walls are inflated; the
+ * route is driven in short legs through the unknown and re-planned as the LiDAR maps walls on it.
+ * Failing even so (object goals) = enclosed by known walls: opt_failed. */
+static int plan_from_robot(goto_sm *s, double x, double z, double tx, double tz, int ring_default)
+{
+    s->optimistic = 0;
+    if (ring_default) s->opt_failed = 0;
+    int n = plan_known(s, x, z, tx, tz, ring_default);
+    if (n >= 0 || !s->nav || s->cfg.nav_optimistic <= 0 ||
+        (n != NAV_ERR_NO_PATH && n != NAV_ERR_NO_GOAL && n != NAV_ERR_START_BLOCKED))
+        return n;
+    nav_set_optimistic(s->nav, 1, (float)s->cfg.nav_unknown_penalty);
+    int m = plan_known(s, x, z, tx, tz, ring_default);
+    nav_set_optimistic(s->nav, 0, 0);
+    if (m >= 0) { s->optimistic = 1; return m; }
+    if (ring_default && (m == NAV_ERR_NO_PATH || m == NAV_ERR_NO_GOAL)) s->opt_failed = 1;
+    return n;
 }
 
 static int plan_from_robot_1(goto_sm *s, double x, double z, double tx, double tz, int ring_default)
@@ -1727,6 +1776,7 @@ static void start_back_move(goto_sm *s, double mm)
     s->move_deadline = s->now + 5.0;
     s->cmd_l = s->cmd_r = 0;
     s->leg = 7;
+    s->last_move_mm = leg_move_mm(s, mm);
     emit(s, ACT_MOVE, -leg_move_mm(s, mm), 0.5, NULL);   /* tars_motor: reverse <= 0.50 under guard_blocked */
 }
 
@@ -1812,8 +1862,14 @@ static void do_plan(goto_sm *s)
         s->plan_sx = x;
         s->plan_sz = z;
         s->route_guard_ok = !s->relaxed && route_guard_clear(s, x, z, 0);
-        char t[96];
-        snprintf(t, sizeof t, "route %s #%d %d%s", target_name(s), s->mem_id, n, s->relaxed ? " relaxed" : "");
+        if (s->optimistic && s->opt_len0 <= 0) {
+            double len = 0, px = x, pz = z;
+            for (int j = 0; j < n; j++) { len += hypot(s->path[j].x - px, s->path[j].z - pz); px = s->path[j].x; pz = s->path[j].z; }
+            s->opt_len0 = len > 0.1 ? len : 0.1;
+        }
+        char t[112];
+        snprintf(t, sizeof t, "route %s #%d %d%s%s", target_name(s), s->mem_id, n, s->relaxed ? " relaxed" : "",
+                 s->optimistic ? " optimistic" : "");
         emit(s, ACT_EVENT, 0, 0, t);
         /* the same first leg the guard just refused, from the same spot: it would be refused again */
         if (s->ref_valid && n > 0 && hypot(x - s->ref_sx, z - s->ref_sz) < 0.15 &&
@@ -1829,6 +1885,13 @@ static void do_plan(goto_sm *s)
         char t[96];
         snprintf(t, sizeof t, "plan_fail %s #%d %d%s", target_name(s), s->mem_id, n, s->vantage ? " vantage" : "");
         emit(s, ACT_EVENT, 0, 0, t);
+    }
+    if (s->opt_failed && !s->vantage && !s->exploring && (n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH)) {
+        /* no route even through unknown floor: known walls enclose it (or the footprint can't fit).
+         * Spinning or exploring won't change that. */
+        s->unreachable = 1;
+        next_candidate(s, "unreachable");
+        return;
     }
     if (n == NAV_ERR_START_BLOCKED && reveal_more(s)) {
         reveal_turn(s);
@@ -1984,7 +2047,34 @@ static int path_blocked(const goto_sm *s)
     /* something new in the guard's box along the rest of the route (it was clear when planned):
      * re-plan now, before lidar_guard stops a leg on it */
     if (s->route_guard_ok && s->path_i < s->path_n && !route_guard_clear(s, x0, z0, s->path_i)) return 2;
+    /* optimistic route: a wall the LiDAR just mapped where the robot's footprint would go */
+    if (s->optimistic) {
+        double ax = x0, az = z0;
+        for (int i = s->path_i; i < s->path_n; i++) {
+            double bx = s->path[i].x, bz = s->path[i].z, L = hypot(bx - ax, bz - az);
+            for (double p = i == s->path_i ? 0.15 : 0.0; p <= L + 1e-9; p += 0.1)
+                if (nav_footprint_blocked(s->nav, (float)(ax + (bx - ax) * (L > 0 ? p / L : 0)),
+                                          (float)(az + (bz - az) * (L > 0 ? p / L : 0))))
+                    return 3;
+            ax = bx; az = bz;
+        }
+    }
     return 0;
+}
+
+/* optimistic routes can't wander forever: total MOVE distance this GOTO vs the cap */
+static int travel_capped(goto_sm *s)
+{
+    s->travel_m += s->last_move_mm / 1000.0;
+    s->last_move_mm = 0;
+    if (s->opt_len0 <= 0) return 0;
+    double cap = s->cfg.nav_travel_cap_m > 0 ? s->cfg.nav_travel_cap_m : 3.0 * s->opt_len0 + 2.0;
+    if (s->travel_m <= cap) return 0;
+    char t[96];
+    snprintf(t, sizeof t, "travel_cap %s #%d %.1f %.1f", target_name(s), s->mem_id, s->travel_m, cap);
+    emit(s, ACT_EVENT, 0, 0, t);
+    goto_sm_fail(s, s->now, "travel cap");
+    return 1;
 }
 
 static void leg_done(goto_sm *s)
@@ -1999,7 +2089,7 @@ static void leg_done(goto_sm *s)
         if (guard_escape(s, b)) return;            /* the turn landed facing something */
         s->leg = 1;
         s->leg_mm = d;
-        start_leg(s, ACT_MOVE, leg_move_mm(s, d));
+        start_leg(s, ACT_MOVE, path_move_mm(s, d));
         return;
     }
     case 1:
@@ -2007,17 +2097,19 @@ static void leg_done(goto_sm *s)
          * where we are now (next_leg re-measures it), same waypoint */
         s->bt_rung = 0;                         /* progress: the stuck ladder starts over */
         s->ref_valid = 0;
-        if (s->leg_mm > leg_move_mm(s, s->leg_mm) + 1.0) { next_leg(s); return; }
+        if (travel_capped(s)) return;
+        if (s->leg_cut) { next_leg(s); return; }  /* only part of the way: re-measure, same waypoint */
         s->path_i++; next_leg(s); return;
     case 2: start_look(s, s->now + s->cfg.settle_s); return;
     case 4: s->leg = 5; start_leg(s, ACT_MOVE, s->leg_mm); return;   /* escape: pivoted, now the step */
+    case 5: if (travel_capped(s)) return; do_plan(s); return;
     case 6: {                                   /* backtrack: turned the back to the point, now reverse */
         double b, d;
         rel_to(s, s->bt_pts[s->bt_i].x, s->bt_pts[s->bt_i].z, &b, &d);
         start_back_move(s, d);
         return;
     }
-    case 7: bt_step(s); return;                 /* re-measure: next point, or this one again if short */
+    case 7: if (travel_capped(s)) return; bt_step(s); return;   /* re-measure: next point, or this one again if short */
     default: do_plan(s); return;                    /* 3: reveal turn done, 5: escape step done */
     }
 }
@@ -2196,7 +2288,8 @@ static int search_failed_memory(goto_sm *s, double now)
     for (int k = 0; m && k < m->n; k++) n_mem += !strcmp(m->e[k].label, lab);
     if (s->mem_fallback || !n_mem) {
         if (search_hop(s)) return 0;             /* floor this spot can't see: search from there first */
-        goto_sm_fail(s, now, !n_mem ? "not found no memory" : s->fallback_noroute ? "no route" : "not found");
+        goto_sm_fail(s, now, !n_mem ? "not found no memory" : s->unreachable ? "unreachable"
+                             : s->fallback_noroute ? "no route" : "not found");
         return 0;
     }
     double x, z, yaw;
@@ -2229,7 +2322,7 @@ static int search_failed_memory(goto_sm *s, double now)
     }
     if (best < 0) {
         if (search_hop(s)) return 0;
-        goto_sm_fail(s, now, s->n_gone ? "not found" : "no route");
+        goto_sm_fail(s, now, s->unreachable ? "unreachable" : s->n_gone ? "not found" : "no route");
         return 0;
     }
     s->mem_id = m->e[best].id;
@@ -2354,6 +2447,8 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->have_goal = s->los_standoffs = s->plan_depth = 0;
     s->search_hops = s->search_hop = 0;
     s->n_gone = 0;
+    s->optimistic = s->opt_failed = s->unreachable = s->opt_replans = s->leg_cut = 0;
+    s->travel_m = s->opt_len0 = s->last_move_mm = 0;
     if (s->nav) nav_temp_clear(s->nav);
     crumb_note(s, 1, 1);
     if (mem_try_next(s)) return;
@@ -2743,7 +2838,14 @@ void goto_sm_tick(goto_sm *s, double now)
             s->path_ver = nav_version(s->nav);
             if (path_blocked(s)) {                    /* the map changed under the route */
                 emit(s, ACT_STOP, 0, 0, NULL);
-                leg_blocked(s, "map");
+                if (s->optimistic) {                  /* expected while exploring: not a failure, its own cap */
+                    map_event(s, "blocked:map");
+                    if (++s->opt_replans > (int)s->cfg.nav_max_opt_replans) { goto_sm_fail(s, now, "replan cap"); return; }
+                    set_state(s, ST_PLAN);
+                    s->plan_wait = 1;
+                } else {
+                    leg_blocked(s, "map");
+                }
             }
         }
         return;

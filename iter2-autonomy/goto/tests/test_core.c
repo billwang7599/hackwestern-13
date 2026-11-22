@@ -1048,6 +1048,7 @@ static void test_map_leg_waits_for_post_move_pose(void)
  * not_found. An explore hop must be able to see the goal when such a cell exists. */
 static void test_map_explore_sees_the_goal(void)
 {
+    C.nav_optimistic = 0;                                 /* the explore hop is the non-optimistic path */
     map_setup();
     for (double x = -1.95; x < 2.0; x += 0.1)            /* room seen from (0,0): wall + its shadow */
         for (double z = -0.95; z < 3.0; z += 0.1) {
@@ -1077,6 +1078,9 @@ static void test_map_explore_sees_the_goal(void)
           "goal in the wall's shadow: reveal, then an explore hop (%s, %s)", goto_state_name(S.st), EV);
     int los = nav_line_clear(N, (float)S.vx, (float)S.vz, 0.0f, 2.4f);
     CHECK(los != 0, "the explore hop (%.2f, %.2f) can see the goal (line_clear %d), not the wall's middle", S.vx, S.vz, los);
+    goto_sm_cancel(&S, T, "x");
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
 }
 
 static void test_map_route_around_wall(void)
@@ -1225,6 +1229,41 @@ static void test_map_search_needs_line_of_sight(void)
     goto_sm_cancel(&S, T, "x");
 }
 
+/* optimistic route through unknown floor: a wall the LiDAR maps on it -> re-plan (not a failure,
+ * its own cap); legs through unknown <= nav_unknown_leg_mm; CANCEL mid-replan wins */
+static void test_map_optimistic(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 1.2, 4, NAV_FREE);                /* only a strip around the robot is mapped */
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.0, 3.0, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(had_event("route trash can #1", EV) && strstr(EV, "optimistic") && S.optimistic,
+          "no route over mapped floor -> optimistic route (%.200s)", EV);
+    int k = 0;
+    while (k++ < 6 && !find(ACT_MOVE) && find(ACT_TURN)) run_legs_ev(1);
+    const goto_act *m = find(ACT_MOVE);
+    CHECK(m && m->a <= C.nav_unknown_leg_mm + 1e-6, "a leg into unknown floor is short (%.0f mm)", m ? m->a : -1.0);
+    clear();
+    goto_sm_move_started(&S, T, 990, 1.0);
+    /* the LiDAR maps a wall across the rest of the route */
+    nav_pt_t w = S.path[S.path_n - 1];
+    set_free_rect(w.x - 0.6, w.z - 1.2, w.x + 0.6, w.z - 1.0, NAV_OCC);
+    for (int i = 0; i < 3; i++) set_free_rect(1.2 + i * 0.01, 0, 1.21 + i * 0.01, 0.01, NAV_FREE);   /* bump version */
+    advance(0.1);
+    grab_events();
+    CHECK(S.st == ST_PLAN && S.opt_replans >= 1 && S.replans == 0 && count(ACT_STOP) >= 1,
+          "wall mapped on the route -> S + re-plan, own counter (%s, opt_replans %d, replans %d)",
+          goto_state_name(S.st), S.opt_replans, S.replans);
+    clear();
+    goto_sm_cancel(&S, T, "stop");
+    advance(2.0);
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1 && !find(ACT_TURN) && !find(ACT_MOVE),
+          "CANCEL while waiting to re-plan: S, idle, nothing more (%s)", goto_state_name(S.st));
+}
+
 /* distance from (px,pz) to an axis-aligned rectangle */
 static double rect_dist(double px, double pz, double x0, double z0, double x1, double z1)
 {
@@ -1315,6 +1354,23 @@ static void test_map_occluder_inside_footprint(void)
 
 static void test_map_no_route_fails(void)
 {
+    /* optimistic planning (default): the corner is walled in by KNOWN obstacles, so there's no
+     * route even through unknown floor: failed:unreachable at once, no spinning, no driving */
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(2.5, 2.5, 4.0, 4.0, NAV_OCC);
+    set_free_rect(3.2, 3.2, 3.3, 3.3, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.25, 3.25, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    drive_until_idle(50);
+    grab_events();
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:unreachable") && legs == 0,
+          "optimistic: enclosed by known walls -> failed:unreachable, no driving (%s, %d legs, %.200s)", S.result, legs, EV);
+    CHECK(!had_event("reveal", EV), "no reveal spin for an enclosed spot");
+
+    C.nav_optimistic = 0;                               /* the old path: reveal, explore, no_route */
     map_setup();
     C.search_max_deg = 60;                              /* short blind search at the end */
     goto_sm_init(&S, &C, &O); goto_sm_set_memory(&S, &MM, 1e6); goto_sm_set_nav(&S, N); goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
@@ -1337,7 +1393,8 @@ static void test_map_no_route_fails(void)
     grab_events();
     CHECK(had_event("no_route trash can #1", EV), "gave up with no_route only after exploring (%s)", EV + (strlen(EV) > 200 ? strlen(EV) - 200 : 0));
     CHECK(crossed_occ == 0, "never through the solid corner");
-    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:no_route"), "then FAILED (%s)", S.result);
+    CHECK(S.st == ST_IDLE && (!strcmp(S.result, "failed:no_route") || !strcmp(S.result, "failed:no_line_of_sight")),
+          "then FAILED, never a spin behind the wall (%s)", S.result);
     C = (goto_cfg){0};
     goto_cfg_defaults(&C);
 }
@@ -1349,6 +1406,7 @@ static int reveal_spins(double scale)
 {
     map_setup();
     C.search_max_deg = 60;
+    C.nav_optimistic = 0;                               /* reveal mechanics (non-optimistic path) */
     goto_sm_init(&S, &C, &O); goto_sm_set_memory(&S, &MM, 1e6); goto_sm_set_nav(&S, N); goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
     set_free_rect(0, 0, 4, 4, NAV_FREE);
     set_free_rect(2.5, 2.5, 4.0, 4.0, NAV_OCC);
@@ -1580,7 +1638,7 @@ static void test_map_search_fails_then_memory_route(void)
     i = add_inst(2.0, 2.0, MEM_GONE);
     start("trash can");
     drive_until_idle(400);
-    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:no_route"), "remembered but unreachable -> %s", S.result);
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:unreachable"), "remembered but unreachable -> %s", S.result);
 }
 
 /* Two remembered bins: A is nearer in a straight line but behind a long wall, B is further but in
@@ -1935,6 +1993,7 @@ int main(void)
     test_map_gone_then_check_others();
     test_map_occluded_detour();
     test_map_detour_guard_stop();
+    test_map_optimistic();
     test_map_search_needs_line_of_sight();
     test_map_occluder_inside_footprint();
     test_map_no_route_fails();

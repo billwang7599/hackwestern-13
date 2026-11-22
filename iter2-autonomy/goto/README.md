@@ -143,6 +143,19 @@ while the map says a wall hides the spot reports `occluded` and leaves the memor
 only starts from a cell with line of sight to the remembered spot, else goto first goes to a stand-off
 cell that has one (`standoff_search`).
 
+**No route over seen floor: optimistic planning** (`nav_optimistic = 1`). A* first plans over observed
+floor only. If that fails (the way in is round a wall's end the phone hasn't seen: bench
+`pocket_mouth`), it plans again with UNKNOWN floor passable at `1 + nav_unknown_penalty` times the
+cost, inflating only known walls. Such a route (`route ... optimistic`) is driven in legs of at most
+`nav_unknown_leg_mm` wherever they cross unseen floor. Whenever the LiDAR maps a wall where the
+footprint would go, the robot stops and re-plans (`blocked:map`, its own cap `nav_max_opt_replans`
+-> `failed:replan_cap`). Total driving is capped (`nav_travel_cap_m`, default 3 x the first optimistic
+route + 2 m -> `failed:travel_cap`). If there's no route even through unknown floor, known walls
+enclose the spot: `failed:unreachable`, with no spinning and no driving. A search spin never starts
+where a mapped wall hides the remembered spot: it goes to a stand-off cell with a view, or to the
+spot itself, first (`failed:no_line_of_sight` if neither is possible). Guard stops on optimistic legs
+go through the same backtrack and re-plan path as above.
+
 ### Assumptions (made without asking; change them here if wrong)
 
 1. **Ports**: ours move to 5570/5571/5572 to clear Andrew's 5557/5558 (phone motion, preview). *Needs Andrew's sign-off.* The LDR1 copy for `goto` comes on 5572 (TCP length-prefixed, or one UDP datagram ≤ ~9 KB on macOS). Who sends it (the phone directly, or Andrew's service teeing what it gets on 5562) isn't built yet; the sim plays the phone.
