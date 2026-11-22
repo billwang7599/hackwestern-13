@@ -359,7 +359,7 @@ const Bench = (() => {
     const badge = document.getElementById('badge');
     const real = t.name === 'pi' || t.name === 'usb' || t.name === 'robot';
     badgeBase = t.name === 'pi' ? 'REAL ROBOT (Pi)' : t.name === 'robot' ? 'REAL ROBOT (bench on the Pi)'
-      : t.name === 'usb' ? 'REAL ROBOT (Uno on USB)' : 'SIM';
+      : t.name === 'usb' ? 'REAL ROBOT (Uno on USB)' : t.name === 'phone' ? 'SIM CAR + REAL iPHONE' : 'SIM';
     badge.textContent = badgeBase;
     badge.className = 'badge ' + (real ? 'real' : 'sim');
     badge.title += `\ntarget: ${t.name}` + (t.name === 'pi' ? ` (relay ${t.relay})` : ` (motor ${t.motor})`) +

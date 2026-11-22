@@ -77,8 +77,11 @@
         carStartBtn(), resetMapBtn(),
         editBtn, h('span', {style: {flex: 1}}), legendBtn);
       css(bar, {display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px'});
-      if (LIVE) bar.replaceChildren(h('span', {class: 'ok', style: {fontWeight: 600}}, 'LIVE: the real robot'),
-        h('span', {class: 'dim', style: {fontSize: '12px'}}, 'goto\'s LiDAR map, its pose, route and memory. Nothing here is simulated.'),
+      const PHONE = ((B.info && B.info.target) || {}).name === 'phone';   // run_sim.py --phone: real iPhone, virtual car
+      if (LIVE) bar.replaceChildren(h('span', {class: 'ok', style: {fontWeight: 600}}, PHONE ? 'LIVE: the real iPhone' : 'LIVE: the real robot'),
+        h('span', {class: 'dim', style: {fontSize: '12px'}}, PHONE
+          ? 'goto\'s map and pose from the phone. The car is virtual: carry the phone at car height along the route.'
+          : 'goto\'s LiDAR map, its pose, route and memory. Nothing here is simulated.'),
         h('span', {style: {flex: 1}}), legendBtn);
       const toolBar = h('div');
       css(toolBar, {display: 'none', gap: '4px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px',

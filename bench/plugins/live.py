@@ -32,7 +32,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "world"))
 import common as C  # noqa: E402
 
-REAL_TARGETS = ("robot", "pi")
+REAL_TARGETS = ("robot", "pi", "phone")     # phone: run_sim.py --phone, real iPhone + virtual car
 START = {"x": 0.0, "y": 0.0, "th": 0.0}       # the map origin is the room origin
 RATE_S = 0.25                                  # pose + publish
 ROUTE_S = 0.5
@@ -159,11 +159,14 @@ def _loop() -> None:
             st = r.status()
         except Exception:  # noqa: BLE001
             pass
+        phone = _bench.target["name"] == "phone"
         ev = {
             "type": "state", "live": True, "t": time.time(), "alive": bool(nav_rep),
             "car_kind": "real", "robot": True, "truth": truth, "phone": None, "dets": [],
             "guard": guard_view(st), "faults": {}, "hfov_deg": _hfov[0],
-            "room": {"name": "live: real robot", "about": "goto's map from the iPhone LiDAR; nothing here is simulated",
+            "room": {"name": "live: real iPhone, virtual car" if phone else "live: real robot",
+                     "about": ("goto's map and pose from the REAL iPhone (carry it along the route); the car is the "
+                               "virtual SM11") if phone else "goto's map from the iPhone LiDAR; nothing here is simulated",
                      "start": START, "wall_h": 0, "walls": [], "objects": objects, "memory": [],
                      "labels": [], "params": {}, "rev": 0},
             "route": route, "route_i": route_i,

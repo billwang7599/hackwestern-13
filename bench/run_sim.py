@@ -5,6 +5,7 @@
     python3 bench/run_sim.py --room demo_detour --free-ports
     python3 bench/run_sim.py --car stub         # force the stub car
     python3 bench/run_sim.py --speed 4          # demo: the robot's motion and timers run 4 x faster
+    python3 bench/run_sim.py --phone usb        # phone in the loop: the REAL iPhone on this Mac's USB
 
   car          virtual SM11 (bench/car/launch.py, real firmware on a pty) if present,
                else the STUB CAR (tars_motor -b stub + bench/world/stub_car.py, no physics)
@@ -22,6 +23,14 @@ the world sim (phone/LiDAR/camera rates, latencies) and goto (-T) all run N x th
 a timed MOVE still lands where it does at 1x. tars_motor and voice stay real time (the car
 keeps the firmware's link/drive watchdogs safe; see bench/car/vuno.cpp). Virtual car only.
 Live switch: the bench top bar (supervisor op "speed"); goto restarts (memory kept, map cleared).
+
+--phone usb (phone in the loop): no world sim. The real iPhone (MotionUSB, Start pressed) feeds the
+same code the Pi runs, built for the Mac: its LDR1 stream (ARKit pose + LiDAR points, phone 5562) goes
+through bench/phone/link.py to lidar_guard (guard verdicts -> tars_motor, like service.py) and, teed over
+TCP, to goto's map; its camera (phone 5563) goes to rgb_broker -> detect (YOLO-World, ORT) -> goto.
+The virtual car takes the MOVE/TURN; nothing moves the phone, so carry it at car height along the
+route goto draws. Real time only (--speed 1). Bench target "phone": the 2D view is goto's map + pose
+(the live view), the virtual car panel stays. --phone tcp:HOST plays a fake phone (bench/tests).
 
 Ctrl-C: S to tars_motor and CANCEL to goto first, then every child is stopped.
 Everything is a child in its own session; logs go to a temp run directory (printed).
@@ -54,6 +63,10 @@ MOTOR_BIN = os.path.join(PI, "build", "tars_motor_host")
 GOTO_BIN = os.path.join(GOTO_DIR, "build", "goto_host")
 VOICE_BIN = os.path.join(VOICE_DIR, "build", "tars_voice_host")
 RELAY_BIN = os.path.join(MISSION, "build", "mission_relay_host")
+EDGE = os.path.join(REPO, "iter2-autonomy", "edge-ai")
+GUARD_BIN = os.path.join(EDGE, "build", "lidar_guard")
+DETECT_BIN = os.path.join(GOTO_DIR, "build", "detect_host_phone")
+DETECT_MODEL = os.path.join(GOTO_DIR, "models", "yolo_world.onnx")
 VOICE_MODEL = os.path.join(VOICE_DIR, "models", "ggml-tiny.en-q5_1.bin")
 # the user's car (2026-11-21, ~0.40 x 0.30 m incl. side buffers, not tape-measured): appended to goto.conf for the
 # sim only, so goto.conf (what the robot runs) keeps its defaults until the lead OKs the smaller guard box
@@ -69,6 +82,9 @@ SIM_ROUTE_CONF = ("nav_turn_cost_m = 0.3\n"
 REAL_PORTS = {"motor": 5555, "goto": 5570, "det": 5571, "nav": 5572, "voice": 5574, "relay": 5575,
               "guard": 5568, "truth": 5590, "car_ctl": 5591, "world_ctl": 5592, "world_state": 5593,
               "bench": 8770, "relay_tee": 5576, "phone_room": 5594, "phone_scene": 5595}
+# --phone: the phone's streams on this Mac's localhost (the Pi's numbers), the broker, lidar_guard's status
+PHONE_PORTS = {"phone_ldr": 5562, "phone_rgb": 5563, "broker": 5566, "guard_status": 5564}
+PHONE_DEVICE = {"ldr": 5562, "rgb": 5563}       # MotionUSB's listeners (iphone/README.md)
 
 
 def free_ports(names) -> dict:
@@ -128,7 +144,9 @@ class Stack:
         self.procs: list[tuple[str, subprocess.Popen]] = []
         self.rows: list[tuple[str, str, str]] = []
         self.run_dir = tempfile.mkdtemp(prefix="tars-bench-")
-        self.ports = free_ports(REAL_PORTS) if a.free_ports else dict(REAL_PORTS)
+        self.phone = getattr(a, "phone", "") or ""
+        names = {**REAL_PORTS, **(PHONE_PORTS if self.phone else {})}
+        self.ports = free_ports(names) if a.free_ports else dict(names)
         if a.bench_port:
             self.ports["bench"] = a.bench_port
         self.room = C.load_room_file(a.room)
@@ -163,6 +181,9 @@ class Stack:
         jobs = [["make", "-s", "-C", PI, "host"], ["make", "-s", "-C", GOTO_DIR, "host"]]
         if self.a.relay:
             jobs.append(["make", "-s", "-C", MISSION, "host"])
+        if self.phone:
+            jobs.append(["sh", os.path.join(EDGE, "build-guard.sh")])
+            # detect needs ONNX Runtime + libjpeg (make host-detect-phone, ORT_PHONE=...); not built here
         for j in jobs:
             r = subprocess.run(j, capture_output=True, text=True)
             if r.returncode != 0:
@@ -220,10 +241,18 @@ class Stack:
             self.rows.append(("STUB CAR (no physics)", f"UDP {P['car_ctl']}", f"tars_motor pose -> truth UDP {P['truth']}"
                               + ("" if self.a.slow_stub else ", WHEELCAL 260 400")))
         # 3. goto
-        self.start_goto(C.goto_memory_text(self.room))
-        # 4. world sim
+        self.start_goto(None if self.phone else C.goto_memory_text(self.room))
+        # 4. world sim, or the real phone
         truth_copy = free_ports(["x"])["x"]
         self.ports["truth_copy"] = truth_copy
+        if self.phone:
+            self.start_phone()
+        else:
+            self.start_world(truth_copy)
+        self.start_rest(truth_copy)
+
+    def start_world(self, truth_copy: int):
+        P = self.ports
         self.spawn("world", [sys.executable, os.path.join(HERE, "world", "worldsim.py"), "--room", self.a.room,
                              "--truth", str(P["truth"]), "--truth-fwd", f"127.0.0.1:{truth_copy}",
                              "--car-ctl", str(P["car_ctl"]), "--ctl", str(P["world_ctl"]),
@@ -241,6 +270,62 @@ class Stack:
             self.rows.append(("sim guard box", "-", f"half-width {hw:.3f} m, stop {stop:.3f} m (from goto.conf + BENCH_CAR_CONF)"))
         except Exception as e:   # noqa: BLE001 - keep the worldsim defaults
             self.rows.append(("sim guard box", "-", f"worldsim defaults (guard-flags failed: {e})"))
+
+    def guard_flags(self) -> list[str]:
+        """goto --guard-flags from the run's goto.conf (service.py does the same for lidar_guard)"""
+        try:
+            f = subprocess.run([GOTO_BIN, "-c", self.goto_conf(), "--guard-flags"],
+                               capture_output=True, text=True, timeout=5).stdout.split()
+            if len(f) == 4 and f[0] == "--half-width" and f[2] == "--stop-distance":
+                return f
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return []
+
+    def start_phone(self):
+        """the real phone instead of the world sim: link -> lidar_guard (+ goto nav tee), rgb_broker -> detect"""
+        P = self.ports
+        src = "usb" if self.phone == "usb" else self.phone
+        dev = dict(PHONE_DEVICE)
+        if self.phone.startswith("tcp:") and getattr(self.a, "phone_ports", ""):   # fake phone's listening ports
+            dev["ldr"], dev["rgb"] = (int(x) for x in self.a.phone_ports.split(","))
+        self.link_stats = os.path.join(self.run_dir, "phone_link.json")
+        self.spawn("phone_link", [sys.executable, os.path.join(HERE, "phone", "link.py"), "--source", src,
+                                  *(["--serial", self.a.phone_serial] if getattr(self.a, "phone_serial", "") else []),
+                                  "--ldr", f"{P['phone_ldr']}:{dev['ldr']}", "--rgb", f"{P['phone_rgb']}:{dev['rgb']}",
+                                  "--nav", str(P["nav"]), "--stats-file", self.link_stats])
+        self.must(wait_for(lambda: port_open(P["phone_ldr"]), 8), "phone link didn't open its port", "phone_link")
+        self.rows.append(("phone link", f"TCP {P['phone_ldr']}, {P['phone_rgb']}",
+                          f"{'iPhone over USB (usbmuxd)' if src == 'usb' else 'FAKE phone ' + src} "
+                          f"phone {dev['ldr']}/{dev['rgb']}; LDR1 also -> goto nav TCP {P['nav']}"))
+        # lidar_guard: the robot's C++ guard on the phone's LiDAR -> tars_motor's gate (GAT1/GOB1 UDP)
+        self.must(os.path.exists(GUARD_BIN), f"no {GUARD_BIN} (sh iter2-autonomy/edge-ai/build-guard.sh)", "phone_link")
+        gf = self.guard_flags()
+        self.spawn("lidar_guard", [GUARD_BIN, "--port", str(P["phone_ldr"]), "--status-port", str(P["guard_status"]),
+                                   "--motor-port", str(P["guard"]), "--identify-obstacles", "1", *gf])
+        self.rows.append(("lidar_guard", f"<- TCP {P['phone_ldr']}", f"verdicts -> tars_motor UDP {P['guard']} "
+                          f"{' '.join(gf) or '(its defaults)'}; status UDP {P['guard_status']}"))
+        # camera: rgb_broker (Andrew's) -> detect (YOLO-World on ORT, the Pi's detect.cpp) -> goto detections
+        self.spawn("rgb_broker", [sys.executable, os.path.join(EDGE, "rgb_broker.py"),
+                                  "--phone-port", str(P["phone_rgb"]), "--port", str(P["broker"])])
+        model = self.a.detect_model or DETECT_MODEL
+        labels = os.path.join(os.path.dirname(model), "labels.txt")
+        if not os.path.exists(DETECT_BIN):
+            self.detect_note = ("not built: make -C iter2-autonomy/goto host-detect-phone (brew install onnxruntime "
+                                "jpeg-turbo, or ORT_PHONE=<ORT SDK dir>); GOTO will say 'no camera frames'")
+        elif not os.path.exists(model) or not os.path.exists(labels):
+            self.detect_note = f"no {os.path.relpath(model, REPO)} + labels.txt (iter2-autonomy/goto/get_model.sh)"
+        else:
+            self.detect_note = ""
+            self.spawn("detect", [DETECT_BIN, "--camera", f"broker:{P['broker']}", "--model", model, "--labels", labels,
+                                  "--rotate", str(self.a.detect_rotate), "--threads", "1", "--fps", "4",
+                                  "--udp", f"127.0.0.1:{P['det']}", "--quiet"])
+        self.rows.append(("rgb_broker", f"TCP {P['broker']}", f"<- phone camera TCP {P['phone_rgb']}"))
+        self.rows.append(("detect", "-", self.detect_note or f"YOLO-World (ORT) on the phone camera, --rotate "
+                          f"{self.a.detect_rotate}, 4 fps -> goto UDP {P['det']}"))
+
+    def start_rest(self, truth_copy: int):
+        P = self.ports
         # 5. voice (optional: needs the host build + model; building fetches whisper.cpp)
         model = self.a.voice_model or os.environ.get("TARS_VOICE_MODEL") or VOICE_MODEL
         if self.a.no_voice:
@@ -278,16 +363,19 @@ class Stack:
         if not self.a.no_bench:
             env = dict(os.environ, BENCH_WORLD_CTL=str(P["world_ctl"]), BENCH_WORLD_STATE=str(P["world_state"]),
                        BENCH_SUPERVISOR=str(self.ports["supervisor"]), BENCH_CAR_CTL=str(P["car_ctl"]),
-                       BENCH_CAR_TRUTH=str(truth_copy), BENCH_CAR_KIND=self.car_kind,
+                       # phone: no world sim to copy the car's truth; the car plugin subscribes on car_ctl instead
+                       BENCH_CAR_TRUTH="0" if self.phone else str(truth_copy), BENCH_CAR_KIND=self.car_kind,
                        TARS_BENCH_PHONE_ROOM_PORT=str(P["phone_room"]), TARS_BENCH_PHONE_SCENE_PORT=str(P["phone_scene"]),
                        TARS_KEYBOARD_AUTH=self.keyboard_auth)
             env["BENCH_SIM_SPEED"] = f"{self.speed:g}"
-            argv = [sys.executable, os.path.join(HERE, "bench.py"), "--port", str(P["bench"]), "--target", "sim",
+            argv = [sys.executable, os.path.join(HERE, "bench.py"), "--port", str(P["bench"]),
+                    "--target", "phone" if self.phone else "sim",
                     "--motor", f"127.0.0.1:{P['motor']}", "--goto", f"127.0.0.1:{P['goto']}",
                     "--voice", f"127.0.0.1:{P['voice']}"]
             self.spawn("bench", argv, env=env)
             self.must(wait_for(lambda: port_open(P["bench"]), 8), "bench didn't open its port", "bench")
-            self.rows.append(("bench", f"http://127.0.0.1:{P['bench']}/", "target sim"))
+            self.rows.append(("bench", f"http://127.0.0.1:{P['bench']}/", "target phone (live view of goto's map)"
+                              if self.phone else "target sim"))
             self.rows.append(("iPhone 3D map (bench)", f"HTTP {P['phone_room']}", f"room view; scene source TCP {P['phone_scene']}"))
 
     def goto_conf(self) -> str:
@@ -369,6 +457,8 @@ class Stack:
             return {"ok": False, "error": "speed: a number"}
         if not 0.25 <= v <= 16:
             return {"ok": False, "error": "speed 0.25..16"}
+        if self.phone and v != 1.0:
+            return {"ok": False, "error": "phone in the loop runs in real time (the phone can't speed up)"}
         if self.car_kind != "virtual" and v != 1.0:
             return {"ok": False, "error": "speed needs the virtual car (stub car moves are timed by tars_motor)"}
         P = self.ports
@@ -453,6 +543,10 @@ class Stack:
         w2 = max(len(r[1]) for r in self.rows)
         car = "STUB CAR: tars_motor -b stub, no firmware, no physics" if self.car_kind == "stub" else "virtual SM11 (real firmware)"
         out = [f"TARS sim stack (SIM, not the robot), car = {car}", ""]
+        if self.phone:
+            out = [f"TARS phone in the loop: REAL iPhone ({self.phone}) -> Mac goto/detect/lidar_guard, car = {car}", "",
+                   "  On the phone: MotionUSB open, Start sensors, keep it in front. Carry it at car height (~14 cm)",
+                   "  along the route goto draws; the virtual car only pretends to move.", ""]
         out += [f"  {a:<{w}}  {b:<{w2}}  {c}" for a, b, c in self.rows]
         if self.speed != 1.0:
             out += ["", f"  SIM SPEED {self.speed:g}x: the car, world and goto run {self.speed:g} x the wall clock (demo)"]
@@ -486,9 +580,21 @@ def main(argv=None) -> int:
                     help="sim only: append a goto.conf line to the run dir's copy (repeatable; later keys win), "
                          "e.g. nav_foot_cells=2. The robot's goto.conf is untouched")
     ap.add_argument("--ports-file", default="", help="write ports + pids as JSON here once everything is up")
+    ap.add_argument("--phone", default="", metavar="usb",
+                    help="phone in the loop: the real iPhone on this Mac's USB replaces the world sim's pose, LiDAR "
+                         "guard and camera (tcp:HOST = a fake phone, for tests)")
+    ap.add_argument("--phone-serial", default="", help="--phone usb: which phone (default: the first usbmuxd lists)")
+    ap.add_argument("--phone-ports", default="", help="--phone tcp:HOST: the fake phone's LDR,RGB ports")
+    ap.add_argument("--detect-model", default="", help=f"--phone: YOLO-World ONNX (default {os.path.relpath(DETECT_MODEL, REPO)})")
+    ap.add_argument("--detect-rotate", type=int, default=270, choices=[0, 90, 180, 270],
+                    help="--phone: turn the phone's sensor-orientation frames upright (the Pi's TARS_DETECT_ROTATE)")
     a = ap.parse_args(argv)
     if not 0.25 <= a.speed <= 16:
         ap.error("--speed: 0.25..16")
+    if a.phone and not (a.phone == "usb" or a.phone.startswith("tcp:")):
+        ap.error("--phone usb (or tcp:HOST for a fake phone)")
+    if a.phone and a.speed != 1.0:
+        ap.error("--phone runs in real time: the phone can't run faster (drop --speed)")
     for kv in a.goto_conf:
         k, _, v = kv.partition("=")
         if not k.strip() or not v.strip() or not k.strip().replace("_", "").replace(".", "").isalnum():

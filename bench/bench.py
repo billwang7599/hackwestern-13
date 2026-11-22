@@ -196,13 +196,14 @@ def make_handler(bench: Bench):
                 pdir = os.path.join(WEB, "panels")
                 names = sorted(f for f in os.listdir(pdir) if f.endswith(".js")) if os.path.isdir(pdir) else []
                 hidden = []
-                if bench.target["name"] != "sim" and not getattr(bench.args, "all_panels", False):
+                # phone (bench/run_sim.py --phone): the car is still the virtual one, so its panels stay
+                if bench.target["name"] not in ("sim", "phone") and not getattr(bench.args, "all_panels", False):
                     live = bench_live(bench)
                     drop = {n for n in SIM_ONLY_PANELS if not (live and n in LIVE_PANELS)}
                     hidden = [n for n in names if n in drop]
                     names = [n for n in names if n not in drop]
                 return self._send(200, {"panels": names, "hidden": hidden, "plugins": sorted(bench.plugins),
-                                        "target": bench.target, "real": bench.target["name"] != "sim",
+                                        "target": bench.target, "real": bench.target["name"] in REAL_TARGETS,
                                         "live": bench_live(bench)})
             fn = bench._routes.get((method, path))
             if fn:
@@ -262,8 +263,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--port", type=int, default=8770, help="browser port (default 8770)")
     ap.add_argument("--bind", default="127.0.0.1", help="listen address (default localhost only; "
                     "anything else needs --token)")
-    ap.add_argument("--target", choices=["sim", "usb", "pi", "robot"], default="sim",
-                    help="robot = this bench runs ON the Pi, next to the real stack")
+    ap.add_argument("--target", choices=["sim", "usb", "pi", "robot", "phone"], default="sim",
+                    help="robot = this bench runs ON the Pi, next to the real stack; phone = the virtual car with the "
+                         "REAL iPhone feeding goto (bench/run_sim.py --phone usb)")
     ap.add_argument("--token", default=os.environ.get("BENCH_TOKEN", ""),
                     help="required to open the page when --bind is not localhost (env BENCH_TOKEN)")
     ap.add_argument("--motor", default="127.0.0.1:5555", help="tars_motor host:port (sim/usb)")
