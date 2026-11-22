@@ -255,6 +255,8 @@ def main():
                 sample, age = feed.sample, max(0, time.monotonic() - feed.received)
                 count, gaps, status = feed.count, feed.gaps, feed.status
             ticket = video.take()
+            if ticket:
+                link.camera = (ticket['jpeg'], time.monotonic())   # web telemetry /camera.mjpg
             if ticket and not enabled:
                 ticket['done'].set()
                 ticket = None

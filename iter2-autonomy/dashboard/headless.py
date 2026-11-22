@@ -143,8 +143,9 @@ def main():
                     motion_hz = camera_fps = 0.0
             ticket = video.take()
             if ticket:
-                # Headless mode validates framing/envelope, then discards the JPEG.
-                # There is no decode or display workload and no video recording.
+                # Headless mode validates framing/envelope and keeps only the latest JPEG for the
+                # web telemetry page (room_view.py /camera.mjpg). No decode, no recording.
+                link.camera = (ticket['jpeg'], time.monotonic())
                 ticket['ok'] = enabled
                 ticket['done'].set()
             with feed.lock:

@@ -5,200 +5,206 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TARS Telemetry</title>
 <style>
-:root{--bg:#0f1619;--card:#172126;--line:#2b3a40;--text:#dce7e9;--muted:#93a6ab;--ok:#76e4bb;--warn:#edbf78;--bad:#ff7a6e;--accent:#7cb8ff}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.35 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
-header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:baseline;padding:12px 16px;border-bottom:1px solid var(--line)}
-h1{font-size:18px;margin:0}
-h2{font-size:13px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
-a{color:var(--accent)}
-main{display:grid;gap:12px;padding:12px 16px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
-section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0}
-.big{font-size:22px;font-weight:700}
-.row{display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px solid #ffffff0a}
-.row:last-child{border-bottom:0}
-.row span:first-child{color:var(--muted)}
-.row span:last-child{text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.muted{color:var(--muted)}
-.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:700;background:#ffffff12}
-.bars{display:grid;grid-template-columns:auto 1fr 64px;gap:4px 8px;align-items:center;font-variant-numeric:tabular-nums}
-.bar{height:8px;background:#ffffff10;border-radius:4px;position:relative;overflow:hidden}
-.bar i{position:absolute;top:0;bottom:0;background:var(--accent)}
-.keys{font:600 20px ui-monospace,Menlo,monospace;color:var(--accent);min-height:28px}
-canvas{width:100%;height:260px;background:#0b1114;border-radius:8px;display:block}
-#banner{width:100%;font-size:13px}
+:root{--bg:#0d1417;--panel:#141e22;--line:#24323a;--text:#dde8ea;--mut:#8ea2a8;--ok:#6fe0b2;--warn:#f0c070;--bad:#ff7468;--acc:#78b4ff}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:var(--bg);color:var(--text);font:12.5px/1.3 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+body{display:grid;grid-template-rows:auto 1fr;height:100vh;overflow:hidden}
+header{display:flex;gap:6px;align-items:center;padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden}
+header b{font-size:14px;margin-right:4px}
+.pill{padding:1px 7px;border-radius:9px;font-weight:700;font-size:11.5px;background:#ffffff10}
+#banner{color:var(--warn);overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;margin-left:4px}
+header a{color:var(--acc);text-decoration:none}
+main{display:grid;gap:6px;padding:6px;min-height:0;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);grid-template-rows:minmax(0,1.5fr) minmax(0,1fr)}
+.view{position:relative;background:#080d0f;border:1px solid var(--line);border-radius:6px;overflow:hidden;min-height:0}
+.view canvas{position:absolute;inset:0;width:100%;height:100%}
+.tag{position:absolute;left:6px;top:5px;font-size:11px;color:var(--mut);background:#080d0fcc;padding:1px 5px;border-radius:4px;pointer-events:none}
+.tools{position:absolute;right:5px;top:4px;display:flex;gap:4px}
+button{font:inherit;font-size:11px;color:var(--text);background:#ffffff14;border:1px solid var(--line);border-radius:4px;padding:1px 6px;cursor:pointer}
+#cam{grid-row:1/3}
+#side{grid-column:2;grid-row:1/3;display:grid;grid-template-rows:minmax(0,1.1fr) minmax(0,1fr);gap:6px;min-height:0}
+#data{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;overflow:auto;min-height:0;align-content:start}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 7px;min-width:0}
+h2{font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.07em;margin:1px 0 2px}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 8px}
+.kv span:nth-child(odd){color:var(--mut)}
+.kv span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.keys{font:700 17px ui-monospace,Menlo,monospace;color:var(--acc)}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.mut{color:var(--mut)}
+.wide{grid-column:1/-1}
+.bars{display:grid;grid-template-columns:auto 1fr 52px;gap:1px 6px;align-items:center;font-variant-numeric:tabular-nums}
+.bar{height:6px;background:#ffffff10;border-radius:3px;position:relative;overflow:hidden}
+.bar i{position:absolute;top:0;bottom:0;background:var(--acc)}
+@media (max-width:900px){body{height:auto;overflow:auto}main{grid-template-columns:1fr;grid-template-rows:none}#cam{grid-row:auto;height:60vh}#side{grid-column:auto;grid-row:auto;grid-template-rows:none}#map{height:45vh}#data{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header>
-  <h1>TARS telemetry</h1>
-  <span id="link" class="pill">connecting…</span>
-  <span id="guard" class="pill">guard</span>
-  <span class="muted">Read-only. Everything here is what the Pi publishes to the phone.</span>
-  <a href="/">Room map →</a>
-  <div id="banner" class="warn"></div>
+  <b>TARS</b>
+  <span id="p-phone" class="pill">phone</span>
+  <span id="p-guard" class="pill">guard</span>
+  <span id="p-motor" class="pill">motors</span>
+  <span id="p-goto" class="pill">goto</span>
+  <span id="banner"></span>
+  <a href="/">3D room map →</a>
 </header>
 <main>
-  <section><h2>Safety guard</h2><div id="safety"></div></section>
-  <section><h2>Motors</h2><div id="motor"></div></section>
-  <section><h2>Keyboard (Shift+WASD)</h2><div class="keys" id="keys">—</div><div id="keyboard"></div></section>
-  <section><h2>Voice</h2><div id="voice"></div></section>
-  <section><h2>Phone sensors</h2><div id="sensors"></div></section>
-  <section><h2>Motion</h2><div class="bars" id="motion"></div></section>
-  <section><h2>Edge AI</h2><div id="ai"></div></section>
-  <section><h2>Mapping</h2><div id="mapping"></div></section>
-  <section style="grid-column:1/-1"><h2>Floor map (LiDAR)</h2><canvas id="floor"></canvas>
-    <div class="muted" style="margin-top:6px">teal = free floor · orange = obstacle · white arrow = phone pose</div></section>
+  <div class="view" id="cam"><canvas id="camc"></canvas>
+    <span class="tag" id="camtag">phone camera</span>
+    <div class="tools"><button id="rot">rotate</button><button id="boxes">boxes on</button></div></div>
+  <div id="side">
+    <div class="view" id="map"><canvas id="mapc"></canvas><span class="tag" id="maptag">LiDAR floor map</span></div>
+    <div id="data">
+      <section><h2>Guard</h2><div class="kv" id="safety"></div></section>
+      <section><h2>Motors</h2><div class="kv" id="motor"></div></section>
+      <section><h2>Keyboard · Shift+WASD</h2><div class="keys" id="keys">—</div><div class="kv" id="keyboard"></div></section>
+      <section><h2>Go-to · detector</h2><div class="kv" id="goto"></div></section>
+      <section class="wide"><h2>Voice</h2><div class="kv" id="voice"></div></section>
+      <section><h2>Phone sensors</h2><div class="kv" id="sensors"></div></section>
+      <section><h2>Mapping</h2><div class="kv" id="mapping"></div></section>
+      <section class="wide"><h2>Motion</h2><div class="bars" id="motion"></div></section>
+    </div>
+  </div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
 const esc = v => String(v).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const num = (v, d = 1, unit = '') => (typeof v === 'number' && isFinite(v)) ? v.toFixed(d) + unit : '—';
-const yes = (v, good = 'yes', bad = 'no') => v === true ? `<span class="ok">${good}</span>` : v === false ? `<span class="bad">${bad}</span>` : '—';
-function rows(el, list) {
-  $(el).innerHTML = list.filter(Boolean).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><span>${v ?? '—'}</span></div>`).join('');
-}
-function txt(v, fallback = '—') { return v === undefined || v === null || v === '' ? fallback : esc(v); }
+const num = (v, d = 1, u = '') => typeof v === 'number' && isFinite(v) ? v.toFixed(d) + u : (typeof v === 'string' && v !== '' && !isNaN(+v) ? (+v).toFixed(d) + u : '—');
+const t = (v, f = '—') => v === undefined || v === null || v === '' || v === '-' ? f : esc(v);
+const c = (cls, v) => `<span class="${cls}">${v}</span>`;
+const yes = (v, a = 'yes', b = 'no') => v === true ? c('ok', a) : v === false ? c('bad', b) : '—';
+function kv(id, list) { $(id).innerHTML = list.filter(Boolean).map(([k, v]) => `<span>${esc(k)}</span><span title="${esc(String(v ?? '').replace(/<[^>]+>/g, ''))}">${v ?? '—'}</span>`).join(''); }
+function pill(id, text, cls) { $(id).textContent = text; $(id).className = 'pill ' + cls; }
+const store = (k, v) => { try { v === undefined ? (v = localStorage.getItem(k)) : localStorage.setItem(k, v); } catch (e) {} return v; };
+
+let S = {}, room = null, rot = +(store('tars.rot') ?? 270), showBoxes = store('tars.boxes') !== '0';
+$('rot').onclick = () => { rot = (rot + 90) % 360; store('tars.rot', rot); };
+$('boxes').onclick = () => { showBoxes = !showBoxes; store('tars.boxes', showBoxes ? '1' : '0'); };
 
 function render(s) {
-  const fresh = s.publisher_live;
-  $('link').textContent = fresh ? (s.streaming ? 'RECEIVING' : 'PAUSED') : 'STALE';
-  $('link').className = 'pill ' + (fresh ? (s.streaming ? 'ok' : 'warn') : 'bad');
-  const safety = s.safety || {}, motor = s.motor || {}, kb = s.keyboard || {}, voice = s.voice || {};
-  const verdict = safety.verdict || 'STALE';
-  $('guard').textContent = 'Guard ' + verdict;
-  $('guard').className = 'pill ' + (verdict === 'CLEAR' ? 'ok' : verdict === 'CAUTION' ? 'warn' : 'bad');
-  const problems = [];
-  if (!s.phone_connected) problems.push('Phone app not connected to the Pi (open MotionUSB, keep it in front, press Start).');
-  if (fresh && !s.motion_live) problems.push('No phone motion data.');
-  if (safety.permit !== true) problems.push('Guard is not permitting motion: ' + (safety.reason || verdict) + '. Shift+WASD still overrides it.');
-  $('banner').textContent = problems.join(' ');
+  S = s;
+  const sf = s.safety || {}, m = s.motor || {}, kb = s.keyboard || {}, v = s.voice || {}, g = s.goto || {}, gs = g.status || {}, nav = g.nav || {};
+  const verdict = sf.verdict || 'STALE', vcls = verdict === 'CLEAR' ? 'ok' : verdict === 'CAUTION' ? 'warn' : 'bad';
+  pill('p-phone', s.phone_connected ? (s.motion_live ? 'phone live' : 'phone idle') : 'phone off', s.phone_connected && s.motion_live ? 'ok' : 'bad');
+  pill('p-guard', 'guard ' + verdict, vcls);
+  pill('p-motor', m.inhibited ? 'motors stop: ' + (m.reason || '?') : 'motors open', m.inhibited ? 'warn' : 'ok');
+  pill('p-goto', 'goto ' + (gs.state || (g.live ? '?' : 'off')) + (gs.target && gs.target !== '-' ? ' → ' + gs.target : ''), gs.state && gs.state !== 'idle' ? 'warn' : g.live ? 'ok' : 'bad');
+  const issues = [];
+  if (!s.publisher_live) issues.push('Pi status is stale');
+  else if (!s.phone_connected) issues.push('Phone app not linked: open MotionUSB in the foreground and press Start');
+  if (sf.reason === 'set_floor') issues.push('calibrate the floor in the phone app');
+  $('banner').textContent = issues.join(' · ');
 
-  rows('safety', [
-    ['Verdict', `<b class="${verdict === 'CLEAR' ? 'ok' : verdict === 'CAUTION' ? 'warn' : 'bad'}">${txt(verdict)}</b>`],
-    ['Motion permitted', yes(safety.permit)],
-    ['Reason', txt(safety.reason)],
-    ['LiDAR verdict', txt(safety.lidar_verdict)],
-    ['Nearest obstacle', num(safety.nearest_obstacle_m ?? safety.nearest_m, 2, ' m')],
-    ['Inferred nearest', num(safety.inferred_nearest_m, 2, ' m')],
-    ['Stop source', txt(safety.stop_source)],
-    ['Guard loop', num(safety.tick_hz, 0, ' Hz') + ' · late max ' + num(safety.max_lateness_ms, 1, ' ms')],
-    ['Status age', num(safety.status_age_ms, 0, ' ms')],
+  kv('safety', [
+    ['Verdict', c(vcls, t(verdict))], ['Permit', yes(sf.permit)], ['Reason', t(sf.reason)],
+    ['LiDAR', t(sf.lidar_verdict)], ['Nearest', num(sf.nearest_obstacle_m ?? sf.nearest_m, 2, ' m')],
+    ['Inferred', num(sf.inferred_nearest_m, 2, ' m')], ['Loop', num(sf.tick_hz, 0, ' Hz')], ['Age', num(sf.status_age_ms, 0, ' ms')],
   ]);
-  const out = motor.output || [], req = motor.requested || [];
-  rows('motor', [
-    ['Driver', motor.backend === 'gpio' ? 'Pi GPIO → L298N' : txt(motor.backend)],
-    ['Connected', yes(motor.connected)],
-    ['State', motor.inhibited ? `<span class="warn">STOP / inhibited</span>` : `<span class="ok">gate open</span>`],
-    ['Reason', txt(motor.reason)],
-    ['Output L / R', num(out[0], 2) + ' / ' + num(out[1], 2)],
-    ['Requested L / R', num(req[0], 2) + ' / ' + num(req[1], 2)],
-    ['Exact move', txt(motor.move) + (motor.move_kind && motor.move_kind !== '-' ? ' ' + esc(motor.move_kind) + ' ' + num(motor.move_req, 0) : '') + (motor.move_why && motor.move_why !== '-' ? ' (' + esc(motor.move_why) + ')' : '')],
-    ['Guard epoch', txt(motor.guard_epoch)],
-    motor.command_error ? ['Last error', `<span class="bad">${txt(motor.command_error)}</span>`] : null,
-    motor.nav_event ? ['Navigation', txt(motor.nav_event)] : null,
+  const o = m.output || [], r = m.requested || [];
+  kv('motor', [
+    ['Driver', m.backend === 'gpio' ? 'Pi GPIO → L298N' : t(m.backend)], ['Linked', yes(m.connected)],
+    ['State', m.inhibited ? c('warn', 'stopped') : c('ok', 'open')], ['Reason', t(m.reason)],
+    ['Out L/R', num(o[0], 2) + ' / ' + num(o[1], 2)], ['Req L/R', num(r[0], 2) + ' / ' + num(r[1], 2)],
+    ['Move', t(m.move) + (m.move_kind && m.move_kind !== '-' ? ' ' + esc(m.move_kind) + ' ' + num(m.move_req, 0) : '')],
+    m.command_error ? ['Error', c('bad', t(m.command_error))] : null,
   ]);
   const keys = kb.keys || [];
-  $('keys').textContent = keys.length ? keys.join(' + ') : (kb.connected ? 'no keys held' : 'keyboard not seen');
-  rows('keyboard', [
-    ['Receiver', yes(kb.connected, 'connected', 'not seen')],
-    ['Driving', txt(kb.active, 'no')],
-    ['Shift override', yes(kb.obstacle_override, 'ON (guard bypassed)', 'off')],
-    ['Control owner', txt(kb.owner)],
-    ['Last keys', txt((kb.last_keys || []).join(' + '))],
-    ['Events', txt(kb.event_count, 0) + (kb.last_event_age_ms != null ? ' · last ' + num(kb.last_event_age_ms / 1000, 1, ' s ago') : '')],
-    ['Max hold', num(kb.max_hold_s, 0, ' s')],
-    kb.error ? ['Note', `<span class="warn">${txt(kb.error)}</span>`] : null,
+  $('keys').textContent = keys.length ? keys.join('+') : kb.connected ? 'no keys' : 'no keyboard';
+  kv('keyboard', [
+    ['Receiver', yes(kb.connected, 'connected', 'not seen')], ['Driving', t(kb.active, 'no')],
+    ['Override', kb.obstacle_override ? c('warn', 'Shift: guard bypassed') : 'off'], ['Owner', t(kb.owner)],
+    ['Last', t((kb.last_keys || []).join('+'))], ['Events', t(kb.event_count, '0')],
+    kb.error ? ['Note', c('warn', t(kb.error))] : null,
   ]);
-  rows('voice', [
-    ['Last command', voice.text ? `“${txt(voice.text)}”` : 'none yet'],
-    ['Pi answer', voice.state === 'error' ? `<span class="warn">${txt(voice.reply)}</span>` : txt(voice.reply, voice.text ? 'waiting…' : '—')],
-    ['When', voice.at ? new Date(voice.at * 1000).toLocaleTimeString() : '—'],
+  const dets = (g.dets && g.dets.dets) || [];
+  kv('goto', [
+    ['State', t(gs.state)], ['Target', t(gs.target)], ['Result', t(gs.result)],
+    ['Seen', t(gs.seen, '0') + ' · fps ' + num(gs.fps, 1)], ['Path', t(gs.path)],
+    ['Pose', t(nav.pose)], ['Map cells', t(nav.free, '0') + ' free · ' + t(nav.occ, '0') + ' occ'],
+    ['LiDAR pkts', t(nav.packets, '0') + ' · age ' + num(nav.feed_age, 1, ' s')],
+    ['Detections', dets.length ? dets.map(d => `${esc(d.label)} ${Math.round(d.conf * 100)}%`).join(', ') : c('mut', 'none')],
   ]);
-  rows('sensors', [
-    ['Phone link', yes(s.phone_connected, 'connected', 'down')],
-    ['Streams', s.streaming ? '<span class="ok">on</span>' : '<span class="warn">paused</span>'],
-    ['Motion', (s.motion_live ? '<span class="ok">live</span> ' : '<span class="bad">stale</span> ') + num(s.motion_hz, 1, ' Hz')],
-    ['Camera', (s.camera_live ? '<span class="ok">live</span> ' : '<span class="bad">stale</span> ') + num(s.camera_fps, 1, ' fps')],
-    ['Samples / gaps', txt(s.samples, 0) + ' / ' + txt(s.gaps, 0)],
-    ['Frames', txt(s.frames, 0)],
-    ['Pi receipt age', num(s.receipt_age_ms, 0, ' ms')],
-    ['Pi screen', txt(s.mode)],
+  kv('voice', [
+    ['Last', v.text ? '“' + t(v.text) + '”' + (v.at ? ' · ' + new Date(v.at * 1000).toLocaleTimeString() : '') : c('mut', 'nothing yet')],
+    ['Pi heard', v.state === 'error' ? c('warn', t(v.reply)) : t(v.reply, v.text ? 'waiting…' : '—')],
   ]);
-  const bar = (label, v, scale, unit) => {
-    const ok = typeof v === 'number' && isFinite(v), f = ok ? Math.max(-1, Math.min(1, v / scale)) : 0;
-    const left = f < 0 ? 50 + f * 50 : 50, width = Math.abs(f) * 50;
-    return `<span class="muted">${label}</span><div class="bar"><i style="left:${left}%;width:${width}%"></i></div><span>${num(v, 2)} ${unit}</span>`;
+  kv('sensors', [
+    ['Streams', s.streaming ? c('ok', 'on') : c('warn', 'paused')],
+    ['Motion', (s.motion_live ? c('ok', 'live ') : c('bad', 'stale ')) + num(s.motion_hz, 0, ' Hz')],
+    ['Camera', (s.camera_live ? c('ok', 'live ') : c('bad', 'stale ')) + num(s.camera_fps, 1, ' fps')],
+    ['Frame age', num(s.camera_frame_age_ms, 0, ' ms')], ['Samples', t(s.samples, '0') + ' · gaps ' + t(s.gaps, '0')],
+    ['Receipt', num(s.receipt_age_ms, 0, ' ms')], ['Edge AI', (s.ai || {}).live ? c('ok', 'live') : c('mut', 'off')],
+  ]);
+  const bar = (label, x, scale, unit) => {
+    const ok = typeof x === 'number' && isFinite(x), f = ok ? Math.max(-1, Math.min(1, x / scale)) : 0;
+    return `<span class="mut">${label}</span><div class="bar"><i style="left:${f < 0 ? 50 + f * 50 : 50}%;width:${Math.abs(f) * 50}%"></i></div><span>${num(x, 2)}</span>`;
   };
-  const a = s.accel_m_s2 || [], g = s.gyro_rad_s || [];
-  $('motion').innerHTML = ['x', 'y', 'z'].map((k, i) => bar('accel ' + k, a[i], 12, 'm/s²')).join('') +
-                          ['x', 'y', 'z'].map((k, i) => bar('gyro ' + k, g[i], 3, 'rad/s')).join('');
-  const ai = s.ai || {}, depth = s.depth || {};
-  rows('ai', [
-    ['Object detector', ai.live ? '<span class="ok">live</span>' : '<span class="muted">idle</span>'],
-    ['Objects', txt(ai.objects ?? (ai.detections || []).length, '0')],
-    ['Inference', num(ai.ai_ms ?? ai.ms, 0, ' ms')],
-    ['Depth (MiDaS)', depth.live ? '<span class="ok">live</span>' : '<span class="muted">off</span>'],
-    ai.ai_error || ai.error ? ['Error', `<span class="warn">${txt(ai.ai_error || ai.error)}</span>`] : null,
-  ]);
+  const a = s.accel_m_s2 || [], gy = s.gyro_rad_s || [];
+  $('motion').innerHTML = ['x', 'y', 'z'].map((k, i) => bar('acc ' + k + ' m/s²', a[i], 12)).join('') + ['x', 'y', 'z'].map((k, i) => bar('gyro ' + k + ' rad/s', gy[i], 3)).join('');
 }
 
-let room = null;
-function renderMap() {
-  const c = $('floor'), w = c.clientWidth, h = c.clientHeight, dpr = devicePixelRatio || 1;
-  c.width = w * dpr; c.height = h * dpr;
-  const g = c.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+function fit(canvas) {
+  const r = canvas.getBoundingClientRect(), d = devicePixelRatio || 1;
+  if (canvas.width !== Math.round(r.width * d) || canvas.height !== Math.round(r.height * d)) { canvas.width = Math.round(r.width * d); canvas.height = Math.round(r.height * d); }
+  const g = canvas.getContext('2d'); g.setTransform(d, 0, 0, d, 0, 0); return [g, r.width, r.height];
+}
+
+const img = new Image(); let imgOk = false;
+img.onload = () => { imgOk = true; }; img.onerror = () => { imgOk = false; setTimeout(() => img.src = '/camera.mjpg?' + Date.now(), 1500); };
+img.src = '/camera.mjpg';
+function drawCam() {
+  const [g, w, h] = fit($('camc')); g.clearRect(0, 0, w, h);
+  const fresh = typeof S.camera_frame_age_ms === 'number' && S.camera_frame_age_ms < 2000;
+  if (!imgOk || !img.naturalWidth || !fresh) {
+    g.fillStyle = '#8ea2a8'; g.font = '14px system-ui'; g.textAlign = 'center';
+    g.fillText('No phone camera frames: MotionUSB in the foreground, Start pressed', w / 2, h / 2);
+    $('camtag').textContent = 'phone camera · waiting'; return;
+  }
+  const side = rot % 180 !== 0, iw = side ? img.naturalHeight : img.naturalWidth, ih = side ? img.naturalWidth : img.naturalHeight;
+  const sc = Math.min(w / iw, h / ih), dw = iw * sc, dh = ih * sc, x0 = (w - dw) / 2, y0 = (h - dh) / 2;
+  g.save(); g.translate(w / 2, h / 2); g.rotate(rot * Math.PI / 180);
+  g.drawImage(img, -img.naturalWidth * sc / 2, -img.naturalHeight * sc / 2, img.naturalWidth * sc, img.naturalHeight * sc); g.restore();
+  const d = (S.goto || {}).dets;
+  if (showBoxes && d && d.w && d.h && (S.goto.dets_age_s ?? 99) < 2 && Math.abs(d.w / d.h - iw / ih) < 0.05) {
+    g.lineWidth = 2; g.font = '600 12px system-ui'; g.textAlign = 'left';
+    for (const b of d.dets || []) {
+      const [x1, y1, x2, y2] = b.box, X = x0 + x1 / d.w * dw, Y = y0 + y1 / d.h * dh;
+      g.strokeStyle = '#78b4ff'; g.strokeRect(X, Y, (x2 - x1) / d.w * dw, (y2 - y1) / d.h * dh);
+      const label = `${b.label} ${Math.round(b.conf * 100)}%`; g.fillStyle = '#78b4ff'; g.fillRect(X, Y - 15, g.measureText(label).width + 8, 15);
+      g.fillStyle = '#081018'; g.fillText(label, X + 4, Y - 4);
+    }
+  }
+  $('camtag').textContent = `phone camera · ${num(S.camera_fps, 1, ' fps')} · ${S.camera_frame_age_ms} ms · rot ${rot}°`;
+}
+
+function drawMap() {
+  const [g, w, h] = fit($('mapc')); g.clearRect(0, 0, w, h);
   if (!room || !room.grid || !room.origin || !room.size) {
-    g.fillStyle = '#93a6ab'; g.font = '13px system-ui'; g.fillText('No LiDAR map yet: the phone needs to be streaming.', 14, 24);
-    rows('mapping', [['Map', 'waiting for the phone'], ['Publisher', yes(room && room.publisher_live, 'live', 'stale')]]);
-    return;
+    g.fillStyle = '#8ea2a8'; g.font = '13px system-ui'; g.textAlign = 'center'; g.fillText('No LiDAR map yet', w / 2, h / 2);
+    kv('mapping', [['Map', 'waiting for the phone']]); return;
   }
-  const n = room.size, res = room.resolution, org = room.origin, rowsN = Math.ceil(room.grid.length / n);
-  const sc = Math.min(w / (n * res), h / (rowsN * res));
-  const X = x => (x - org[0]) * sc + (w - n * res * sc) / 2, Y = z => (z - org[1]) * sc + (h - rowsN * res * sc) / 2;
-  const colors = ['', '#33675e', '#e6a760', '#9d78c1'];
-  for (let i = 0; i < room.grid.length; i++) {
-    const col = colors[Number(room.grid[i])];
-    if (col) { g.fillStyle = col; g.fillRect(X(org[0] + (i % n) * res), Y(org[1] + Math.floor(i / n) * res), res * sc + .4, res * sc + .4); }
-  }
-  for (const o of room.objects || []) {
-    if (!o.position) continue;
-    g.fillStyle = '#7cb8ff'; g.beginPath(); g.arc(X(o.position[0]), Y(o.position[2]), 5, 0, 7); g.fill();
-    g.fillText(o.label || o.name || '', X(o.position[0]) + 7, Y(o.position[2]) + 4);
-  }
-  if (room.pose) {
-    const p = room.pose; g.save(); g.translate(X(p[0]), Y(p[2])); g.rotate(-p[3]);
-    g.fillStyle = '#fff'; g.beginPath(); g.moveTo(0, 9); g.lineTo(-6, -5); g.lineTo(6, -5); g.closePath(); g.fill(); g.restore();
-  }
-  rows('mapping', [
-    ['Tracking', txt(room.tracking, room.tracking_live ? 'live' : 'waiting')],
-    ['Floor', room.floor_ready ? '<span class="ok">calibrated</span>' : '<span class="warn">needed</span>'],
-    ['Scene frames', txt(room.frames, 0)],
-    ['Stored 3D cells', txt(room.voxels, 0)],
-    ['Remembered targets', txt((room.objects || []).length, 0)],
-    ['Scan coverage', num(room.scan_degrees, 0, '°')],
-    ['Map source', txt(room.grid_source)],
-    ['Planner', txt(room.plan_status)],
+  const n = room.size, res = room.resolution, org = room.origin, rows = Math.ceil(room.grid.length / n);
+  const sc = Math.min(w / (n * res), h / (rows * res)), ox = (w - n * res * sc) / 2, oy = (h - rows * res * sc) / 2;
+  const X = x => (x - org[0]) * sc + ox, Y = z => (z - org[1]) * sc + oy, col = ['', '#2f6159', '#e6a760', '#9d78c1'];
+  for (let i = 0; i < room.grid.length; i++) { const k = col[+room.grid[i]]; if (k) { g.fillStyle = k; g.fillRect(X(org[0] + (i % n) * res), Y(org[1] + Math.floor(i / n) * res), res * sc + .5, res * sc + .5); } }
+  if (room.path && room.path.length) { g.strokeStyle = '#78b4ff'; g.lineWidth = 2; g.beginPath(); room.path.forEach((p, i) => { const px = X(p[0]), py = Y(p[p.length - 1]); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke(); }
+  g.font = '11px system-ui'; g.textAlign = 'left';
+  for (const o of room.objects || []) { if (!o.position) continue; g.fillStyle = '#78b4ff'; g.beginPath(); g.arc(X(o.position[0]), Y(o.position[2]), 4, 0, 7); g.fill(); g.fillText(o.label || o.name || '', X(o.position[0]) + 6, Y(o.position[2]) + 4); }
+  if (room.pose) { const p = room.pose; g.save(); g.translate(X(p[0]), Y(p[2])); g.rotate(-p[3]); g.fillStyle = '#fff'; g.beginPath(); g.moveTo(0, 9); g.lineTo(-6, -5); g.lineTo(6, -5); g.closePath(); g.fill(); g.restore(); }
+  kv('mapping', [
+    ['Tracking', t(room.tracking, room.tracking_live ? 'live' : 'waiting')], ['Floor', room.floor_ready ? c('ok', 'calibrated') : c('warn', 'needed')],
+    ['Frames', t(room.frames, '0')], ['3D cells', t(room.voxels, '0')], ['Targets', t((room.objects || []).length, '0')],
+    ['Scan', num(room.scan_degrees, 0, '°')], ['Source', t(room.grid_source)],
   ]);
+  $('maptag').textContent = 'LiDAR floor map · teal free · orange obstacle · ▲ phone';
 }
 
 async function poll() {
-  try {
-    const r = await fetch('/status.json', {cache: 'no-store'});
-    if (r.status === 401) { $('banner').textContent = 'Open this page with ?token=<token> once.'; return; }
-    render(await r.json());
-  } catch (e) {
-    $('link').textContent = 'PI UNREACHABLE'; $('link').className = 'pill bad';
-  }
+  try { const r = await fetch('/status.json', {cache: 'no-store'}); if (r.ok) render(await r.json()); }
+  catch (e) { pill('p-phone', 'Pi unreachable', 'bad'); }
 }
-async function pollMap() {
-  try { const r = await fetch('/map.json', {cache: 'no-store'}); if (r.ok) room = await r.json(); } catch (e) { }
-  renderMap();
-}
-poll(); pollMap();
-setInterval(poll, 250);
-setInterval(pollMap, 1000);
-addEventListener('resize', renderMap);
+async function pollMap() { try { const r = await fetch('/map.json', {cache: 'no-store'}); if (r.ok) room = await r.json(); } catch (e) {} drawMap(); }
+(function frame() { drawCam(); requestAnimationFrame(frame); })();
+poll(); pollMap(); setInterval(poll, 250); setInterval(pollMap, 1000); addEventListener('resize', drawMap);
 </script>
 </body>
 </html>
