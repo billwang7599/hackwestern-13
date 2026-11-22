@@ -14,15 +14,16 @@ header b{font-size:14px;margin-right:4px}
 .pill{padding:1px 7px;border-radius:9px;font-weight:700;font-size:11.5px;background:#ffffff10}
 #banner{color:var(--warn);overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;margin-left:4px}
 header a{color:var(--acc);text-decoration:none}
-main{display:grid;gap:6px;padding:6px;min-height:0;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);grid-template-rows:minmax(0,1.5fr) minmax(0,1fr)}
+main{display:grid;gap:6px;padding:6px;min-height:0;grid-template-columns:minmax(0,1.25fr) minmax(0,1.1fr) minmax(0,.95fr)}
 .view{position:relative;background:#080d0f;border:1px solid var(--line);border-radius:6px;overflow:hidden;min-height:0}
 .view canvas{position:absolute;inset:0;width:100%;height:100%}
 .tag{position:absolute;left:6px;top:5px;font-size:11px;color:var(--mut);background:#080d0fcc;padding:1px 5px;border-radius:4px;pointer-events:none}
 .tools{position:absolute;right:5px;top:4px;display:flex;gap:4px}
 button{font:inherit;font-size:11px;color:var(--text);background:#ffffff14;border:1px solid var(--line);border-radius:4px;padding:1px 6px;cursor:pointer}
-#cam{grid-row:1/3}
-#side{grid-column:2;grid-row:1/3;display:grid;grid-template-rows:minmax(0,1.1fr) minmax(0,1fr);gap:6px;min-height:0}
+#maps{display:grid;grid-template-rows:minmax(0,1.35fr) minmax(0,1fr);gap:6px;min-height:0}
 #data{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;overflow:auto;min-height:0;align-content:start}
+.view canvas{touch-action:none}
+button[aria-pressed="true"]{background:#78b4ff33;border-color:#78b4ff}
 section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 7px;min-width:0}
 h2{font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.07em;margin:1px 0 2px}
 .kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 8px}
@@ -34,7 +35,8 @@ h2{font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.07
 .bars{display:grid;grid-template-columns:auto 1fr 52px;gap:1px 6px;align-items:center;font-variant-numeric:tabular-nums}
 .bar{height:6px;background:#ffffff10;border-radius:3px;position:relative;overflow:hidden}
 .bar i{position:absolute;top:0;bottom:0;background:var(--acc)}
-@media (max-width:900px){body{height:auto;overflow:auto}main{grid-template-columns:1fr;grid-template-rows:none}#cam{grid-row:auto;height:60vh}#side{grid-column:auto;grid-row:auto;grid-template-rows:none}#map{height:45vh}#data{grid-template-columns:1fr}}
+@media (max-width:1100px){main{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}#data{grid-column:1/-1}body{height:auto;overflow:auto}#cam,#maps{height:70vh}}
+@media (max-width:700px){main{grid-template-columns:1fr}#data{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -45,15 +47,18 @@ h2{font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.07
   <span id="p-motor" class="pill">motors</span>
   <span id="p-goto" class="pill">goto</span>
   <span id="banner"></span>
-  <a href="/">3D room map →</a>
 </header>
 <main>
   <div class="view" id="cam"><canvas id="camc"></canvas>
     <span class="tag" id="camtag">phone camera</span>
     <div class="tools"><button id="rot">rotate</button><button id="boxes">boxes on</button></div></div>
-  <div id="side">
-    <div class="view" id="map"><canvas id="mapc"></canvas><span class="tag" id="maptag">LiDAR floor map</span></div>
-    <div id="data">
+  <div id="maps">
+    <div class="view" id="v3d"><canvas id="scene" title="Drag to orbit · pinch / wheel to zoom"></canvas><span class="tag" id="tag3d">3D LiDAR map</span>
+      <div class="tools"><button id="points" aria-pressed="true">points</button><button id="surface" aria-pressed="false">surfaces</button><button id="reset">recenter</button></div></div>
+    <div class="view" id="map"><canvas id="floor" title="Drag to pan · pinch / wheel to zoom"></canvas><span class="tag" id="maptag">floor map</span>
+      <div class="tools"><button id="floor-reset">recenter</button><button id="minus">−</button><button id="plus">+</button></div></div>
+  </div>
+  <div id="data">
       <section><h2>Guard</h2><div class="kv" id="safety"></div></section>
       <section><h2>Motors</h2><div class="kv" id="motor"></div></section>
       <section><h2>Keyboard · Shift+WASD</h2><div class="keys" id="keys">—</div><div class="kv" id="keyboard"></div></section>
@@ -62,9 +67,9 @@ h2{font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.07
       <section><h2>Phone sensors</h2><div class="kv" id="sensors"></div></section>
       <section><h2>Mapping</h2><div class="kv" id="mapping"></div></section>
       <section class="wide"><h2>Motion</h2><div class="bars" id="motion"></div></section>
-    </div>
   </div>
 </main>
+<script src="/room_controls.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = v => String(v).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -176,35 +181,115 @@ function drawCam() {
   $('camtag').textContent = `phone camera · ${num(S.camera_fps, 1, ' fps')} · ${S.camera_frame_age_ms} ms · rot ${rot}°`;
 }
 
-function drawMap() {
-  const [g, w, h] = fit($('mapc')); g.clearRect(0, 0, w, h);
+// 3D + floor map: the room view's renderers (pan / orbit / zoom via room_controls.js bindMap).
+let patches = [], mode = 'points', yaw = .58, pitch = .48, zoom = 9, span = 8, framed;
+const scenePan = {x: 0, y: 0}, floorPan = {x: 0, y: 0}, sceneC = $('scene'), floorC = $('floor');
+function unpack(str) {
+  if (!str) return [];
+  const bytes = Uint8Array.from(atob(str), ch => ch.charCodeAt(0)), view = new DataView(bytes.buffer), out = [];
+  for (let i = 0; i + 13 <= bytes.length; i += 13)
+    out.push({p: [0, 2, 4].map(k => view.getInt16(i + k, true) / 100), n: [6, 7, 8].map(k => view.getInt8(i + k) / 127), rgb: Array.from(bytes.slice(i + 9, i + 12)), r: bytes[i + 12] / 100});
+  return out;
+}
+function label(g, x, y, text) { g.font = '12px system-ui'; g.textAlign = 'left'; g.lineWidth = 3; g.strokeStyle = '#0d1417'; g.strokeText(text, x, y); g.fillStyle = '#eefaf3'; g.fillText(text, x, y); }
+function sceneCoords(v, p, cy, sy, cp, sp) {
+  const x = v[0] - p[0], y = v[1] - (room.floor_y ?? p[1]) - .6, z = v[2] - p[2], depth = x * sy + z * cy;
+  return [x * cy - z * sy, -y * cp + depth * sp, y * sp + depth * cp];
+}
+function draw3() {
+  const [g, w, h] = fit(sceneC);
+  if (!room || !room.pose) { g.fillStyle = '#8ea2a8'; g.font = '13px system-ui'; g.textAlign = 'center'; g.fillText('No 3D scan yet', w / 2, h / 2); return; }
+  const p = room.pose, scale = Math.min(w, h) / zoom, cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const project = v => { const [x, y, d] = sceneCoords(v, p, cy, sy, cp, sp); return [w / 2 + (scenePan.x + x) * scale, h / 2 + (scenePan.y + y) * scale, d]; };
+  const live = room.publisher_live && room.tracking_live;
+  const dots = (list, kind, r) => {
+    const memory = kind === 'memory', opacity = memory ? (live ? .8 : .4) : kind === 'inferred' ? (live ? .45 : .2) : (live ? 1 : .45);
+    (list || []).forEach((v, i) => {
+      const weight = room.distant_confidence?.[i];
+      g.globalAlpha = opacity * (memory ? Math.max(.08, Math.min(1, weight ?? .25)) : 1);
+      const f = Math.min(1, Math.hypot(v[0] - p[0], v[1] - p[1], v[2] - p[2]) / 20), hue = memory ? .72 + .08 * f : .78 * f;
+      g.fillStyle = `hsl(${360 * hue} 100% ${memory ? 72.5 : 55}%)`;
+      const [x, y] = project(v); g.fillRect(x - r, y - r, 2 * r, 2 * r);
+    });
+    g.globalAlpha = 1;
+  };
+  if (mode === 'surface' && patches.length) {
+    for (const [b, [x, y]] of patches.map(b => [b, project(b.p)]).sort((a, b) => a[1][2] - b[1][2])) {
+      const [nx, ny, nz] = b.n, t2 = nx * sy + nz * cy, dx = nx * cy - nz * sy, dy = -ny * cp + t2 * sp, ratio = Math.abs(ny * sp + t2 * cp), rad = Math.max(1, b.r * scale);
+      g.save(); g.translate(x, y); g.rotate(Math.atan2(dy, dx) + Math.PI / 2); g.scale(rad, rad * Math.max(.12, ratio));
+      const grad = g.createRadialGradient(0, 0, 0, 0, 0, 1); grad.addColorStop(0, `rgb(${b.rgb})`); grad.addColorStop(.7, `rgba(${b.rgb},.78)`); grad.addColorStop(1, `rgba(${b.rgb},0)`);
+      g.fillStyle = grad; g.fillRect(-1, -1, 2, 2); g.restore();
+    }
+  } else dots(room.points3d, 'measured', 2);
+  dots(room.estimated3d, 'inferred', 1.5); dots(room.distant3d, 'memory', 1);
+  for (const o of room.objects || []) { const [x, y] = project(o.position); label(g, x, y, o.label); }
+  const [rx, ry] = project(p); label(g, rx, ry, '◆ Robot');
+  $('tag3d').textContent = `3D LiDAR · ${(room.voxels || 0).toLocaleString()} voxels · ${patches.length.toLocaleString()} surfaces · drag to orbit`;
+}
+function drawFloor() {
+  const [g, w, h] = fit(floorC);
   if (!room || !room.grid || !room.origin || !room.size) {
-    g.fillStyle = '#8ea2a8'; g.font = '13px system-ui'; g.textAlign = 'center'; g.fillText('No LiDAR map yet', w / 2, h / 2);
+    g.fillStyle = '#8ea2a8'; g.font = '13px system-ui'; g.textAlign = 'center'; g.fillText('No floor map yet', w / 2, h / 2);
     kv('mapping', [['Map', 'waiting for the phone']]); return;
   }
-  const n = room.size, res = room.resolution, org = room.origin, rows = Math.ceil(room.grid.length / n);
-  const sc = Math.min(w / (n * res), h / (rows * res)), ox = (w - n * res * sc) / 2, oy = (h - rows * res * sc) / 2;
-  const X = x => (x - org[0]) * sc + ox, Y = z => (z - org[1]) * sc + oy, col = ['', '#2f6159', '#e6a760', '#9d78c1'];
-  for (let i = 0; i < room.grid.length; i++) { const k = col[+room.grid[i]]; if (k) { g.fillStyle = k; g.fillRect(X(org[0] + (i % n) * res), Y(org[1] + Math.floor(i / n) * res), res * sc + .5, res * sc + .5); } }
-  if (room.path && room.path.length) { g.strokeStyle = '#78b4ff'; g.lineWidth = 2; g.beginPath(); room.path.forEach((p, i) => { const px = X(p[0]), py = Y(p[p.length - 1]); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke(); }
-  g.font = '11px system-ui'; g.textAlign = 'left';
-  for (const o of room.objects || []) { if (!o.position) continue; g.fillStyle = '#78b4ff'; g.beginPath(); g.arc(X(o.position[0]), Y(o.position[2]), 4, 0, 7); g.fill(); g.fillText(o.label || o.name || '', X(o.position[0]) + 6, Y(o.position[2]) + 4); }
-  if (room.pose) { const p = room.pose; g.save(); g.translate(X(p[0]), Y(p[2])); g.rotate(-p[3]); g.fillStyle = '#fff'; g.beginPath(); g.moveTo(0, 9); g.lineTo(-6, -5); g.lineTo(6, -5); g.closePath(); g.fill(); g.restore(); }
+  const p = room.pose || [0, 0, 0, 0], sc = Math.min(w, h) / span, X = x => w / 2 + (floorPan.x + x - p[0]) * sc, Y = z => h / 2 + (floorPan.y + z - p[2]) * sc;
+  const colors = ['', '#2f6159', '#e6a760', '#9d78c1'], n = room.size, res = room.resolution, org = room.origin;
+  for (let i = 0; i < room.grid.length; i++) { const k = colors[+room.grid[i]]; if (k) { g.fillStyle = k; g.fillRect(X(org[0] + (i % n) * res), Y(org[1] + Math.floor(i / n) * res), res * sc + .4, res * sc + .4); } }
+  if (room.path?.length) { g.beginPath(); g.moveTo(X(p[0]), Y(p[2])); for (const pt of room.path) g.lineTo(X(pt[0]), Y(pt[pt.length - 1])); g.strokeStyle = '#78b4ff'; g.lineWidth = 2; g.stroke(); }
+  for (const o of room.objects || []) label(g, X(o.position[0]), Y(o.position[2]), o.label);
+  if (room.pose) { g.save(); g.translate(X(p[0]), Y(p[2])); g.rotate(-p[3]); g.fillStyle = '#fff'; g.beginPath(); g.moveTo(0, 9); g.lineTo(-6, -5); g.lineTo(6, -5); g.closePath(); g.fill(); g.restore(); }
+  label(g, 8, h - 8, span.toFixed(1) + ' m');
+  $('maptag').textContent = 'floor · teal free · orange blocked · purple inferred' + (room.grid_source === 'native-nav' ? (room.native_map_live ? ' · A* map' : ' · A* stale') : '');
   kv('mapping', [
     ['Tracking', t(room.tracking, room.tracking_live ? 'live' : 'waiting')], ['Floor', room.floor_ready ? c('ok', 'calibrated') : c('warn', 'needed')],
     ['Frames', t(room.frames, '0')], ['3D cells', t(room.voxels, '0')], ['Targets', t((room.objects || []).length, '0')],
     ['Scan', num(room.scan_degrees, 0, '°')], ['Source', t(room.grid_source)],
   ]);
-  $('maptag').textContent = 'LiDAR floor map · teal free · orange obstacle · ▲ phone';
 }
+function fitMap(canvas, coords, pan, min, max) {
+  let l = Infinity, r = -Infinity, tp = Infinity, b = -Infinity;
+  for (const [x, y] of coords) { l = Math.min(l, x); r = Math.max(r, x); tp = Math.min(tp, y); b = Math.max(b, y); }
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  pan.x = -(l + r) / 2; pan.y = -(tp + b) / 2;
+  return Math.min(max, Math.max(min, Math.max((r - l) / w, (b - tp) / h) * Math.min(w, h) * 1.23));
+}
+function fitScene() {
+  yaw = .58; pitch = .48; zoom = 9; scenePan.x = scenePan.y = 0;
+  if (!room?.pose) return;
+  const pts = [room.pose, ...(room.points3d || []), ...(room.objects || []).map(o => o.position)];
+  if (pts.length > 1) { const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch); zoom = fitMap(sceneC, pts.map(v => sceneCoords(v, room.pose, cy, sy, cp, sp)), scenePan, 1.5, 35); }
+}
+function fitFloor() {
+  span = 8; floorPan.x = floorPan.y = 0;
+  if (!room?.pose || !room.grid || !room.origin) return;
+  const [x, , z] = room.pose, step = room.resolution, coords = [[0, 0]];
+  for (let i = 0; i < room.grid.length; i++) { if (room.grid[i] === '0') continue; const dx = room.origin[0] + (i % room.size) * step - x, dz = room.origin[1] + Math.floor(i / room.size) * step - z; coords.push([dx, dz], [dx + step, dz + step]); }
+  if (coords.length > 1) span = fitMap(floorC, coords, floorPan, 2, 30);
+}
+function drawMap() { draw3(); drawFloor(); }
+bindMap(sceneC, scenePan, () => zoom, v => zoom = v, 1.5, 35, draw3, (dx, dy) => { yaw -= dx * .01; pitch = Math.max(-1.4, Math.min(1.4, pitch + dy * .01)); });
+const floorZoom = bindMap(floorC, floorPan, () => span, v => span = v, 2, 30, drawFloor);
+for (const id of ['points', 'surface']) $(id).onclick = () => { mode = id; for (const k of ['points', 'surface']) $(k).setAttribute('aria-pressed', String(k === mode)); draw3(); };
+$('reset').onclick = () => { fitScene(); draw3(); };
+$('floor-reset').onclick = () => { fitFloor(); drawFloor(); };
+$('plus').onclick = () => floorZoom(1.4); $('minus').onclick = () => floorZoom(1 / 1.4);
 
 async function poll() {
   try { const r = await fetch('/status.json', {cache: 'no-store'}); if (r.ok) render(await r.json()); }
   catch (e) { pill('p-phone', 'Pi unreachable', 'bad'); }
 }
-async function pollMap() { try { const r = await fetch('/map.json', {cache: 'no-store'}); if (r.ok) room = await r.json(); } catch (e) {} drawMap(); }
+async function pollMap() {
+  try {
+    const r = await fetch('/map.json', {cache: 'no-store'});
+    if (r.ok) {
+      room = await r.json(); patches = unpack(room.surface_splats);
+      if (room.pose && room.points3d?.length && framed !== (room.session ?? 'current')) { fitScene(); fitFloor(); framed = room.session ?? 'current'; }
+    }
+  } catch (e) {}
+  drawMap();
+}
 (function frame() { drawCam(); requestAnimationFrame(frame); })();
-poll(); pollMap(); setInterval(poll, 250); setInterval(pollMap, 1000); addEventListener('resize', drawMap);
+poll(); pollMap(); setInterval(poll, 250); setInterval(pollMap, 500); addEventListener('resize', drawMap);
 </script>
 </body>
 </html>

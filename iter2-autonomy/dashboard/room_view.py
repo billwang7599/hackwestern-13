@@ -108,9 +108,9 @@ def serve_room(link, stop):
                     self.send_error(503, 'no fresh phone camera frame')
                     return
                 content, kind = frame[0], 'image/jpeg'
-            elif self.path == '/':
-                content, kind = PAGE.read_bytes(), 'text/html; charset=utf-8'
-            elif self.path == '/telemetry':
+            elif self.path == '/room':
+                content, kind = PAGE.read_bytes(), 'text/html; charset=utf-8'   # the old standalone room view
+            elif self.path in ('/', '/telemetry'):
                 content, kind = TELEMETRY.read_bytes(), 'text/html; charset=utf-8'
             elif self.path == '/status.json':
                 with link.lock:
