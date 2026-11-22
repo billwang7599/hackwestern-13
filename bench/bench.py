@@ -137,6 +137,12 @@ def load_plugins(bench: Bench, only: list[str] | None) -> None:
             print(f"bench: plugin {name} FAILED to load:\n{traceback.format_exc()}", file=sys.stderr)
 
 
+def bench_live(bench: Bench) -> bool:
+    """the live plugin draws world2d from goto (real targets). Its module loads on the sim too, where
+    setup() returns early: being in bench.plugins alone doesn't make the page LIVE."""
+    return bool(getattr(bench.plugins.get("live"), "ACTIVE", False))
+
+
 def make_handler(bench: Bench):
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -191,13 +197,13 @@ def make_handler(bench: Bench):
                 names = sorted(f for f in os.listdir(pdir) if f.endswith(".js")) if os.path.isdir(pdir) else []
                 hidden = []
                 if bench.target["name"] != "sim" and not getattr(bench.args, "all_panels", False):
-                    live = "live" in bench.plugins
+                    live = bench_live(bench)
                     drop = {n for n in SIM_ONLY_PANELS if not (live and n in LIVE_PANELS)}
                     hidden = [n for n in names if n in drop]
                     names = [n for n in names if n not in drop]
                 return self._send(200, {"panels": names, "hidden": hidden, "plugins": sorted(bench.plugins),
                                         "target": bench.target, "real": bench.target["name"] != "sim",
-                                        "live": "live" in bench.plugins})
+                                        "live": bench_live(bench)})
             fn = bench._routes.get((method, path))
             if fn:
                 n = int(self.headers.get("Content-Length") or 0)

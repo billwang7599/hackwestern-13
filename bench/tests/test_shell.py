@@ -43,6 +43,10 @@ def main() -> int:
     check(st == 200 and b"shell.js" in body and b'id="stop"' in body, "index.html served, has STOP")
     st, body = req("GET", "/panels.json")
     check(st == 200 and b'"target"' in body, "/panels.json")
+    # the live plugin's module loads on every target; only real/phone targets make the page LIVE
+    sim = B.Bench(B.parse_args(["--port", "0", "--plugins", "live"]))
+    B.load_plugins(sim, ["live"])
+    check("live" in sim.plugins and B.bench_live(sim) is False, "sim target: live plugin loaded but panels.json live=false")
     st, body = req("POST", "/api/t/echo?a=1", b"xyz")
     check(st == 200 and b'"n": 3' in body and b'"a": "1"' in body, "plugin route gets query and body")
     st, body = req("GET", "/api/t/boom")

@@ -42,6 +42,7 @@ _bench = None
 _stop = threading.Event()
 _last: dict = {}
 _hfov = [60.0]
+ACTIVE = False          # bench.py: panels.json "live" (the plugin module loads on every target)
 
 
 def _robot():
@@ -174,10 +175,11 @@ def _loop() -> None:
 
 
 def setup(bench) -> None:
-    global _bench
+    global _bench, ACTIVE
     _bench = bench
     if bench.target["name"] not in REAL_TARGETS:
         return                      # sim: the world plugin owns topic `world`
+    ACTIVE = True
     try:
         _hfov[0] = float(C.goto_conf().get("hfov_deg", 60) or 60)
     except (OSError, ValueError, TypeError):
