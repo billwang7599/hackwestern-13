@@ -873,6 +873,32 @@ def sc_pocket_mouth():
         st.close()
 
 
+def sc_pocket_mouth_remembered():
+    """bench room pocket_mouth as the user runs it on the dashboard: goto starts out remembering the
+    bin where it really is, behind the '<' wall. It must route from memory (round an arm's end, in
+    through the opening) and arrive, with no 360 search before the first route leg."""
+    print("full-stack: POCKET_MOUTH_REMEMBERED: bin remembered behind the wall, route from memory, no search first")
+    w = pocket_mouth_world()
+    bx, by = w.cans[0]
+    st = Stack(w, mem_file([(bx, by)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("pocket_mouth_remembered")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - bx, y - by)
+        ev = st.goto.events
+        first_route = next((i for i, e in enumerate(ev) if e.startswith("route ")), None)
+        first_search = next((i for i, e in enumerate(ev) if e.startswith(("search_here", "standoff_search"))), None)
+        check(first_route is not None, "routed from memory (a 'route' event)")
+        check(first_route is not None and (first_search is None or first_route < first_search),
+              f"no 360 search before the first leg (route at {first_route}, search at {first_search})")
+        check(not any(e.startswith("next_candidate") for e in ev), "never gave up on the remembered spot")
+        check(st.min_wall_clearance() > 0.15, f"never closer than 0.15 m to a wall ({st.min_wall_clearance():.2f} m)")
+        check(s["result"] == "arrived" and d < 0.95, f"pocket_mouth_remembered: arrived at the bin ({s['result']}, {d:.2f} m)")
+    finally:
+        st.close()
+
 def sc_enclosed():
     """the bin sits in a fully walled box: no route even through unknown floor once the walls are
     mapped -> failed:unreachable within the caps (no endless wandering / spinning)"""
@@ -1129,6 +1155,7 @@ SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion,
              "openbin": sc_openbin, "lpocket": sc_lpocket, "pocket_mouth": sc_pocket_mouth, "enclosed": sc_enclosed, "wall_moved": sc_wall_moved,
              "wall_moved_hidden": lambda: sc_wall_moved(hidden=True), "glass": sc_glass, "stop_backtrack": sc_stop_backtrack}
 
+SCENARIOS["pocket_mouth_remembered"] = sc_pocket_mouth_remembered
 
 # known failures, run with --only NAME (not in the default run until fixed)
 EXTRA: dict = {}
