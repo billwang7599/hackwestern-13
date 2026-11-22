@@ -237,6 +237,7 @@ The phone-to-robot extrinsics (mount offset, forward axis) are uncalibrated. Unt
 | 5574 | new | laptop (via the relay) → `tars_voice` on 127.0.0.1: `HEAR <text>`, `AUDIO <bytes>`, `WATCH` events. Same classifier + stop-first path as the mic. |
 | 5575 | new | `mission_relay`, the laptop's only port (all interfaces): `HELLO MOTOR\|GOTO\|VOICE\|WATCH\|CAM <key>`, key required (`-k` / `MISSION_KEY`). Optional; normal priority. |
 | 5576 | new | phone status tee → relay (127.0.0.1), from `headless.py` only when `TARS_MISSION_TEE_PORT` is set. |
+| 5577 | new | phone mic → `tars_voice` (iproxy; the phone listens, `tars_voice` dials): `MIC1 16000 1 s16le` header, then `A` audio / `M` mute / `U` unmute / `K` keepalive packets. The robot has no mic; the phone streams the AirPods and mutes itself while it speaks (half duplex). `voice.conf` `input = phone`. |
 
 *5574–5576 pending Andrew's sign-off too.* Mission control (`iter2-autonomy/mission/README.md`) is display + commands only; the robot never needs it.
 

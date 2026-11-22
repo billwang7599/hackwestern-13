@@ -4,7 +4,7 @@
 **on the Pi 5 under QNX 8.0, in C/C++ built with `qcc`**. No laptop, no internet, no Python on the robot.
 
 ```
-USB mic ─► io-audio (libasound snd_pcm, 16 kHz mono)          src/audio.c
+phone mic (AirPods, TCP 5577) or USB mic ─► 16 kHz mono         src/audio.c
         ─► energy VAD, 20 ms frames, segments ≤ 3 s           src/vad.c
         ─► whisper.cpp tiny.en-q5_1, 2 threads                src/stt.c
         ─► text → intent (generated C header, ~2 µs)           intent/intent.c + intent_model.h
@@ -35,6 +35,19 @@ Python is only used off the robot: training (`intent/train.py`), `intent/try.py`
 
 **Exact-move keepalive:** `tars_motor` on main aborts a `MOVE`/`TURN` after 500 ms without a
 command, so a small thread in `tars_voice` PINGs (on its own connection) while a voice move runs.
+**Phone mic (the default, `input = phone`):** the robot has no microphone, so the iPhone on the car
+streams the user's AirPods to `tars_voice` (iPhone app: controls → "Robot mic (AirPods)"). The phone
+listens on 5577 (forwarded to the Pi by iproxy, `service.py`), `tars_voice` dials it and redials with a
+0.5–5 s backoff. Protocol `MIC1` (spec in `src/audio.h`): header line `MIC1 16000 1 s16le`, then packets
+`A` audio / `M` mute / `U` unmute / `K` keepalive. It's hands-free: the same VAD, whisper, "TARS" wake word
+and stop-first path as a wired mic. While TARS speaks a `SAY` from the phone speaker the phone sends `M`
+(half duplex): what it hears then is dropped, and the segment in progress is finished at the mute. Link
+down / muted: `audio_read` returns within 100 ms with nothing, so the loop (LED off, talk button) keeps
+running. Bad data or 3 s of silence (no `K`) drops the link. `phone:PORT` / `phone:HOST:PORT` for other
+addresses; `input = qnx` for a USB mic. Fake phone for the Pi or a Mac:
+`python3 iter2-autonomy/iphone/tools/mic_stream.py cmd.wav` (or `-` for raw stdin). Test:
+`make test-phone` (38 checks, fake phone + real `tars_motor`). **Not yet run on the Pi/QNX or with the
+real phone.** Caveat: a spoken "stop" while TARS is talking is not heard; the other stops are unaffected.
 **Speech link:** `say_host`/`say_port`/`say_ms` in `voice.conf` (127.0.0.1:5573, 150 ms connect
 timeout, `say_port = 0` = off). Failures are ignored.
 **Network input (laptop mission control, `iter2-autonomy/mission/`):** `net_host`/`net_port`

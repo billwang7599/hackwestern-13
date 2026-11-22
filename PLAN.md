@@ -108,7 +108,7 @@ or by cycling ✌️ GESTURE → FOLLOW → PET. Rules + bounds: `iter3-pet/visi
 
 ## Ports (all localhost on the Pi)
 
-Andrew's stack: 5555 (`tars_motor`) and 5557–5569 (`iter2-autonomy/edge-ai/README.md`). Ours: **5570** `goto` control (was 5557), **5571** detections → `goto` (was 5558), **5572** LDR1 nav feed → `goto`, **5573** TARS speech → phone (Andrew's SpeechLink; `tars_voice` is a client), **5574** laptop → `tars_voice` (HEAR/AUDIO), **5575** `mission_relay` (the only one on Wi-Fi), **5576** phone status tee → relay. 5570–5572 and 5574–5576 are pending Andrew's sign-off.
+Andrew's stack: 5555 (`tars_motor`) and 5557–5569 (`iter2-autonomy/edge-ai/README.md`). Ours: **5570** `goto` control (was 5557), **5571** detections → `goto` (was 5558), **5572** LDR1 nav feed → `goto`, **5573** TARS speech → phone (Andrew's SpeechLink; `tars_voice` is a client), **5574** laptop → `tars_voice` (HEAR/AUDIO), **5575** `mission_relay` (the only one on Wi-Fi), **5576** phone status tee → relay, **5577** phone mic (AirPods) → `tars_voice` (MIC1; phone listens, voice dials). 5570–5572 and 5574–5577 are pending Andrew's sign-off.
 
 ## Next up
 

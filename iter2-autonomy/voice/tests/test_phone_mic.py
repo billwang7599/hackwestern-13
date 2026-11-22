@@ -319,6 +319,16 @@ def main() -> int:
         heard(lambda l: "cup" in l.lower())
         time.sleep(0.3)
         check("GOTO cup" in go.lines[go_n:], f"command after the garbage, odd TCP splits ({go.lines[go_n:]})")
+
+        print("CRLF header (e.g. typed by hand with nc) is accepted")
+        n_acc = phone.accepts
+        phone.hang_up()
+        check(phone.wait_conn(n_acc + 1, 10), "redialled")
+        phone.send(b"MIC1 16000 1 s16le\r\n")
+        w_n = len(w.lines)
+        phone.stream(silence(1.0) + speech("Tars, turn left.") + silence(1.2))
+        ev = heard(lambda l: "left" in l.lower())
+        check(ev is not None and "TURN -30" in ev[1], f"CRLF header stream -> TURN -30 ({ev and ev[1][:120]})")
     finally:
         if w:
             w.close()

@@ -324,7 +324,7 @@ static int ph_feed(phone_t *p, const unsigned char *b, int n, char *why, int why
                 fprintf(stderr, "[phone] mic stream MIC1 16 kHz mono s16le\n");
                 continue;
             }
-            if (p->hdr_n >= (int)sizeof p->hdr - 1 || ch < 0x20 || ch > 0x7e) {
+            if (p->hdr_n >= (int)sizeof p->hdr - 1 || (ch < 0x20 && ch != '\r') || ch > 0x7e) {
                 snprintf(why, (size_t)whylen, "bad header (not a MIC1 stream)");
                 return -1;
             }

@@ -144,7 +144,7 @@ Tests go in `bench/tests/test_<part>*.py`.
 ## Ports (laptop only, 127.0.0.1)
 
 The robot's own ports (tars_motor 5555, goto 5570, detections 5571, map feed 5572, say 5573,
-voice 5574, relay 5575, tee 5576, and Andrew's 5557–5569) are unchanged; see
+voice 5574, relay 5575, tee 5576, phone mic 5577, and Andrew's 5557–5569) are unchanged; see
 `docs/ARCHITECTURE.md`. In sim, the host builds listen on the same numbers on 127.0.0.1
 unless a test picks free ports.
 

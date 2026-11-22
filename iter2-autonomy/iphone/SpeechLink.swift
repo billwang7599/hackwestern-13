@@ -241,6 +241,9 @@ final class SpeechLink: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
     private var queue = SpeechQueue()
     private var current: AVSpeechUtterance?
     private var sessionActive = false
+    /// Robot mic (AirPods). While it's on it owns the audio session: speech goes out of the
+    /// phone speaker with the mic stream muted (half duplex), see PhoneMic.swift.
+    weak var mic: PhoneMic?
 
     override init() {
         super.init()
@@ -358,6 +361,11 @@ final class SpeechLink: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
     /// audio is ducked while TARS talks and restored afterwards.
     private func beginAudioSession() {
         guard !sessionActive else { return }
+        if let mic, mic.ownsSession {
+            mic.speechWillStart()            // mute the mic stream, route to the phone speaker
+            sessionActive = true
+            return
+        }
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
@@ -368,6 +376,11 @@ final class SpeechLink: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
 
     private func endAudioSession() {
         guard sessionActive, !synthesizer.isSpeaking else { return }
+        if let mic, mic.ownsSession {
+            sessionActive = false
+            mic.speechDidFinish()            // back to the AirPods, unmute
+            return
+        }
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         sessionActive = false
     }
