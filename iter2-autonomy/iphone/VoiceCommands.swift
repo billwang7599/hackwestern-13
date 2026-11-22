@@ -7,8 +7,13 @@ import AVFoundation
 /// link. On the Pi, headless.py passes it to tars_voice as `HEAR <text>`, so the same intent
 /// classifier as the robot mic decides (MOVE/TURN/GOTO/SCAN/MEMORY/...). No wake word needed.
 /// A stop word is sent the moment it shows up in the partial transcript, plus a halt.
+///
+/// AirPods trigger (iOS 17+): with it armed the mic stays open but system-muted; the AirPods
+/// mute gesture (press the stem, as on a call) unmutes = start listening, and pressing again
+/// mutes = send the command. No need to touch or look at the phone.
 final class VoiceCommander: ObservableObject {
     @Published private(set) var listening = false
+    @Published private(set) var airpodsArmed = false
     @Published private(set) var transcript = ""
     @Published private(set) var lastSent = ""
     @Published private(set) var problem = ""
@@ -29,7 +34,9 @@ final class VoiceCommander: ObservableObject {
         text.lowercased().split(whereSeparator: { !$0.isLetter }).contains { stopWords.contains(String($0)) }
     }
 
-    func begin() {
+    func begin() { authorize { self.start() } }
+
+    private func authorize(_ then: @escaping () -> Void) {
         guard !listening else { return }
         problem = ""
         SFSpeechRecognizer.requestAuthorization { status in
@@ -40,11 +47,40 @@ final class VoiceCommander: ObservableObject {
                 }
                 AVAudioApplication.requestRecordPermission { granted in
                     DispatchQueue.main.async {
-                        if granted { self.start() } else { self.problem = "Microphone access is off for this app." }
+                        if granted { then() } else { self.problem = "Microphone access is off for this app." }
                     }
                 }
             }
         }
+    }
+
+    /// Session + mic engine. The tap feeds whichever recognition request is current (none = dropped).
+    private func startEngine() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .default,
+                                options: [.allowBluetoothHFP, .defaultToSpeaker, .duckOthers])
+        try session.setActive(true)
+        if let hfp = session.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) {
+            try? session.setPreferredInput(hfp)   // AirPods mic when they're connected
+        }
+        guard !engine.isRunning else { return }
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+            self?.tapLock.lock()
+            let req = self?.liveRequest
+            self?.tapLock.unlock()
+            req?.append(buffer)
+        }
+        engine.prepare()
+        try engine.start()
+    }
+
+    private var muteObserver: NSObjectProtocol?
+    private let tapLock = NSLock()
+    private var liveRequest: SFSpeechAudioBufferRecognitionRequest?
+    private func setLive(_ req: SFSpeechAudioBufferRecognitionRequest?) {
+        tapLock.lock(); liveRequest = req; tapLock.unlock()
     }
 
     private func start() {
@@ -53,21 +89,12 @@ final class VoiceCommander: ObservableObject {
             return
         }
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default,
-                                    options: [.allowBluetoothHFP, .defaultToSpeaker, .duckOthers])
-            try session.setActive(true)
+            try startEngine()
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
             if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
             req.taskHint = .confirmation
-            let input = engine.inputNode
-            input.removeTap(onBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
-                req.append(buffer)
-            }
-            engine.prepare()
-            try engine.start()
+            setLive(req)
             request = req
             transcript = ""
             stopSent = false
@@ -98,8 +125,9 @@ final class VoiceCommander: ObservableObject {
     /// Button released: stop recording, wait briefly for the final transcript, then send it.
     func end() {
         guard listening else { return }
+        setLive(nil)
         request?.endAudio()
-        stopEngine()
+        if !airpodsArmed { stopEngine() }
         let work = DispatchWorkItem { [weak self] in self?.finish() }
         finishing = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
@@ -125,10 +153,42 @@ final class VoiceCommander: ObservableObject {
         engine.inputNode.removeTap(onBus: 0)
     }
 
+    /// Arm / disarm the AirPods mute gesture as push-to-talk.
+    func setAirPodsTrigger(_ on: Bool) {
+        if on { authorize { self.arm() } } else { disarm() }
+    }
+
+    private func arm() {
+        do {
+            try startEngine()
+            muteObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioApplication.inputMuteStateChangeNotification, object: nil, queue: .main) { [weak self] note in
+                guard let self, self.airpodsArmed else { return }
+                let muted = (note.userInfo?[AVAudioApplication.muteStateKey] as? NSNumber)?.boolValue
+                    ?? AVAudioApplication.shared.isInputMuted
+                if muted { self.end() } else if !self.listening { self.start() }   // unmute = talk, mute = send
+            }
+            try AVAudioApplication.shared.setInputMuted(true)
+            airpodsArmed = true
+            problem = ""
+        } catch {
+            problem = "AirPods trigger unavailable: \(error.localizedDescription)"
+            disarm()
+        }
+    }
+
+    private func disarm() {
+        airpodsArmed = false
+        if let o = muteObserver { NotificationCenter.default.removeObserver(o); muteObserver = nil }
+        try? AVAudioApplication.shared.setInputMuted(false)
+        if listening { teardown() } else { stopEngine() }
+    }
+
     private func teardown() {
         finishing?.cancel()
         finishing = nil
-        stopEngine()
+        setLive(nil)
+        if !airpodsArmed { stopEngine() }
         task?.cancel()
         task = nil
         request = nil
@@ -164,6 +224,15 @@ struct VoiceCommandPanel: View {
                     .onChanged { _ in if !voice.listening && pi.connected && !micBusy { voice.begin() } }
                     .onEnded { _ in voice.end() })
                 .accessibilityAddTraits(.isButton)
+            Toggle(isOn: Binding(get: { voice.airpodsArmed }, set: { voice.setAirPodsTrigger($0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("AirPods push-to-talk").font(.body.bold())
+                    Text(voice.airpodsArmed ? (voice.listening ? "Listening… press the stem again to send" : "Press the AirPods stem to talk, press again to send")
+                                            : "Press the stem (the call mute gesture) to talk, no phone needed")
+                        .font(.caption).foregroundStyle(voice.listening ? Color.red : Color.secondary)
+                }
+            }
+            .disabled(!pi.connected || micBusy)
             if micBusy {
                 Text("Turn off \"Robot mic (AirPods)\" to use hold-to-talk; the robot mic already hears you.")
                     .font(.caption).foregroundStyle(.orange)
