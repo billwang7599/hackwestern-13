@@ -3036,10 +3036,13 @@ void goto_sm_tick(goto_sm *s, double now)
          * refused while the guard denies, and tars_motor's abort is what we want then) */
         if (s->st == ST_FOLLOW_PATH && s->nav && nav_version(s->nav) != s->path_ver && s->leg <= 1) {
             s->path_ver = nav_version(s->nav);
-            if (path_blocked(s)) {                    /* the map changed under the route */
+            int pb = path_blocked(s);
+            if (pb) {                                 /* the map changed under the route */
                 emit(s, ACT_STOP, 0, 0, NULL);
                 if (s->optimistic) {                  /* expected while exploring: not a failure, its own cap */
-                    map_event(s, "blocked:map");
+                    char t[96];                       /* why: 1 wall on a leg, 2 guard box, 3 footprint */
+                    snprintf(t, sizeof t, "blocked:map %s #%d why=%d", target_name(s), s->mem_id, pb);
+                    emit(s, ACT_EVENT, 0, 0, t);
                     if (++s->opt_replans > (int)s->cfg.nav_max_opt_replans) { goto_sm_fail(s, now, "replan cap"); return; }
                     set_state(s, ST_PLAN);
                     s->plan_wait = 1;
