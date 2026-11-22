@@ -2650,6 +2650,7 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->reveal_have_yaw = 0;
     s->escapes = 0;
     s->heading_tries = s->heading_fixes = s->heading_unchecked = 0;
+    s->move_timeouts = 0;
     s->mem_fallback = s->fallback_noroute = 0;
     s->guard_refusals = s->guard_aborts = s->guard_other_stops = 0;
     s->crumb_head = s->crumb_n = 0;
@@ -3044,6 +3045,22 @@ void goto_sm_tick(goto_sm *s, double now)
             return;
         }
         if (now > s->move_deadline) {
+            /* A stall (loaded host; at -T 4 the pad is short in wall time) can wake us past the
+             * deadline before the STATUS poll that says the move ended: judge only on a STATUS
+             * read after the deadline (goto.c polls it right after this tick), up to one pad. */
+            if (s->move_id >= 0 && s->move_status_t <= s->move_deadline &&
+                now <= s->move_deadline + s->cfg.move_timeout_pad_s)
+                return;
+            /* tars_motor still says running: a route leg stops and re-plans, once per GOTO */
+            if (s->st == ST_FOLLOW_PATH && s->move_id >= 0 && s->move_timeouts++ == 0) {
+                char t[96];
+                emit(s, ACT_STOP, 0, 0, NULL);
+                snprintf(t, sizeof t, "move_timeout %s #%d leg=%d", target_name(s), s->mem_id, s->leg);
+                emit(s, ACT_EVENT, 0, 0, t);
+                s->move_id = -1;
+                leg_blocked(s, "timeout");
+                return;
+            }
             goto_sm_fail(s, now, s->st == ST_MEM_MOVE || (s->st == ST_FOLLOW_PATH && (s->leg == 1 || s->leg == 5)) ? "move timed out"
                                                                                                    : "turn timed out");
             return;
@@ -3113,12 +3130,14 @@ void goto_sm_move_started(goto_sm *s, double now, int move_id, double est_s)
     if (!goto_sm_wants_status(s)) return;
     s->move_id = move_id;
     s->move_deadline = now + est_s * 2.0 + s->cfg.move_timeout_pad_s;
+    s->move_status_t = -1e9;
 }
 
 void goto_sm_move_status(goto_sm *s, double now, int move_id, const char *move, const char *why)
 {
     s->now = now;
     if (!goto_sm_wants_status(s) || s->move_id < 0 || move_id != s->move_id || s->leg_settle) return;
+    s->move_status_t = now;
     if (!strcmp(move, "running")) return;
     if (!strcmp(move, "done")) {
         if (s->st != ST_FOLLOW_PATH) { s->turn_stops = 0; crumb_note(s, 1, 0); start_look(s, now + s->cfg.settle_s); return; }

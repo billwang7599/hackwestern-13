@@ -350,7 +350,7 @@ static void test_cancel_and_failures(void)
     goto_sm_move_started(&S, T, 5, 0.7);
     clear();
     for (int i = 0; i < 10; i++) { advance(0.12); frame(NULL, 0, 0, 0); }
-    advance(4.0);
+    for (int i = 0; i < 40; i++) { advance(0.1); goto_sm_move_status(&S, T, 5, "running", "-"); }   /* goto.c polls at 10 Hz */
     CHECK(S.st == ST_IDLE && strstr(S.result, "timed_out"), "TURN that never finishes -> fail (%s)", S.result);
 
     reset_sm();
@@ -1832,6 +1832,84 @@ static void test_map_stop_mid_path(void)
     CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1 && !find(ACT_TURN) && !find(ACT_MOVE), "CANCEL mid-path: S, nothing else");
 }
 
+/* Regression (maze sim at 4x, 3/9 runs failed:turn_timed_out on 4-10 deg TURNs): goto's TURN
+ * deadline (2*est + move_timeout_pad_s) passed during a host stall, and the tick failed the GOTO
+ * before the STATUS poll that would have said done / aborted. Past the deadline, judge only on a
+ * STATUS read after it; a leg tars_motor still calls running then gets S + one re-plan per GOTO. */
+static void map_route_start(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.0, 3.0, MEM_FRESH);
+    start("trash can");
+}
+static void stall(double dt) { T += dt; goto_sm_tick(&S, T); }   /* one late tick, like a stalled process */
+static void test_map_move_deadline_after_stall(void)
+{
+    map_route_start();
+    CHECK(S.st == ST_FOLLOW_PATH && (find(ACT_TURN) || find(ACT_MOVE)), "following, first leg queued");
+    clear();
+    goto_sm_move_started(&S, T, 41, 0.08);                     /* a 4.7 deg slow pivot */
+    stall(0.16 + C.move_timeout_pad_s + 0.5);                  /* woke up past the deadline */
+    CHECK(S.st == ST_FOLLOW_PATH && !count(ACT_STOP), "stall past the deadline: wait for a fresh STATUS (%s %s)",
+          goto_state_name(S.st), S.result);
+    goto_sm_move_status(&S, T, 41, "done", "-");                /* that poll: it finished long ago */
+    leg_done_phone_lags(41);
+    CHECK(S.st == ST_FOLLOW_PATH && !strcmp(S.result, "running") && (find(ACT_TURN) || find(ACT_MOVE) || S.leg_settle),
+          "STATUS done after the stall: the route carries on (%s %s)", goto_state_name(S.st), S.result);
+
+    /* aborted (guard hiccup) seen only after the deadline: the normal guard-stop path, no failure */
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 42, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.5);
+    goto_sm_move_status(&S, T, 42, "aborted", "lidar_guard");
+    CHECK(S.st != ST_IDLE && !strstr(S.result, "timed_out"), "late lidar_guard abort: re-plan, not a failure (%s %s)",
+          goto_state_name(S.st), S.result);
+
+    /* tars_motor still says running after the deadline: S, one re-plan; the 2nd time fails */
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 43, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.1);
+    goto_sm_move_status(&S, T, 43, "running", "-");
+    goto_sm_tick(&S, T + 0.02);
+    T += 0.02;
+    CHECK(count(ACT_STOP) == 1 && has_event("move_timeout") && S.st == ST_PLAN,
+          "overdue + still running: S, move_timeout, re-plan (%s %s)", goto_state_name(S.st), S.result);
+    for (int k = 0; k < 400 && !find(ACT_TURN) && !find(ACT_MOVE) && S.st != ST_IDLE; k++) {
+        T += 0.05; nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1); frame(NULL, 0, 0, 0); goto_sm_tick(&S, T);
+    }
+    CHECK(find(ACT_TURN) || find(ACT_MOVE), "re-planned leg issued (%s %s)", goto_state_name(S.st), S.result);
+    clear();
+    goto_sm_move_started(&S, T, 44, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.1);
+    goto_sm_move_status(&S, T, 44, "running", "-");
+    goto_sm_tick(&S, T + 0.02);
+    CHECK(S.st == ST_IDLE && strstr(S.result, "timed_out") && count(ACT_STOP) >= 1, "2nd overdue leg this GOTO fails (%s)", S.result);
+
+    /* no STATUS at all (motor gone): the grace is bounded, then it acts */
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 45, 0.08);
+    stall(0.16 + 2 * C.move_timeout_pad_s + 0.1);
+    CHECK(count(ACT_STOP) == 1 && S.st != ST_FOLLOW_PATH, "no STATUS for a whole extra pad: stops (%s)", goto_state_name(S.st));
+
+    /* stop wins during the grace: S from another client and CANCEL end it at once */
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 46, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.5);
+    goto_sm_move_status(&S, T, 46, "aborted", "stop");
+    CHECK(S.st == ST_IDLE && !strncmp(S.result, "cancelled", 9), "S during the grace cancels (%s)", S.result);
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 47, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.5);
+    goto_sm_cancel(&S, T, "cancel");
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1, "CANCEL during the grace: S, idle (%s)", S.result);
+}
 
 /* guard stop of a path MOVE on something the map doesn't hold: re-plan in place on the cost-to-go
  * field (pivot + a new forward leg), no reversing; repeated stops try the next cheapest up to 3,
@@ -2227,6 +2305,7 @@ int main(void)
     test_map_search_fails_then_memory_route();
     test_map_memory_route_by_route_length();
     test_map_stop_mid_path();
+    test_map_move_deadline_after_stall();
     test_map_guard_and_replan();
     test_map_replan_here();
     test_leased_approach();
