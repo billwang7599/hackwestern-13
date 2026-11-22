@@ -55,12 +55,21 @@ the old name), `Bench.page`, `Bench.on('page', fn)`, `Bench.openSub(page, panelI
 (its page, its sub-tab, scrolled into view), `Bench.showView(id)`, `Bench.setBadgeDetail(text)`, and
 `Bench.mic.start()` / `await Bench.mic.stop()` (the one laptop-mic capture: a 16 kHz mono WAV, `mic` local
 event while recording).
-**STOP** and **Space** live in the shell (`web/shell.js` → `POST /api/robot/stop`), so
-stopping never depends on a panel. The STOP button is in the top bar, which is on every page, and Space
-stops on every page unless focus is in a text box.
+**STOP**, **Space** and **Esc** live in the shell (`web/shell.js` → `POST /api/robot/stop`), so
+stopping never depends on a panel. The STOP button is in the top bar, which is on every page. Space
+stops on every page unless focus is in a text box. Esc stops on every page, even in a text box, except when it
+has a smaller job right there: closing the help card or a right-click menu, deselecting on the Room page's
+editing map (focus on its canvas), or cancelling an inline table edit (an input with `data-esc="local"`).
 
-**Pages** (a navbar under the top bar, one job per page; `area` = the page id). The top bar (STOP, SIM/REAL
-badge, connection lights, what the robot is doing) and, while the guard blocks, a plain-words note under it
+**Status strip** (`#statusbar`, filled by `web/panels/topbar.js`): a fixed-height row under the top bar with
+goto's phase as one word (IDLE / PLANNING / SEARCHING / DRIVING / ARRIVED / FAILED / STOPPED, plus MANUAL,
+SAFETY STOP, OFFLINE), the target, the plain-words sentence (a failure gives the reason and goto's code, e.g.
+"no way through to it (unreachable)"), the Path guard chip CLEAR/BLOCKED (click: Car page), the sim speed
+selector (disabled, with the reason in its tooltip, until the sim is connected) and the connection lights. Every
+cell is always there and long text is cut with an ellipsis, so nothing below it ever moves.
+
+**Pages** (a navbar under the status strip, one job per page; `area` = the page id). The top bar, the status strip
+and, while the guard blocks, a plain-words toast floating at the bottom (no layout shift)
 stay on every page. Pages marked *map* show the big centre view (`area: 'view'` panels: `world2d`, `mc-map`,
 `map3d`, with a switch above it) beside their column; the others use the full width in a grid
 (`wide: true` spans it).
@@ -73,7 +82,7 @@ show one panel at a time behind sub-tabs (the panels in `order`; the choice is r
 
 | Page (`#hash`, key) | Map | Panels |
 |---|---|---|
-| Drive `#drive` 1 (default) | yes | `command` (Talk to TARS), `drive` (WASD pad, speed, exact MOVE/TURN) |
+| Drive `#drive` 1 (default) | yes | `demo` (Demo in 4 steps: room → Car to start → go to the trash can → watch; each step ticks itself off from live data), `command` (Talk to TARS), `drive` (WASD pad, speed, exact MOVE/TURN) |
 | Room `#room` 2 | yes, edit mode on, *sub* | `room-objects` (every object and wall, 🗑 per row, Delete selected, Undo), `world-tools` (faults, sensor noise), `maps` (map demos) |
 | Memory `#memory` 3 | yes, Robot's map | `mc-memory` (what goto remembers, Forget per row, Forget all with a confirm), `mc-goto` (goto status table, GOTO/RECALL/SCAN/CANCEL, events) |
 | Voice lab `#voice` 4 | | `voice` |
@@ -85,7 +94,8 @@ The page is the URL hash (linkable), else the last one shown (`localStorage`), e
 pages outside text boxes. Each map page remembers its own map view. Old drawer ids still work as `area`
 (`side`→drive, `robot`→memory, `sim`/`maps`→room, `pi`→mission, `debug`→tests); an unknown id makes a new
 page. A page left with no panels (Room on the real robot: its panels are sim-only) drops out of the navbar.
-Hidden pages stay in the DOM, so panels keep their state and their topic handlers; canvases are 0×0 while
+Each map shows a key of swatches under it (`.map-legend`: on the sim room it is always on and **Legend** hides
+it, remembered as `bench.w2d.legend`). Hidden pages stay in the DOM, so panels keep their state and their topic handlers; canvases are 0×0 while
 hidden and redraw on the `resize` the shell fires after every page/view switch. `?nohelp` skips the
 first-run help (screenshots). The last log line is in the footer (click: the Log sub-tab on Tests).
 
@@ -154,7 +164,7 @@ binds the robot's real port numbers or 5590–5599; every process takes its port
 
 | Part | Files |
 |---|---|
-| shell | `bench.py`, `web/index.html`, `web/shell.js`, `web/bench.css`, `web/panels/{topbar,command}.js`, `tests/test_pages.py` |
+| shell | `bench.py`, `web/index.html`, `web/shell.js`, `web/bench.css`, `web/panels/{topbar,command,demo}.js`, `tests/test_pages.py` |
 | robot link + drive | `plugins/robot.py`, `plugins/scenarios.py`, `plugins/recorder.py`, `web/panels/{drive,status,scenarios,recorder}.js` |
 | virtual car | `car/`, `plugins/car.py`, `web/panels/car.js` |
 | sim world | `world/`, `run_sim.py`, `plugins/world.py`, `web/panels/world2d.js` |
