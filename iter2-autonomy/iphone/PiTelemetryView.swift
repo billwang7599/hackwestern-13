@@ -228,7 +228,7 @@ struct ManualDrivePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Manual drive & input check").font(.title2.bold())
-            Text("Hold to drive at 25% speed over USB or Wi-Fi; release stops. Each press takes phone control; the LiDAR guard still decides whether movement is allowed.")
+            Text("Hold to drive over USB or Wi-Fi (the Pi sets the speed); release stops. Each press takes phone control; the LiDAR guard still decides whether movement is allowed.")
                 .font(.caption).foregroundStyle(.secondary)
             VStack(spacing: 8) {
                 HoldDriveButton(label: "W ↑ Forward", left: 0.25, right: 0.25, pi: pi, lastTap: $lastTap)
@@ -257,9 +257,9 @@ struct ManualDrivePanel: View {
                 .font(.footnote.monospaced())
             Text("Guard / stop reason: \(motor["reason"] as? String ?? "waiting")")
                 .font(.footnote).foregroundStyle(.orange)
-            Text("Serial: \(motor["serial_device"] as? String ?? "not configured") · \(motor["serial_device_present"] as? Bool == true ? "device present" : "device missing")\nArduino READY messages: \(motor["arduino_ready_count"] as? Int ?? 0)")
+            Text("Motor driver: \(motor["backend"] as? String == "gpio" ? "Pi GPIO → L298N" : (motor["backend"] as? String ?? "unknown"))")
                 .font(.caption.monospaced())
-            Text("Key received + zero output: check guard / stop reason. Nonzero output without motion: check the Arduino link, power and wiring. Output is a command, not measured wheel motion.")
+            Text("Key received + zero output: check guard / stop reason. Nonzero output without motion: check the motor battery and the Pi → driver wiring. Output is a command, not measured wheel motion.")
                 .font(.caption).foregroundStyle(.secondary)
             if !pi.connected { Text("Disconnected: readings above are the last received values.").font(.caption).foregroundStyle(.orange) }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
