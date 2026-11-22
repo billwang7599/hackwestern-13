@@ -5,6 +5,7 @@
 #   make test-intent   only the classifier tests (no whisper / model needed)
 #   make test-stt      whisper repeat-loop filter (no model needed)
 #   make test-net      HEAR / AUDIO / WATCH network input (mission control)
+#   make test-phone    iPhone/AirPods mic stream (--input phone:, MIC1 on 5577) vs a fake phone
 #   make test-goto-link  voice moves vs the real goto + tars_motor (CANCEL race)
 #   make               QNX aarch64 build (in docker/run.sh): build/qnx/tars_voice, build/qnx/mic_test
 #   make mic_test      QNX mic check only (no whisper; small, build this first)
@@ -34,7 +35,7 @@ ifeq ($(UNAME),Darwin)
 HOST_LIBS := -framework Accelerate -framework Foundation
 endif
 
-.PHONY: all host test test-intent test-stt test-net test-goto-link e2e qnx mic_test deploy clean fetch model
+.PHONY: all host test test-intent test-stt test-net test-phone test-goto-link e2e qnx mic_test deploy clean fetch model
 
 all: qnx
 
@@ -81,6 +82,12 @@ test-net: host
 	@test -f models/ggml-tiny.en-q5_1.bin || ./get_model.sh
 	python3 tests/test_net.py
 
+# iPhone mic stream (phone:HOST:PORT input, MIC1 protocol) against a fake phone + real tars_motor stub
+test-phone: host
+	@test -f models/ggml-tiny.en-q5_1.bin || ./get_model.sh
+	@test -x ../../iter1-wasd/pi/build/tars_motor_host || $(MAKE) -C ../../iter1-wasd/pi host
+	python3 tests/test_phone_mic.py
+
 # voice manual moves vs the REAL goto + REAL tars_motor (CANCEL/S race, goto stalls)
 test-goto-link: host
 	@test -f models/ggml-tiny.en-q5_1.bin || ./get_model.sh
@@ -92,7 +99,7 @@ test-goto-link: host
 test-stt: build/stt_cli
 	python3 tests/test_stt.py
 
-test: test-intent test-stt e2e test-net test-goto-link
+test: test-intent test-stt e2e test-net test-phone test-goto-link
 
 # ---------------------------------------------------------------- QNX (aarch64)
 ifneq ($(shell command -v qcc 2>/dev/null),)
@@ -116,7 +123,7 @@ build/qnx/tars_voice: $(SRCS) src/*.h intent/*.h $(WLIBS_Q)
 
 build/qnx/mic_test: qnx/mic_test.c src/audio.c src/audio.h
 	@mkdir -p build/qnx
-	$(QCC) $(CFLAGS) -Isrc -o $@ qnx/mic_test.c src/audio.c -lasound -lm
+	$(QCC) $(CFLAGS) -Isrc -o $@ qnx/mic_test.c src/audio.c -lasound -lsocket -lm
 
 qnx: build/qnx/mic_test build/qnx/tars_voice
 mic_test: build/qnx/mic_test

@@ -1,16 +1,48 @@
-/* Audio sources: WAV file, raw s16le stream, QNX io-audio capture (audio.h). */
+/* Audio sources: WAV file, raw s16le stream, QNX io-audio capture, iPhone mic stream (audio.h). */
 #include "audio.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
 
 #ifdef __QNX__
 #include <sys/asoundlib.h>
 #endif
 
-typedef enum { SRC_WAV, SRC_RAW, SRC_QNX } src_kind_t;
+typedef enum { SRC_WAV, SRC_RAW, SRC_QNX, SRC_PHONE } src_kind_t;
+
+#define PHONE_FIFO (2 * AUDIO_RATE)        /* 2 s of samples between the socket and the VAD */
+#define PHONE_MAX_PKT 8192
+#define PHONE_WAIT_MS 100                  /* audio_read never waits longer than this */
+#define PHONE_GAPS 8
+
+typedef struct {
+    char host[128];
+    int port, fd;
+    long long next_try, backoff_ms, last_rx_ms;
+    int fails;                     /* connect failures in a row (log the first and every 10th) */
+    int hdr_done, hdr_n;
+    char hdr[80];
+    int pk_n, pk_type, pk_len, pk_got;
+    unsigned char pk[3];
+    int have_half;
+    unsigned char half;
+    int muted;
+    int16_t *fifo;
+    int f_head, f_n;
+    long long pushed, popped, dropped;
+    long long gaps[PHONE_GAPS];    /* sample positions (pushed count) where the stream broke */
+    int ngaps;
+} phone_t;
 
 struct audio_src {
     src_kind_t kind;
@@ -20,6 +52,7 @@ struct audio_src {
     double pos;                    /* resampler position in input frames */
     int16_t *in;                   /* decoded mono input at the file's rate */
     long in_n, in_used;
+    phone_t *ph;
 #ifdef __QNX__
     snd_pcm_t *pcm;
     int frag;                      /* bytes per fragment */
@@ -189,6 +222,226 @@ int audio_list_devices(void)
 }
 #endif
 
+
+/* ------------------------------------------------------------------ phone (MIC1 over TCP) */
+static long long mono_ms(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static void ph_gap(phone_t *p)
+{
+    if (p->ngaps > 0 && p->gaps[p->ngaps - 1] == p->pushed) return;   /* same spot: one gap */
+    if (p->ngaps < PHONE_GAPS) p->gaps[p->ngaps++] = p->pushed;
+    else p->gaps[PHONE_GAPS - 1] = p->pushed;                        /* merge into the last */
+}
+
+static void ph_push(phone_t *p, int16_t s)
+{
+    if (p->f_n == PHONE_FIFO) {                /* main loop stuck (whisper): drop the oldest */
+        p->f_head = (p->f_head + 1) % PHONE_FIFO;
+        p->f_n--;
+        p->popped++;
+        if (p->dropped++ % AUDIO_RATE == 0) fprintf(stderr, "[phone] audio buffer full, dropping old audio\n");
+    }
+    p->fifo[(p->f_head + p->f_n) % PHONE_FIFO] = s;
+    p->f_n++;
+    p->pushed++;
+}
+
+static void ph_drop(phone_t *p, const char *why)
+{
+    if (p->fd >= 0) {
+        close(p->fd);
+        fprintf(stderr, "[phone] mic link %s:%d dropped: %s\n", p->host, p->port, why);
+        if (p->hdr_done) ph_gap(p);
+    }
+    p->fd = -1;
+    p->hdr_done = p->hdr_n = 0;
+    p->pk_n = p->pk_len = p->pk_got = p->pk_type = 0;
+    p->have_half = 0;
+    p->muted = 0;
+    p->next_try = mono_ms() + p->backoff_ms;
+    p->backoff_ms = p->backoff_ms * 2 > 5000 ? 5000 : p->backoff_ms * 2;
+}
+
+/* non-blocking connect bounded by wait_ms; 0 = connected */
+static int ph_connect(phone_t *p, int wait_ms)
+{
+    char port[16];
+    snprintf(port, sizeof port, "%d", p->port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    int fd = -1, ok = 0, err = 0;
+    if (getaddrinfo(p->host, port, &hints, &res) == 0 && res) {
+        fd = socket(res->ai_family, res->ai_socktype, 0);
+        int fl = fd >= 0 ? fcntl(fd, F_GETFL, 0) : -1;
+        if (fl >= 0 && fcntl(fd, F_SETFL, fl | O_NONBLOCK) == 0) {
+            ok = connect(fd, res->ai_addr, res->ai_addrlen) == 0;
+            if (!ok && errno == EINPROGRESS) {
+                struct pollfd pf = { fd, POLLOUT, 0 };
+                socklen_t el = sizeof err;
+                ok = poll(&pf, 1, wait_ms) == 1 && getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && err == 0;
+            } else if (!ok) err = errno;
+        }
+        freeaddrinfo(res);
+    }
+    if (!ok) {
+        if (fd >= 0) close(fd);
+        if (p->fails++ % 10 == 0)
+            fprintf(stderr, "[phone] mic link %s:%d unreachable (%s); retrying\n", p->host, p->port,
+                    err ? strerror(err) : "no answer");
+        p->next_try = mono_ms() + p->backoff_ms;
+        p->backoff_ms = p->backoff_ms * 2 > 5000 ? 5000 : p->backoff_ms * 2;
+        return -1;
+    }
+    p->fd = fd;
+    p->fails = 0;
+    p->last_rx_ms = mono_ms();
+    fprintf(stderr, "[phone] mic link connected to %s:%d\n", p->host, p->port);
+    return 0;
+}
+
+/* Parse received bytes. -1 = protocol error (caller drops the link). */
+static int ph_feed(phone_t *p, const unsigned char *b, int n, char *why, int whylen)
+{
+    for (int i = 0; i < n; i++) {
+        unsigned char ch = b[i];
+        if (!p->hdr_done) {
+            if (ch == '\n') {
+                p->hdr[p->hdr_n] = '\0';
+                if (p->hdr_n && p->hdr[p->hdr_n - 1] == '\r') p->hdr[--p->hdr_n] = '\0';
+                if (strcmp(p->hdr, "MIC1 16000 1 s16le")) {
+                    snprintf(why, (size_t)whylen, "bad header \"%.40s\" (want \"MIC1 16000 1 s16le\")", p->hdr);
+                    return -1;
+                }
+                p->hdr_done = 1;
+                p->backoff_ms = 500;           /* a good stream resets the backoff */
+                fprintf(stderr, "[phone] mic stream MIC1 16 kHz mono s16le\n");
+                continue;
+            }
+            if (p->hdr_n >= (int)sizeof p->hdr - 1 || ch < 0x20 || ch > 0x7e) {
+                snprintf(why, (size_t)whylen, "bad header (not a MIC1 stream)");
+                return -1;
+            }
+            p->hdr[p->hdr_n++] = (char)ch;
+            continue;
+        }
+        if (p->pk_n < 3) {                       /* packet header: type, len lo, len hi */
+            p->pk[p->pk_n++] = ch;
+            if (p->pk_n < 3) continue;
+            p->pk_type = p->pk[0];
+            p->pk_len = p->pk[1] | p->pk[2] << 8;
+            p->pk_got = 0;
+            p->have_half = 0;
+            switch (p->pk_type) {
+            case 'A':
+                if (p->pk_len < 2 || p->pk_len > PHONE_MAX_PKT || (p->pk_len & 1)) {
+                    snprintf(why, (size_t)whylen, "bad audio packet length %d", p->pk_len);
+                    return -1;
+                }
+                break;
+            case 'M': case 'U': case 'K':
+                if (p->pk_len != 0) { snprintf(why, (size_t)whylen, "'%c' packet with length %d", p->pk_type, p->pk_len); return -1; }
+                if (p->pk_type == 'M' && !p->muted) { p->muted = 1; ph_gap(p); fprintf(stderr, "[phone] muted (phone is talking)\n"); }
+                if (p->pk_type == 'U' && p->muted) { p->muted = 0; fprintf(stderr, "[phone] unmuted\n"); }
+                p->pk_n = 0;
+                break;
+            default:
+                snprintf(why, (size_t)whylen, "unknown packet type 0x%02x", p->pk_type);
+                return -1;
+            }
+            continue;
+        }
+        /* audio payload byte */
+        if (p->have_half) {
+            if (!p->muted) ph_push(p, (int16_t)(uint16_t)(p->half | (unsigned)ch << 8));
+            p->have_half = 0;
+        } else {
+            p->half = ch;
+            p->have_half = 1;
+        }
+        if (++p->pk_got == p->pk_len) p->pk_n = 0;
+    }
+    return 0;
+}
+
+static int ph_open(audio_src_t *a, const char *arg, char *err, int errlen)
+{
+    phone_t *p = calloc(1, sizeof *p);
+    if (!p || !(p->fifo = malloc(PHONE_FIFO * sizeof(int16_t)))) { free(p); snprintf(err, errlen, "out of memory"); return -1; }
+    a->ph = p;
+    p->fd = -1;
+    snprintf(p->host, sizeof p->host, "127.0.0.1");
+    p->port = PHONE_DEFAULT_PORT;
+    if (arg && *arg) {
+        const char *colon = strrchr(arg, ':');
+        if (colon) {
+            snprintf(p->host, sizeof p->host, "%.*s", (int)(colon - arg), arg);
+            arg = colon + 1;
+        }
+        char *end;
+        long port = strtol(arg, &end, 10);
+        if (*end || port <= 0 || port > 65535 || !p->host[0]) {
+            snprintf(err, errlen, "bad phone input (phone | phone:PORT | phone:HOST:PORT)");
+            return -1;
+        }
+        p->port = (int)port;
+    }
+    p->backoff_ms = 500;
+    fprintf(stderr, "[phone] mic stream from %s:%d (iPhone/AirPods, MIC1)\n", p->host, p->port);
+    return 0;
+}
+
+static int ph_read(phone_t *p, int16_t *buf, int n)
+{
+    long long deadline = mono_ms() + PHONE_WAIT_MS;
+    for (;;) {
+        int got = 0;
+        while (got < n && p->f_n > 0 && !(p->ngaps && p->popped >= p->gaps[0])) {
+            buf[got++] = p->fifo[p->f_head];
+            p->f_head = (p->f_head + 1) % PHONE_FIFO;
+            p->f_n--;
+            p->popped++;
+        }
+        if (got) return got;
+        if (p->ngaps && p->popped >= p->gaps[0]) {
+            memmove(p->gaps, p->gaps + 1, (size_t)(--p->ngaps) * sizeof p->gaps[0]);
+            return AUDIO_GAP;
+        }
+        long long now = mono_ms(), left = deadline - now;
+        if (left <= 0) return AUDIO_IDLE;
+        if (p->fd < 0) {
+            if (now < p->next_try) {
+                long long w = p->next_try - now < left ? p->next_try - now : left;
+                struct timespec ts = { (time_t)(w / 1000), (long)(w % 1000) * 1000000L };
+                nanosleep(&ts, NULL);
+            } else {
+                ph_connect(p, (int)left);
+            }
+            continue;
+        }
+        struct pollfd pf = { p->fd, POLLIN, 0 };
+        int pr = poll(&pf, 1, (int)left);
+        if (pr < 0 && errno != EINTR) { ph_drop(p, strerror(errno)); continue; }
+        if (pr <= 0) {
+            if (mono_ms() - p->last_rx_ms > PHONE_IDLE_MS) ph_drop(p, "no data for 3 s");
+            continue;
+        }
+        unsigned char rb[4096];
+        ssize_t r = recv(p->fd, rb, sizeof rb, 0);
+        if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) continue;
+        if (r <= 0) { ph_drop(p, r == 0 ? "phone closed the stream" : strerror(errno)); continue; }
+        p->last_rx_ms = mono_ms();
+        char why[96];
+        if (ph_feed(p, rb, (int)r, why, sizeof why) < 0) ph_drop(p, why);
+    }
+}
+
 audio_src_t *audio_open(const char *spec, char *err, int errlen)
 {
     audio_src_t *a = calloc(1, sizeof *a);
@@ -200,6 +453,9 @@ audio_src_t *audio_open(const char *spec, char *err, int errlen)
         a->kind = SRC_RAW;
         a->f = !strcmp(spec + 4, "-") ? stdin : fopen(spec + 4, "rb");
         if (!a->f) { snprintf(err, errlen, "open %s: %s", spec + 4, strerror(errno)); free(a); return NULL; }
+    } else if (!strcmp(spec, "phone") || !strncmp(spec, "phone:", 6)) {
+        a->kind = SRC_PHONE;
+        if (ph_open(a, spec[5] == ':' ? spec + 6 : NULL, err, errlen) < 0) { audio_close(a); return NULL; }
     } else if (!strncmp(spec, "qnx", 3)) {
 #ifdef __QNX__
         a->kind = SRC_QNX;
@@ -210,7 +466,7 @@ audio_src_t *audio_open(const char *spec, char *err, int errlen)
         return NULL;
 #endif
     } else {
-        snprintf(err, errlen, "unknown input '%s' (qnx | qnx:C,D | wav:FILE | raw:-|FILE)", spec);
+        snprintf(err, errlen, "unknown input '%s' (qnx | qnx:C,D | wav:FILE | raw:-|FILE | phone[:HOST:PORT])", spec);
         free(a);
         return NULL;
     }
@@ -240,6 +496,8 @@ int audio_read(audio_src_t *a, int16_t *buf, int n)
         }
         return o;
     }
+    case SRC_PHONE:
+        return ph_read(a->ph, buf, n);
     case SRC_QNX:
 #ifdef __QNX__
         return qnx_read(a, buf, n);
@@ -249,12 +507,26 @@ int audio_read(audio_src_t *a, int16_t *buf, int n)
     }
 }
 
-int audio_is_live(const audio_src_t *a) { return a->kind == SRC_QNX || (a->kind == SRC_RAW && a->f == stdin); }
+int audio_is_live(const audio_src_t *a)
+{
+    return a->kind == SRC_QNX || a->kind == SRC_PHONE || (a->kind == SRC_RAW && a->f == stdin);
+}
+
+const char *audio_state(const audio_src_t *a)
+{
+    if (a->kind != SRC_PHONE) return "";
+    return a->ph->fd < 0 || !a->ph->hdr_done ? "down" : a->ph->muted ? "muted" : "up";
+}
 
 void audio_close(audio_src_t *a)
 {
     if (!a) return;
     if (a->f && a->f != stdin) fclose(a->f);
+    if (a->ph) {
+        if (a->ph->fd >= 0) close(a->ph->fd);
+        free(a->ph->fifo);
+        free(a->ph);
+    }
 #ifdef __QNX__
     if (a->pcm) {
         snd_pcm_plugin_flush(a->pcm, SND_PCM_CHANNEL_CAPTURE);

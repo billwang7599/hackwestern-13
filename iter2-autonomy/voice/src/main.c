@@ -16,7 +16,9 @@
  *
  * Usage: tars_voice [-c voice.conf] [--input SPEC] [--model FILE] [--host H] [--port P]
  *                   [--threads N] [--any] [--dry] [--save-dir DIR] [--list]
- *   SPEC: qnx | qnx:C,D | wav:FILE | raw:-   (see audio.h)
+ *   SPEC: qnx | qnx:C,D | wav:FILE | raw:- | phone[:HOST:PORT]   (see audio.h)
+ *   phone = the iPhone on the car streams the AirPods mic (TCP 5577, "MIC1"): the same
+ *   VAD -> whisper -> wake word -> intent path as the io-audio mic.
  *   --any   don't require the wake word ("TARS ...")
  *   --dry   print the commands, don't connect to tars_motor
  * Every heard segment is logged as one line:
@@ -790,7 +792,8 @@ static int net_listen(const char *host, int port)
 static void usage(void)
 {
     fprintf(stderr,
-        "usage: tars_voice [-c voice.conf] [--input qnx|qnx:C,D|wav:FILE|raw:-] [--model FILE]\n"
+        "usage: tars_voice [-c voice.conf] [--input qnx|qnx:C,D|wav:FILE|raw:-|phone[:HOST:PORT]]\n"
+        "                  [--model FILE]\n"
         "                  [--host H] [--port P] [--goto-host H] [--goto-port P] [--threads N]\n"
         "                  [--audio-ctx N] [--any] [--dry]\n"
         "                  [--save-dir DIR] [--list]\n");
@@ -890,8 +893,19 @@ int main(int argc, char **argv)
         int r = audio_read(au, frame + fill, VAD_FRAME - fill);
         const int16_t *seg = NULL;
         int segn = 0, done = 0;
-        if (r < 0) { fprintf(stderr, "[voice] audio read error\n"); break; }
-        if (r == 0) {
+        if (r == AUDIO_IDLE) goto housekeeping;          /* phone: link down / muted / no data yet */
+        if (r == AUDIO_GAP) {
+            /* phone muted (it's talking) or the link broke: what follows isn't continuous with
+             * what came before. Finish the segment in progress (speech said before the mute is
+             * still the user's), drop the half frame and the pre-roll. */
+            fill = 0;
+            if (!vad_flush(&vad, &seg, &segn)) {
+                vad.ring_fill = 0;
+                vad.loud_run = 0;
+                goto housekeeping;
+            }
+        } else if (r < 0) { fprintf(stderr, "[voice] audio read error\n"); break; }
+        else if (r == 0) {
             done = 1;
             if (!vad_flush(&vad, &seg, &segn)) break;
         } else {
