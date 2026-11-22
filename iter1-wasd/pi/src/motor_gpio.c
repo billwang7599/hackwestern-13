@@ -12,7 +12,15 @@
  * -d options (comma separated, all optional): invl, invr (flip a side's
  * direction), swap (left<->right), min=<0..1> (duty for the smallest non-zero
  * drive, default 0.35: below that the SM11 motors just hum), mm_s=, deg_s=
- * (speeds at D 1, default 150 / 120, the SM11 kit numbers).
+ * (speeds at D 1, default 150 / 120, the SM11 kit numbers), turn=swing|pivot (default
+ * swing), kick_ms= (default 200).
+ *
+ * Turning torque: an in-place pivot (one side forward, the other back) scrubs all four
+ * tyres and stalls on this battery. In swing mode a pivot request becomes a swing turn:
+ * the side that would run backwards brakes and the other side drives, so the car turns
+ * about the braked side. Every start or direction change gets kick_ms at 100% duty to
+ * break the tyres loose. A stopped side is braked (IN1 = IN2 = EN = high), like the Uno
+ * firmware's BRAKE_ON_STOP; a stale feed still coasts everything off.
  *
  * MOVE/TURN are timed open loop like the Uno's DC firmware: MOVE at full
  * duty, TURN at full (speed >= 0.99) or slow (0.40) duty, for amount / rate.
@@ -52,7 +60,8 @@ static int inv_l, inv_r, swap_lr;
 static float min_duty = 0.35f;
 static int write_errors;
 static float rate_mm_s = 150.0f, rate_deg_s = 120.0f;
-#define SLOW_TURN 0.40f
+static int swing = 1;
+static long long kick_ns = 200000000LL;
 
 /* timed exact move, protected by mu */
 static char mv_kind;
@@ -96,14 +105,18 @@ static float duty_of(float v)
     return min_duty + (1.0f - min_duty) * a;
 }
 
-/* direction pins first, with that side's enable off while it flips */
-static void set_dir(int en, int ina, int inb, float v)
+/* direction pins first, with that side's enable off while it flips. v == 0 with brake:
+ * IN1 = IN2 = high (the enable is set high by the caller = short brake) */
+static void set_dir(int en, int ina, int inb, float v, int brake)
 {
-    int fwd = v > 0.0f, rev = v < 0.0f;
-    if ((pin_on[ina] != fwd || pin_on[inb] != rev)) pin_set(en, 0);
-    pin_set(ina, fwd);
-    pin_set(inb, rev);
+    int a = v > 0.0f || (v == 0.0f && brake), b = v < 0.0f || (v == 0.0f && brake);
+    if (pin_on[ina] != a || pin_on[inb] != b) pin_set(en, 0);
+    pin_set(ina, a);
+    pin_set(inb, b);
 }
+
+/* turn rate the car actually gets at full duty (swing turns about one side: half a pivot's) */
+static float turn_rate(void) { return swing ? rate_deg_s * 0.5f : rate_deg_s; }
 
 static void sleep_until(long long t_ns)
 {
@@ -122,19 +135,34 @@ static void *pwm_main(void *arg)
 {
     (void)arg;
     long long start = mono_ns();
+    int sign_l = 0, sign_r = 0;
+    long long kick_l = 0, kick_r = 0;
     while (pwm_running) {
         pthread_mutex_lock(&mu);
         float l = mv_kind ? mv_l : want_l, r = mv_kind ? mv_r : want_r;
         int stale = mono_ns() - fed_ns > FEED_TIMEOUT_NS;
         pthread_mutex_unlock(&mu);
         if (stale) l = r = 0.0f;
+        if (fabsf(l) < 0.03f) l = 0.0f;
+        if (fabsf(r) < 0.03f) r = 0.0f;
+        if (swing && l * r < 0.0f) {        /* pivot request -> swing: brake the side going back */
+            if (l < 0.0f) l = 0.0f; else r = 0.0f;
+        }
         if (swap_lr) { float t = l; l = r; r = t; }
         if (inv_l) l = -l;
         if (inv_r) r = -r;
 
-        set_dir(ENA, IN1, IN2, l);
-        set_dir(ENB, IN3, IN4, r);
-        float dl = duty_of(l), dr = duty_of(r);
+        /* kick: full duty for kick_ns after a side starts or reverses */
+        long long now0 = mono_ns();
+        int sl = (l > 0) - (l < 0), sr = (r > 0) - (r < 0);
+        if (sl && sl != sign_l) kick_l = now0 + kick_ns;
+        if (sr && sr != sign_r) kick_r = now0 + kick_ns;
+        sign_l = sl; sign_r = sr;
+        int brake = !stale;
+        set_dir(ENA, IN1, IN2, l, brake);
+        set_dir(ENB, IN3, IN4, r, brake);
+        float dl = sl ? (now0 < kick_l ? 1.0f : duty_of(l)) : (brake ? 1.0f : 0.0f);
+        float dr = sr ? (now0 < kick_r ? 1.0f : duty_of(r)) : (brake ? 1.0f : 0.0f);
         pin_set(ENA, dl > 0.0f);
         pin_set(ENB, dr > 0.0f);
 
@@ -168,6 +196,9 @@ static void parse_opts(const char *dev)
         else if (!strncmp(tok, "min=", 4)) min_duty = fminf(fmaxf(strtof(tok + 4, NULL), 0.0f), 1.0f);
         else if (!strncmp(tok, "mm_s=", 5) && strtof(tok + 5, NULL) > 0) rate_mm_s = strtof(tok + 5, NULL);
         else if (!strncmp(tok, "deg_s=", 6) && strtof(tok + 6, NULL) > 0) rate_deg_s = strtof(tok + 6, NULL);
+        else if (!strcmp(tok, "turn=swing")) swing = 1;
+        else if (!strcmp(tok, "turn=pivot")) swing = 0;
+        else if (!strncmp(tok, "kick_ms=", 8)) kick_ns = (long long)fmax(0, strtod(tok + 8, NULL)) * 1000000LL;
         else if (*tok) fprintf(stderr, "[gpio] ignoring option '%s'\n", tok);
     }
 }
@@ -202,8 +233,9 @@ static int gpio_init(const char *dev)
         return -1;
     }
     pthread_attr_destroy(&attr);
-    fprintf(stderr, "[gpio] L298N on GPIO 12/16/20 (left) 13/21/26 (right), 100 Hz PWM, min duty %.2f%s%s%s\n",
-            min_duty, inv_l ? ", left inverted" : "", inv_r ? ", right inverted" : "", swap_lr ? ", swapped" : "");
+    fprintf(stderr, "[gpio] L298N on GPIO 12/16/20 (left) 13/21/26 (right), 100 Hz PWM, min duty %.2f, %s turns, kick %lld ms%s%s%s\n",
+            min_duty, swing ? "swing" : "pivot", kick_ns / 1000000LL,
+            inv_l ? ", left inverted" : "", inv_r ? ", right inverted" : "", swap_lr ? ", swapped" : "");
     return 0;
 }
 
@@ -226,8 +258,9 @@ static void mv_end_locked(int ok, const char *why)
 
 static int gpio_move(char kind, float amount, float speed)
 {
-    float v = kind == 'R' && speed < 0.99f ? SLOW_TURN : 1.0f;
-    float rate = (kind == 'M' ? rate_mm_s : rate_deg_s) * duty_of(v);
+    (void)speed;                          /* always full power: fractional duty stalls this car */
+    float v = 1.0f;
+    float rate = kind == 'M' ? rate_mm_s : turn_rate();
     if ((kind != 'M' && kind != 'R') || rate <= 0) return -1;
     pthread_mutex_lock(&mu);
     mv_end_locked(0, "replaced");
@@ -265,8 +298,8 @@ static int gpio_poll(motor_event_t *ev)
     if (wheels_sent < 2) {
         memset(ev, 0, sizeof *ev);
         ev->kind = MOTOR_EV_WHEELS;
-        if (wheels_sent++ == 0) { ev->what = 'D'; ev->amount = rate_mm_s; ev->amount2 = rate_deg_s; }
-        else { ev->what = 'S'; ev->amount = rate_deg_s * duty_of(SLOW_TURN); }
+        if (wheels_sent++ == 0) { ev->what = 'D'; ev->amount = rate_mm_s; ev->amount2 = turn_rate(); }
+        else { ev->what = 'S'; ev->amount = turn_rate(); }   /* "slow" turns run at full power too */
         pthread_mutex_unlock(&mu);
         return 1;
     }

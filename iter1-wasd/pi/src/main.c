@@ -752,8 +752,9 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
                 snprintf(reply, rlen, "ERR invalid keyboard request\n");
                 return;
             }
-            a = key == 'w' || key == 'd' ? .25f : -.25f;
-            b = key == 'w' || key == 'a' ? .25f : -.25f;
+            /* full power: fractional duty stalls the 4WD car (the gpio backend turns A/D into swing turns) */
+            a = key == 'w' || key == 'd' ? 1.0f : -1.0f;
+            b = key == 'w' || key == 'a' ? 1.0f : -1.0f;
             parsed = 2;
         } else parsed = leased ? sscanf(line, "%*s %llu %f %f", &epoch, &a, &b)
                             : sscanf(line, "%*s %f %f", &a, &b);
