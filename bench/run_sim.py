@@ -48,6 +48,9 @@ GOTO_BIN = os.path.join(GOTO_DIR, "build", "goto_host")
 VOICE_BIN = os.path.join(VOICE_DIR, "build", "tars_voice_host")
 RELAY_BIN = os.path.join(MISSION, "build", "mission_relay_host")
 VOICE_MODEL = os.path.join(VOICE_DIR, "models", "ggml-tiny.en-q5_1.bin")
+# the user's car (2026-11-21, ~0.40 x 0.30 m incl. side buffers, not tape-measured): appended to goto.conf for the
+# sim only, so goto.conf (what the robot runs) keeps its defaults until the lead OKs the smaller guard box
+BENCH_CAR_CONF = "car_length_m = 0.40\ncar_width_m = 0.30\nsafety_margin_m = 0.02\nguard_stop_m = 0.30\n"
 
 REAL_PORTS = {"motor": 5555, "goto": 5570, "det": 5571, "nav": 5572, "voice": 5574, "relay": 5575,
               "guard": 5568, "truth": 5590, "car_ctl": 5591, "world_ctl": 5592, "world_state": 5593,
@@ -211,11 +214,11 @@ class Stack:
         self.rows.append(("world sim", f"TCP+UDP {P['world_ctl']}", f"room {self.room['name']}, state UDP {P['world_state']}"))
         # the sim's lidar_guard box = goto.conf's car size (goto --guard-flags), like service.py on the robot
         try:
-            f = subprocess.run([GOTO_BIN, "-c", os.path.join(GOTO_DIR, "goto.conf"), "--guard-flags"],
+            f = subprocess.run([GOTO_BIN, "-c", self.goto_conf(), "--guard-flags"],
                                capture_output=True, text=True, timeout=5).stdout.split()
             hw, stop = float(f[f.index("--half-width") + 1]), float(f[f.index("--stop-distance") + 1])
             line_cmd(P["world_ctl"], [json.dumps({"op": "set", "params": {"guard_half_w": hw, "guard_stop_m": stop}})])
-            self.rows.append(("sim guard box", "-", f"half-width {hw:.3f} m, stop {stop:.3f} m (from goto.conf)"))
+            self.rows.append(("sim guard box", "-", f"half-width {hw:.3f} m, stop {stop:.3f} m (from goto.conf + BENCH_CAR_CONF)"))
         except Exception as e:   # noqa: BLE001 - keep the worldsim defaults
             self.rows.append(("sim guard box", "-", f"worldsim defaults (guard-flags failed: {e})"))
         # 5. voice (optional: needs the host build + model; building fetches whisper.cpp)
@@ -266,6 +269,16 @@ class Stack:
             self.rows.append(("bench", f"http://127.0.0.1:{P['bench']}/", "target sim"))
             self.rows.append(("iPhone 3D map (bench)", f"HTTP {P['phone_room']}", f"room view; scene source TCP {P['phone_scene']}"))
 
+    def goto_conf(self) -> str:
+        """goto.conf + the bench's car size (later keys win), written once into the run dir"""
+        p = os.path.join(self.run_dir, "goto.conf")
+        if not os.path.exists(p):
+            with open(os.path.join(GOTO_DIR, "goto.conf")) as f:
+                text = f.read()
+            with open(p, "w") as f:
+                f.write(text.rstrip("\n") + "\n\n# bench/run_sim.py BENCH_CAR_CONF\n" + BENCH_CAR_CONF)
+        return p
+
     def start_goto(self, mem_text: str | None):
         P = self.ports
         if mem_text:
@@ -275,7 +288,7 @@ class Stack:
             os.remove(self.mem_path)
         p = self.spawn("goto", [GOTO_BIN, "-m", f"127.0.0.1:{P['motor']}", "-p", str(P["goto"]), "-u", str(P["det"]),
                                 "-n", str(P["nav"]), "-r", "0", "-M", self.mem_path, "-v",
-                                "-o", os.path.join(GOTO_DIR, "objects.txt"), "-c", os.path.join(GOTO_DIR, "goto.conf")])
+                                "-o", os.path.join(GOTO_DIR, "objects.txt"), "-c", self.goto_conf()])
         self.goto_proc = p
         self.must(wait_for(lambda: port_open(P["goto"]), 8), "goto didn't open its port", "goto")
         if not any(r[0] == "goto" for r in self.rows):
