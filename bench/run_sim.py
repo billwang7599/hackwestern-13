@@ -293,6 +293,8 @@ class Stack:
             t = getattr(self.a, "goto_timeout", 0) or 0
             if t > 0:   # sim only: the robot keeps goto.conf's strict timeout_s
                 extra += f"timeout_s = {t:g}\n"
+            for kv in getattr(self.a, "goto_conf", None) or []:   # sim experiments: --goto-conf key=value
+                extra += kv.split("=", 1)[0].strip() + " = " + kv.split("=", 1)[1].strip() + "\n"
             with open(p, "w") as f:
                 f.write(text.rstrip("\n") + "\n\n# bench/run_sim.py BENCH_CAR_CONF\n" + extra)
         return p
@@ -468,10 +470,17 @@ def main(argv=None) -> int:
     ap.add_argument("--goto-timeout", type=float, default=900,
                     help="sim only: seconds a whole GOTO may take (overrides goto.conf timeout_s, 240 on the robot; "
                          "0 = use goto.conf)")
+    ap.add_argument("--goto-conf", action="append", default=[], metavar="KEY=VALUE",
+                    help="sim only: append a goto.conf line to the run dir's copy (repeatable; later keys win), "
+                         "e.g. nav_foot_cells=2. The robot's goto.conf is untouched")
     ap.add_argument("--ports-file", default="", help="write ports + pids as JSON here once everything is up")
     a = ap.parse_args(argv)
     if not 0.25 <= a.speed <= 16:
         ap.error("--speed: 0.25..16")
+    for kv in a.goto_conf:
+        k, _, v = kv.partition("=")
+        if not k.strip() or not v.strip() or not k.strip().replace("_", "").replace(".", "").isalnum():
+            ap.error(f"--goto-conf: KEY=VALUE, got {kv!r}")
 
     st = Stack(a)
     done = threading.Event()

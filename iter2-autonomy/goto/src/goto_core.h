@@ -72,6 +72,7 @@ typedef struct {
     double nav_escape_mm;     /* a path leg would start with an obstacle in that zone: pivot to the nearest
                                  heading that's clear and drive this far, then re-plan (0 = off) */
     double robot_radius_m;    /* nav footprint for inflation/fit checks (nav_set_robot_radius); MEASURE the real car */
+    double nav_foot_cells;    /* > 0: nav footprint half-size in 0.1 m cells (nav_set_foot_cells); 0 = ceil(robot_radius_m / 0.1) */
     double nav_move_max_mm;   /* tars_motor's MOVE limit (wheels.h MOVE_MAX_MM): longer legs go in pieces */
     /* ONE source of truth for the car's size. With car_length_m and car_width_m both > 0,
      * goto_cfg_derive() sets robot_radius_m = half the diagonal + safety_margin_m and

@@ -482,6 +482,36 @@ static void test_field(void)
     CHECK(nav_field_build(N, 0, 0, 0.6f, 0.85f) == NAV_ERR_NO_MAP, "empty map");
 }
 
+/* nav_foot_cells: a corridor 6 free cells wide (walls 2 cells thick, as noisy LiDAR draws them).
+ * Radius 0.27 -> ceil = 3 cells -> needs 7: closed. nav_set_foot_cells(2): open. 0: back to closed. */
+static void test_foot_cells(void)
+{
+    nav_t *n = nav_new();
+    nav_set_robot_radius(n, 0.27f);
+    CHECK(nav_foot_cells(n) == 3, "0.27 m -> 3 cells (%d)", nav_foot_cells(n));
+    for (int iz = 70; iz < 130; iz++)
+        for (int ix = 70; ix < 130; ix++) nav_set_cell(n, ix, iz, NAV_FREE);
+    /* a wall across z = 100..101 except a gap of 6 cells at x 97..102 */
+    for (int ix = 70; ix < 130; ix++)
+        if (ix < 97 || ix > 102) { nav_set_cell(n, ix, 100, NAV_OCC); nav_set_cell(n, ix, 101, NAV_OCC); }
+    nav_pt_t out[64];
+    float sx = -0.05f + 0.1f * 0, sz = -1.5f, tx = 0.0f, tz = 1.8f;   /* through the gap to past it */
+    int k = nav_plan(n, sx, sz, tx, tz, out, 64);
+    CHECK(k == NAV_ERR_NO_PATH, "6-cell gap closed at 3 cells (%d)", k);
+    unsigned v = nav_version(n);
+    nav_set_foot_cells(n, 2);
+    CHECK(nav_foot_cells(n) == 2 && nav_version(n) != v, "foot cells 2, version bumped");
+    k = nav_plan(n, sx, sz, tx, tz, out, 64);
+    CHECK(k > 0, "6-cell gap open at 2 cells (%d)", k);
+    nav_set_foot_cells(n, 0);
+    CHECK(nav_foot_cells(n) == 3, "0 = back to ceil(radius)");
+    CHECK(nav_plan(n, sx, sz, tx, tz, out, 64) == NAV_ERR_NO_PATH, "closed again");
+    nav_set_foot_cells(n, -1);
+    nav_set_foot_cells(n, 11);
+    CHECK(nav_foot_cells(n) == 3, "out-of-range values ignored");
+    nav_free(n);
+}
+
 int main(int argc, char **argv)
 {
     int iters = argc > 1 ? atoi(argv[1]) : 200000;
@@ -499,6 +529,7 @@ int main(int argc, char **argv)
     test_recovery();
     test_field();
     test_big_map();
+    test_foot_cells();
     test_fuzz(iters);
     nav_free(N);
     printf("test_nav: %d/%d passed\n", passed, passed + failed);

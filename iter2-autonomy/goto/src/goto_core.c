@@ -75,6 +75,7 @@ void goto_cfg_defaults(goto_cfg *c)
     c->nav_guard_hfov_deg = 60.0;
     c->nav_escape_mm = 300.0;
     c->nav_move_max_mm = 1000.0;
+    c->nav_foot_cells = 0;         /* 0 = ceil(robot_radius_m / 0.1), as mapping.py */
     c->robot_radius_m = 0.35;      /* as before; the SM11 (~0.20 x 0.175 m) wants ~0.18 once that's validated */
     c->car_length_m = 0;           /* unset: the legacy numbers above */
     c->car_width_m = 0;
@@ -142,6 +143,7 @@ int goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen)
         {"nav_guard_stop_m", &c->nav_guard_stop_m, 0}, {"nav_guard_half_w", &c->nav_guard_half_w, 0},
         {"nav_guard_hfov_deg", &c->nav_guard_hfov_deg, 0}, {"nav_escape_mm", &c->nav_escape_mm, 0},
         {"nav_move_max_mm", &c->nav_move_max_mm, 0}, {"robot_radius_m", &c->robot_radius_m, 0},
+        {"nav_foot_cells", &c->nav_foot_cells, 0},
         {"car_length_m", &c->car_length_m, 0}, {"car_width_m", &c->car_width_m, 0},
         {"safety_margin_m", &c->safety_margin_m, 0}, {"guard_stop_m", &c->nav_guard_stop_m, 0},
         {"nav_guard_plan", &c->nav_guard_plan, 0}, {"nav_backtrack", &c->nav_backtrack, 0},
@@ -1357,6 +1359,7 @@ static void do_plan(goto_sm *s);
 /* the robot's footprint half-size in cells, as nav.c inflates it: ceil(radius / NAV_RES) */
 static int foot_cells(const goto_sm *s)
 {
+    if (s->cfg.nav_foot_cells >= 1) return (int)s->cfg.nav_foot_cells;     /* nav_set_foot_cells */
     double r = s->cfg.robot_radius_m > 0 ? s->cfg.robot_radius_m : NAV_DEFAULT_ROBOT_RADIUS;
     int c = (int)ceil(r / NAV_RES - 1e-9);
     return c < 1 ? 1 : c;
@@ -2666,6 +2669,7 @@ void goto_sm_set_nav(goto_sm *s, nav_t *nav)
     s->nav = nav;
     if (!nav) return;
     if (s->cfg.robot_radius_m > 0) nav_set_robot_radius(nav, (float)s->cfg.robot_radius_m);
+    nav_set_foot_cells(nav, s->cfg.nav_foot_cells >= 1 ? (int)s->cfg.nav_foot_cells : 0);
     if (s->cfg.nav_guard_plan > 0)
         nav_set_guard_box(nav, (float)s->cfg.nav_guard_stop_m, (float)s->cfg.nav_guard_half_w, (float)s->cfg.nav_guard_hfov_deg);
     else

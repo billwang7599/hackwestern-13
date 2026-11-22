@@ -851,10 +851,12 @@ int main(int argc, char **argv)
         printf("--half-width %.3f --stop-distance %.3f\n", cfg.nav_guard_half_w, cfg.nav_guard_stop_m);
         return 0;
     }
-    fprintf(stderr, "goto: car %s: robot_radius=%.3f m (nav inflation) guard half_width=%.3f m stop=%.3f m hfov=%.0f"
+    fprintf(stderr, "goto: car %s: robot_radius=%.3f m (nav inflation, footprint %d cells%s) guard half_width=%.3f m stop=%.3f m hfov=%.0f"
             " -> lidar_guard --half-width %.3f --stop-distance %.3f%s\n",
             cfg.car_derived ? "from car_length_m/car_width_m/safety_margin_m" : "legacy (car_* unset)",
-            cfg.robot_radius_m, cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_hfov_deg,
+            cfg.robot_radius_m,
+            cfg.nav_foot_cells >= 1 ? (int)cfg.nav_foot_cells : (int)ceil((cfg.robot_radius_m > 0 ? cfg.robot_radius_m : NAV_DEFAULT_ROBOT_RADIUS) / NAV_RES - 1e-9),
+            cfg.nav_foot_cells >= 1 ? " nav_foot_cells" : "", cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_hfov_deg,
             cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_plan > 0 ? "" : " (guard-aware planning OFF)");
     goto_objects_defaults(&objs);
     if (obj_path && goto_objects_load(&objs, obj_path) < 0) { fprintf(stderr, "goto: can't read %s\n", obj_path); return 1; }
