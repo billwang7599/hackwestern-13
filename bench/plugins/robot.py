@@ -28,6 +28,19 @@ except the 10 Hz STATUS poll and move keepalive PINGs, which `status` already co
 Drive (POST /api/robot/keys): iter1-wasd/laptop/teleop.py's HoldDrive on the server, D at 20 Hz,
 S on release; if the tab stops refreshing held keys for KEY_HEARTBEAT_S (0.35 s, mission.py's
 rule) the server sends S. Manual beats go-to: CANCEL to goto before the first D if goto is busy.
+
+Keyboard override (KD): while tars_motor reports a fresh guard_blocked, a plain D is refused in
+every direction. The robot's own keyboard path (iter2-autonomy/dashboard: control.py +
+headless_keyboard.py) then sends `KD <TARS_KEYBOARD_AUTH> <w|a|s|d>` instead: one key, fixed 0.25
+duty, a 150 ms lease, accepted only if lidar_guard tagged the block as an obstacle (GOB1). The bench
+does the same with the key run_sim gives tars_motor (env TARS_KEYBOARD_AUTH; sim/usb only, never
+the relay): while blocked, a single held S, A or D (back up / spin away) goes as KD automatically;
+W (towards the obstacle) only with Shift held, Andrew's deliberate-override rule. Two keys at once
+stay plain D (and are refused). Voice, goto and scenario motion never use KD. S / STOP unchanged.
+
+State: `status` events and GET /api/robot/state carry
+  "guard": {"state": "clear|blocked|stale|missing|invalid|off|unknown", "reason": <guard_reason>,
+            "override": bool (KD available on this target), "help": plain words for the UI ("" = fine)}
 """
 from __future__ import annotations
 
@@ -46,6 +59,7 @@ from teleop import HoldDrive  # noqa: E402
 
 KEY_HEARTBEAT_S = _mission.KEY_HEARTBEAT_S
 POLL_HZ = 10.0
+KD_KEYS = ("w", "a", "s", "d")
 GOTO_EVERY = 3                     # goto STATUS every 3rd poll (~3.3 Hz)
 EVENTS_KEPT = 60
 DESTS = ("motor", "goto", "voice")
@@ -87,6 +101,38 @@ def parse_kv(reply: str) -> dict:
         if eq:
             out[k] = _num(v)
     return out
+
+
+def _redact(line: str) -> str:
+    """KD carries tars_motor's keyboard key: never let it reach events, the browser or recordings."""
+    return f"KD <key> {line.split()[-1]}" if line[:3].upper() == "KD " else line
+
+
+def guard_info(st: dict | None, override: bool) -> dict:
+    """tars_motor STATUS -> what the guard is doing, in plain words for a person at the keyboard."""
+    if not st:
+        return {"state": "unknown", "reason": "", "override": override, "help": ""}
+    reason = str(st.get("guard_reason", ""))
+    if not st.get("guard_enabled"):
+        return {"state": "off", "reason": reason, "override": override, "help": ""}
+    if st.get("guard_permit"):
+        return {"state": "clear", "reason": reason, "override": override, "help": ""}
+    if reason == "guard_blocked":
+        state = "blocked"
+        help_ = ("Obstacle ahead: the LiDAR guard blocks normal driving. "
+                 + ("Back up with S or spin with A/D (slow keyboard override, 25%); hold Shift+W to creep "
+                    "forward anyway. " if override else "Keyboard override isn't available on this target. ")
+                 + "TURN buttons up to 180° also work.")
+    elif reason in ("guard_stale", "guard_missing"):
+        state = reason[6:]
+        help_ = "The LiDAR guard has gone quiet, so all driving is stopped until it reports again."
+    elif reason == "guard_invalid":
+        state = "invalid"
+        help_ = "The LiDAR guard sent a bad packet, so all driving is stopped."
+    else:
+        state = "blocked"
+        help_ = f"Driving is stopped by the guard ({reason})."
+    return {"state": state, "reason": reason, "override": override, "help": help_}
 
 
 def _num(v: str):
@@ -210,7 +256,7 @@ class Chan:
             e["reply"] = line
             e["ev"].set()
             if e["src"] not in ("poll", "keepalive"):
-                ev = {"dest": self.dest, "line": e["line"], "reply": line, "src": e["src"],
+                ev = {"dest": self.dest, "line": _redact(e["line"]), "reply": line, "src": e["src"],
                       "ms": round((time.monotonic() - e["t0"]) * 1000, 1)}
                 if e["bytes"]:
                     ev["bytes"] = e["bytes"]  # the byte count, never the payload
@@ -259,7 +305,7 @@ class Chan:
         err = getattr(self.link, "error", "") if self.link else "no link"
         r = f"ERR {self.dest} link down ({err})"
         if src not in ("poll", "keepalive"):
-            ev = {"dest": self.dest, "line": line, "reply": r, "src": src, "ms": 0}
+            ev = {"dest": self.dest, "line": _redact(line), "reply": r, "src": src, "ms": 0}
             if nbytes:
                 ev["bytes"] = nbytes
             self.publish("cmd", ev, sticky=False)
@@ -318,6 +364,10 @@ class RobotLink:
                 l.start()
         self.drive = HoldDrive(speed=float(getattr(bench.args, "speed", None) or 0.5))
         self.dlock = threading.Lock()
+        self.shift = False
+        # KD only on a direct local link (sim/usb), never sent through the relay
+        auth = os.environ.get("TARS_KEYBOARD_AUTH", "")
+        self.kd_auth = auth if self.name != "pi" and len(auth) == 32 and auth.isalnum() else ""
         self.key_seen = 0.0
         self.last_d = (0.0, 0.0)
         self.my_moves: set[int] = set()
@@ -428,11 +478,12 @@ class RobotLink:
         return out
 
     # ---- drive
-    def keys(self, held: list[str], speed: float | None) -> dict:
+    def keys(self, held: list[str], speed: float | None, shift: bool = False) -> dict:
         now = time.monotonic()
         lines: list[str] = []
         with self.dlock:
             self.key_seen = now
+            self.shift = bool(shift)
             was_moving = self.drive.moving
             if speed is not None:
                 self.drive.speed = round(min(1.0, max(0.1, float(speed))), 2)
@@ -447,8 +498,8 @@ class RobotLink:
         if starting and self._goto_busy():
             self.chans["goto"].send_nowait("CANCEL", src="drive")
             self.bench.log("drive", "WASD while goto was busy: CANCEL (tars_motor may hold the drive 1.5 s)")
-        self._send_drive(lines)
-        return {"lines": lines, "moving": self.drive.moving}
+        lines = self._send_drive(lines)
+        return {"lines": [_redact(l) for l in lines], "moving": self.drive.moving}
 
     def cancel_goto_if_busy(self, src: str) -> None:
         """Before a manual MOVE/TURN. goto answers CANCEL by sending S to tars_motor, which would
@@ -463,14 +514,34 @@ class RobotLink:
         g = self.goto_status()
         return g is None or g.get("state", "idle") != "idle"
 
-    def _send_drive(self, lines: list[str]) -> None:
+    def _kd_key(self) -> str | None:
+        """The single held key to send as KD, or None for a plain D (see the module docstring)."""
+        if not self.kd_auth or len(self.drive.held) != 1:
+            return None
+        st = self.status()
+        if not st or st.get("guard_permit") or st.get("guard_reason") != "guard_blocked":
+            return None
+        k = next(iter(self.drive.held))
+        if k not in KD_KEYS or (k == "w" and not self.shift):
+            return None
+        return k
+
+    def _send_drive(self, lines: list[str]) -> list[str]:
+        out = []
         for l in lines:
             if l == "S":
                 self.last_d = (0.0, 0.0)
             else:
-                p = l.split()
-                self.last_d = (float(p[1]), float(p[2]))
+                k = self._kd_key()
+                if k:          # tars_motor's KD: fixed 0.25 duty (main.c), w/s straight, a/d spin
+                    l = f"KD {self.kd_auth} {k}"
+                    self.last_d = (0.25 if k in "wd" else -0.25, 0.25 if k in "wa" else -0.25)
+                else:
+                    p = l.split()
+                    self.last_d = (float(p[1]), float(p[2]))
             self.chans["motor"].send_nowait(l, src="drive")
+            out.append(l)
+        return out
 
     def _drive_loop(self) -> None:
         while not self.stop_ev.wait(0.02):
@@ -512,7 +583,8 @@ class RobotLink:
                 "t": time.time(), "ok": st is not None, "fields": st, "raw": raw if not st else "",
                 "links": self.link_state(), "target": self.name,
                 "drive": {"cmd_l": self.last_d[0], "cmd_r": self.last_d[1], "speed": self.drive.speed,
-                          "held": sorted(self.drive.held)}})
+                          "held": sorted(self.drive.held), "override": self._kd_key() is not None},
+                "guard": guard_info(st, bool(self.kd_auth))})
         if n % GOTO_EVERY == 0:
             g = self.chans["goto"]
             if g.connected:
@@ -557,7 +629,8 @@ def setup(bench) -> None:
     def r_keys(q, body):
         d = _j(body)
         sp = d.get("speed")
-        return 200, _link.keys(list(d.get("held") or []), float(sp) if sp is not None else None)
+        return 200, _link.keys(list(d.get("held") or []), float(sp) if sp is not None else None,
+                               bool(d.get("shift")))
 
     def r_move(q, body):
         d = _j(body)
@@ -574,7 +647,7 @@ def setup(bench) -> None:
 
     def r_state(q, body):
         return 200, {"target": _link.name, "links": _link.link_state(), "status": _link.status(),
-                     "goto": _link.goto_status()}
+                     "goto": _link.goto_status(), "guard": guard_info(_link.status(), bool(_link.kd_auth))}
 
     bench.route("POST", "/api/robot/stop", r_stop)
     bench.route("POST", "/api/robot/send", r_send)

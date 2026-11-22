@@ -292,6 +292,17 @@ Tests: `python3 bench/tests/test_ui.py` (needs the host builds above + `make -C 
   server, D at 20 Hz, S on release; the tab refreshes held keys every 100 ms and the server sends
   S if it stops for 0.35 s). Tab hidden/blurred → release. Chart: commanded l/r, tars_motor
   out_l/out_r, and the virtual car's `wl`/`wr` (topic `car`, m/s ÷ `dc_mm_s`) when present.
+  **Guard BLOCKED** (obstacle in the LiDAR guard's forward corridor, e.g. parked at the bin after
+  GOTO): tars_motor refuses every plain `D`, even reverse. The bench then sends Andrew's keyboard
+  drive `KD <TARS_KEYBOARD_AUTH> <key>` (one key, fixed 0.25 duty, 150 ms lease; tars_motor takes
+  it only for a GOB1-tagged obstacle) for a single held **S, A or D**; **W needs Shift** (body
+  `{"held": [...], "speed": s, "shift": true}`). run_sim makes the key per run and gives it to
+  tars_motor and the bench (sim/usb only, never the relay); it is redacted from every event. The
+  sim guard tags obstacle blocks GOB1 like the robot (`guard_gob1`, lidar_guard
+  `--identify-obstacles 1` in service.py). `status` events and `GET /api/robot/state` carry
+  `guard: {state: clear|blocked|stale|missing|invalid|off|unknown, reason, override, help}`;
+  `help` is plain words for the UI (`""` = nothing to explain), shown in the Drive panel's hint
+  line. `status.drive.override` = the held key is going as KD right now.
 - **Status**: every STATUS field grouped; changes flash; "STALE" after 1 s without STATUS.
 - **Scenarios** (`plugins/scenarios.py`, one decorated function each): link, move_1000, turn_90,
   turn_-90, turn_slow, stop_latency, watchdog, stop_mid_move, wheel_direction, speedcal_move /
