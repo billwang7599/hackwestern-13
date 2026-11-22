@@ -293,6 +293,9 @@ class Stack:
             t = getattr(self.a, "goto_timeout", 0) or 0
             if t > 0:   # sim only: the robot keeps goto.conf's strict timeout_s
                 extra += f"timeout_s = {t:g}\n"
+            m = getattr(self.a, "goto_max_replans", 0) or 0
+            if m > 0:   # sim only: exploring a maze sees many new walls; the robot keeps goto.conf's cap
+                extra += f"nav_max_opt_replans = {m:g}\n"
             for kv in getattr(self.a, "goto_conf", None) or []:   # sim experiments: --goto-conf key=value
                 extra += kv.split("=", 1)[0].strip() + " = " + kv.split("=", 1)[1].strip() + "\n"
             with open(p, "w") as f:
@@ -470,6 +473,9 @@ def main(argv=None) -> int:
     ap.add_argument("--goto-timeout", type=float, default=900,
                     help="sim only: seconds a whole GOTO may take (overrides goto.conf timeout_s, 240 on the robot; "
                          "0 = use goto.conf)")
+    ap.add_argument("--goto-max-replans", type=float, default=100,
+                    help="sim only: optimistic re-plans (walls found on the route) before 'replan_cap' "
+                         "(overrides goto.conf nav_max_opt_replans, 25 on the robot; 0 = use goto.conf)")
     ap.add_argument("--goto-conf", action="append", default=[], metavar="KEY=VALUE",
                     help="sim only: append a goto.conf line to the run dir's copy (repeatable; later keys win), "
                          "e.g. nav_foot_cells=2. The robot's goto.conf is untouched")
