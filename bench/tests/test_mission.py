@@ -391,28 +391,12 @@ def main() -> int:
         check(ok, f"phone tee stops -> phone_age grows ({b.state().get('phone_age')}) (panel greys it out)")
 
         # ---------------------------------------------------------------- --laptop-stt
-        if real_voice and shutil.which("say"):
-            print("--laptop-stt")
-            sys.path.insert(0, os.path.join(REPO, "iter2-autonomy", "voice", "tests"))
-            try:
-                import numpy as np
-                import test_e2e as e2e
-                x = e2e.synth("Tars, turn left.", e2e.available_voices()[0])
-                pcm = (np.clip(x / (abs(x).max() + 1e-9) * 0.5, -1, 1) * 32767).astype(np.int16).tobytes()
-                b2 = BenchProc(["--target", "pi", "--relay", f"127.0.0.1:{rl.port}", "--plugins", "robot,mission", "--laptop-stt"],
-                               env=dict(env, MISSION_KEY=tr.KEY), name="stt")
-                benches.append(b2)
-                tr.wait_for(lambda: b2.state()["links"].get("voice", {}).get("up"), 5, 0.1)
-                time.sleep(1.6)
-                r = b2.post("/api/mission/audio", raw=pcm)["reply"]
-                st2 = b2.state()
-                check(r.startswith("OK heard") and "turn left" in r.lower() and st2["laptop_stt"],
-                      f"laptop whisper, robot got HEAR text ({r[:80]})")
-                b2.close()
-            except ImportError as e:
-                print(f"  skip --laptop-stt ({e})")
-        else:
-            print("  skip --laptop-stt (needs the real voice build + macOS say)")
+        # the laptop only sends and receives: on the real robot the Pi transcribes, so the bench refuses it
+        r = subprocess.run([sys.executable, os.path.join(BENCH, "bench.py"), "--target", "pi", "--relay",
+                            f"127.0.0.1:{rl.port}", "--key", tr.KEY, "--laptop-stt"],
+                           capture_output=True, text=True, timeout=20)
+        check(r.returncode != 0 and "--laptop-stt is not allowed" in r.stderr,
+              f"--target pi --laptop-stt -> bench refuses to start (exit {r.returncode})")
 
         # ---------------------------------------------------------------- kill -9 the bench while driving
         print("bench killed while driving")

@@ -244,6 +244,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         if not a.key:
             ap.error("--target pi needs the relay key: --key <key> or MISSION_KEY=<key> "
                      "(the same one mission_relay was started with)")
+        if a.laptop_stt:
+            # the laptop only sends and receives: speech-to-text runs on the Pi (tars_voice AUDIO)
+            ap.error("--laptop-stt is not allowed with --target pi: the Pi transcribes the raw AUDIO itself")
     if a.laptop_stt and not (os.path.exists(a.stt_cli) and os.path.exists(a.model)):
         ap.error(f"--laptop-stt needs {a.stt_cli} (make -C iter2-autonomy/voice host) and {a.model}")
     return a

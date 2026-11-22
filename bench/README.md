@@ -318,6 +318,13 @@ Text or laptop-mic speech goes through the robot's **real** voice code on the la
 | **lines the robot sends** | a **shadow `tars_voice_host`** (the same `main.c`) whose tars_motor / go-to / phone-speech links go to fake listeners on free ports. The lab sends it `HEAR <text>` and records what arrives, in order (e.g. `S`, `CANCEL`, `BEEP 1`, the urgent "Stopping." SAY). The fakes answer `OK`, so `MEMORY SAY` shows "no memory" |
 | transcript (🎤 or batch audio) | `build/stt_cli` (whisper tiny.en, as mission `--laptop-stt`) |
 
+- **Real robot (`--target pi`): the laptop only sends and receives.** Typed text goes as `HEAR <text>`
+  and the 🎤 clip as `AUDIO <n>` + the browser's WAV bytes, untouched. The Pi's `tars_voice` transcribes
+  and decides, and the box shows its reply (`OK heard <action> <intent> <prob> <text>`). No whisper,
+  classifier or shadow `tars_voice` runs on the laptop. Dry run and batch are refused, and `bench.py
+  --laptop-stt` is refused with `--target pi`. For the demo the main mic is the phone's (AirPods, or the
+  phone's own mic when no AirPods are connected), which goes straight to the Pi on 5577. The laptop mic
+  is a backup.
 - **Modes:** *push-to-talk* is the robot's `HEAR`/`AUDIO` input, with no wake word.
   *Robot mic* requires "TARS". Wake carry-over ("TARS" … pause … "turn left") is not modelled.
 - **Mic:** hold 🎤 or **T**. The browser records, decimates to 16 kHz mono and POSTs a WAV

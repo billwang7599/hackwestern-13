@@ -58,6 +58,8 @@
         sw.setAttribute('aria-checked', on);
         $('.sw-title').textContent = on ? (real ? 'Sending to the REAL robot' : 'Send to robot: ON') : 'Dry run: nothing moves';
         $('.sw-note').textContent = !available ? 'voice lab plugin not loaded' : !info.robot_plugin ? 'robot link not loaded: dry run only'
+          : target === 'pi' ? (on ? 'Sent as-is; the Pi transcribes and decides. Click to stop sending.'
+                                  : 'Off: nothing is sent (no dry run here, the Pi decides). Click to send.')
           : on ? 'The robot hears it and acts. Click to switch to dry run.' : 'Only shows what it would do. Click to send for real.';
       }
       async function refresh() {
