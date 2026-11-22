@@ -1,0 +1,126 @@
+{
+ "type": "room",
+ "rev": 5,
+ "name": "pocket_mouth",
+ "about": "Regression (user's 5th demo): a '<' pocket, apex (0.8, 0.9), arms to x 4.5 / 4.0, open only toward +x; bin at (2.0, 0.3) inside, remembered; car starts at (-0.67, 0) behind the apex. The only way in is round an arm's end through floor the phone hasn't seen: goto must plan optimistically and arrive.",
+ "start": {
+  "x": -0.67,
+  "y": 0.0,
+  "th": 0.0
+ },
+ "wall_h": 2.0,
+ "walls": [
+  [
+   -3.0,
+   -4.0,
+   7.0,
+   -4.0
+  ],
+  [
+   7.0,
+   -4.0,
+   7.0,
+   4.0
+  ],
+  [
+   7.0,
+   4.0,
+   -3.0,
+   4.0
+  ],
+  [
+   -3.0,
+   4.0,
+   -3.0,
+   -4.0
+  ],
+  [
+   0.7757575757575758,
+   0.9151515151515152,
+   1.0909090909090908,
+   -0.5151515151515151
+  ],
+  [
+   1.0909090909090908,
+   -0.5151515151515151,
+   4.533333333333333,
+   -0.5151515151515151
+  ],
+  [
+   0.8,
+   0.8909090909090909,
+   1.915151515151515,
+   1.9575757575757575
+  ],
+  [
+   1.9636363636363636,
+   1.9333333333333333,
+   3.9515151515151516,
+   1.981818181818182
+  ]
+ ],
+ "objects": [
+  {
+   "id": "bin",
+   "label": "trash can",
+   "x": 2.0,
+   "y": 0.3,
+   "r": 0.15,
+   "h": 0.4,
+   "yaw": 0.0,
+   "solid": true
+  },
+  {
+   "id": "bottle",
+   "label": "water bottle",
+   "x": 1.2,
+   "y": -1.2,
+   "r": 0.04,
+   "h": 0.25,
+   "yaw": 0.0,
+   "solid": true
+  }
+ ],
+ "memory": [],
+ "labels": [
+  "trash can",
+  "chair",
+  "person",
+  "backpack",
+  "water bottle",
+  "door",
+  "table",
+  "laptop",
+  "cup",
+  "box"
+ ],
+ "hfov_deg": 59.99999999999999,
+ "params": {
+  "pose_noise_m": 0.01,
+  "pose_noise_deg": 0.5,
+  "pose_latency_ms": 60,
+  "dropout_per_min": 0.0,
+  "dropout_s": 1.0,
+  "reloc_m": 0.25,
+  "reloc_deg": 8.0,
+  "phone_hz": 20,
+  "phone_h": 0.25,
+  "lidar_hfov_deg": 60,
+  "lidar_range_m": 5.0,
+  "lidar_rays": 25,
+  "depth_noise_m": 0.01,
+  "guard_hz": 100,
+  "guard_stop_m": 0.6,
+  "guard_half_w": 0.45,
+  "guard_gob1": true,
+  "cam_hz": 8,
+  "cam_latency_ms": 120,
+  "cam_h": 0.12,
+  "det_range_m": 6.0,
+  "conf_near": 0.85,
+  "conf_far": 0.35,
+  "miss_rate": 0.05,
+  "fp_rate": 0.0,
+  "det_jitter_px": 2.0
+ }
+}

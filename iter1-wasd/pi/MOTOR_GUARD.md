@@ -42,7 +42,14 @@ A stub result is always labeled stub.
   not measured braking distances or certified worst-case response times.
 - Any BLOCKED, UNKNOWN, stale/disconnected sensor, guard failure, or malformed
   gate packet denies motion. Denial hard-zeros wheel commands and cancels exact
-  MOVE/TURN and gestures. It never blindly reverses or turns.
+  MOVE/TURN and gestures. It never blindly reverses or turns by itself.
+- Exceptions while the reason is a **fresh `guard_blocked`** (never stale, missing,
+  invalid or UNKNOWN): an in-place `TURN` (speed clamped to 0.40, |deg| <= 180) and a
+  **reverse `MOVE`** (mm < 0, speed clamped to 0.50; DC wheels ignore MOVE speed) are
+  accepted, so a client can pivot or back out the way it came. The guard only watches
+  ahead, so these rely on the caller (goto retraces its own breadcrumb trail). A forward
+  MOVE, D/DL and a faster running reverse/turn still abort. S, tip, bump, the watchdog
+  and the deadman still stop them. Pending Andrew's sign-off.
 - `DL <guard_epoch> <left> <right>` is the phone bridge's leased drive command.
   STATUS supplies the epoch; every clear-to-denied event increments it. The bridge
   pins the epoch for one phone button press. Old repeated commands remain refused

@@ -48,6 +48,16 @@ waiting for data. No inferred points enter the measured LiDAR binary protocol.
 A separate short-lived inferred-obstacle message can veto CLEAR; it cannot
 override a measured stop, establish free space, or compensate for missing LiDAR.
 
+**Corridor size flags.** `--half-width <m>` (0.05–1.0, default 0.45) and
+`--stop-distance <m>` (>0.15–2.0, default 0.6) set the envelope above. The
+three floor bands are thirds of the corridor and the map-supported floor cells
+span 0.15 m..stop distance, so both shrink with it. The inferred-obstacle stop
+uses the same stop distance. The status JSON reports `half_width_m` and
+`stop_distance_m`. Without the flags behaviour is unchanged. The values are meant
+to come from the car size in `iter2-autonomy/goto/goto.conf` (`car_length_m`,
+`car_width_m`, `safety_margin_m`, `guard_stop_m`), so the planner and the guard
+agree. `goto -c goto.conf --guard-flags` prints the matching flags.
+
 These dimensions and coverage rules are prototype values. Mounting extrinsics,
 robot footprint, blind spots, slopes, drop-offs and stopping dynamics still need
 validation before hardware motion can use a clearance decision.

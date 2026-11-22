@@ -11,11 +11,10 @@ truth integrates tars_motor's pose CHANGES with errors the robot can't see:
 tars_motor (and the Uno) still believe the commanded amounts; the fake iPhone (LDR1 pose
 + LiDAR), the fake lidar_guard and the fake YOLO all see the truth. goto re-plans from the
 phone's pose after every leg (5b954ce), so it should still get there.
-Known (2026-11-21, 64/65): "moved" with MOVE x1.25 TURN x0.75 fails "old spot A downgraded":
-goto's object memory merges a sighting by tars_motor's dead-reckoned x/y (here 2 m off),
-so the bin seen at B refreshes instance #1 (A) instead of downgrading it. It still docks
-at B and #1's map= (ARKit) spot moves to B. Fix belongs in goto_core.c (merge by navw
-when both have one), left for after the deflake merge.
+Fixed (was a known miss, 64/65): "moved" failed "old spot A downgraded" because goto's
+object memory merged a sighting by tars_motor's dead-reckoned x/y (here 2 m off), so the bin
+seen at B refreshed instance #1 (A). It now merges by map position (navw) with a fresh ARKit
+pose (goto_core.c mem_match, test_core test_memory_merge_by_map).
 The stub's WHEELCAL 260 400 (test_fullstack.Motor) runs ~163 mm/s straight: about the
 SM11 cap (150 mm/s), so the speeds roughly match the DC car too.
 """
