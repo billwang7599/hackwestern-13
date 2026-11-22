@@ -169,7 +169,7 @@ struct SurroundingsView: View {
         if !connected { return "Pi disconnected — map is not updating." }
         if !snapshot.valid { return "Waiting for a valid surroundings map from the Pi." }
         if snapshot.tracking == "normal" && !snapshot.floorReady {
-            return "With the rover on the floor, tap Set floor to use the mount height."
+            return "With the rover on the floor, tap Calibrate to measure the floor."
         }
         if !usable { return "Tracking \(snapshot.tracking) — map is not current; paths are disabled." }
         return "Tracking active · floor calibrated · unknown areas stay blocked."

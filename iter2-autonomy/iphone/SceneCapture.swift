@@ -564,6 +564,43 @@ struct RelativeDepthCalibration {
 }
 
 // BEGIN REMEMBERED_DEPTH_MATH — Foundation + simd only; exercised by test_depth_geometry.py.
+/// Mount calibration for any phone placement (height, tilt, sideways yaw on the robot).
+fileprivate enum MountCalibration {
+    /// Floor height (world Y) from the LiDAR frame itself: the lowest large horizontal surface
+    /// below the camera. Works for any mount height and tilt. nil if the floor isn't in view.
+    static func lidarFloor(_ grid: SceneDepthGrid, cameraY: Float) -> (y: Float, points: Int)? {
+        var ys = [Float]()
+        for y in stride(from: 0, to: grid.height, by: 2) {
+            for x in stride(from: 0, to: grid.width, by: 2) {
+                guard let d = grid.depth(x: x, y: y) else { continue }
+                let p = grid.project(x: x, y: y, depth: d)
+                if p.y < cameraY - 0.03, p.y > cameraY - 1.6 { ys.append(p.y) }
+            }
+        }
+        guard ys.count >= 80 else { return nil }
+        let bin: Float = 0.02, base = cameraY - 1.6
+        var counts = [Int](repeating: 0, count: Int(1.6 / bin) + 2)
+        for y in ys { counts[min(counts.count - 1, max(0, Int((y - base) / bin)))] += 1 }
+        let peak = counts.max() ?? 0
+        // Lowest bin that is a real surface (>= 40% of the biggest one): the floor, not a table top.
+        guard peak >= 40, let lowest = counts.firstIndex(where: { $0 >= max(40, peak * 2 / 5) }) else { return nil }
+        let centre = base + (Float(lowest) + 0.5) * bin
+        let inliers = ys.filter { abs($0 - centre) <= 0.03 }.sorted()
+        guard inliers.count >= 60 else { return nil }
+        return (inliers[inliers.count / 2], inliers.count)
+    }
+
+    /// Phone attitude relative to gravity, degrees: pitch = lens up(+)/down(-), roll = about the lens axis.
+    static func tilt(_ t: simd_float4x4) -> (pitch: Float, roll: Float) {
+        let back = SIMD3(t.columns.2.x, t.columns.2.y, t.columns.2.z)   // +Z = out of the screen, lens looks -Z
+        let pitch = asin(max(-1, min(1, -back.y))) * 180 / .pi
+        let roll = atan2(t.columns.0.y, t.columns.1.y) * 180 / .pi
+        return (pitch, roll)
+    }
+
+    static func wrap(_ a: Float) -> Float { atan2(sin(a), cos(a)) }
+}
+
 enum MountedFloor {
     // Same rear-face geometry as mapping.mount_heights: the midpoint of the
     // power-button edge sits six inches above the ground, +X points toward USB.
@@ -777,6 +814,13 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
     private var activeGeneration: UUID?
     private var sessionID = UUID().uuidString
     private var floorY: Float?
+    private var arFloorY: Float?           // lowest ARKit floor plane, a calibration fallback
+    /// Phone yaw on the robot (rad): robot forward = phone forward + mountYaw. Learned by Calibrate.
+    private var mountYaw: Float = Float(UserDefaults.standard.double(forKey: "mountYawRad"))
+    private var yawCal: (x: Float, z: Float, heading: Float, until: TimeInterval)?
+    private func heading(_ t: simd_float4x4) -> Float {
+        MountCalibration.wrap(atan2(-t.columns.2.x, -t.columns.2.z) + mountYaw)
+    }
     private var explicitFloor = false
     private var latestFrame: ARFrame?
     private var previewBusy = false
@@ -984,6 +1028,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard wanted, frame.timestamp >= runRequestedAt else { return }
         latestFrame = frame
+        updateYawCalibration(frame)
         // The first post-run callback is never accepted as relocalized data.
         let first = awaitingFirstFrame
         awaitingFirstFrame = false
@@ -1092,7 +1137,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
             Self.appendBE(flags, to: &data)
             Self.appendBE(UInt32(points.count), to: &data)
             for value in [t.columns.3.x, t.columns.3.y, t.columns.3.z,
-                          atan2(-t.columns.2.x, -t.columns.2.z), floor ?? 0] { Self.appendFloat(value, to: &data) }
+                          self.heading(t), floor ?? 0] { Self.appendFloat(value, to: &data) }
             for point in points { for value in point { Self.appendFloat(value, to: &data) } }
             if self.current(token) { self.safety.send(data) }
         }
@@ -1113,7 +1158,7 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
             }
             let packet: [String: Any] = ["version": 1, "session": id, "timestamp": frame.timestamp,
                 "tracking": tracking,
-                "pose": [t.columns.3.x, t.columns.3.y, t.columns.3.z, atan2(-t.columns.2.x, -t.columns.2.z)],
+                "pose": [t.columns.3.x, t.columns.3.y, t.columns.3.z, self.heading(t)],
                 "floor_y": floor.map { $0 as Any } ?? NSNull(), "points": depth?.points(allowMedium: true) ?? [], "objects": objects,
                 "surfaces": depth?.surfaceSamples(frame.capturedImage) ?? [],
                 "depth_size": depth.map { [$0.width, $0.height] } ?? [],
@@ -1465,27 +1510,64 @@ final class CameraServer: NSObject, ObservableObject, ARSessionDelegate {
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { updateFloor(anchors) }
     func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { updateFloor(anchors) }
     private func updateFloor(_ anchors: [ARAnchor]) {
-        guard wanted, !explicitFloor, lastTracking == "normal" else { return }
+        guard wanted, lastTracking == "normal" else { return }
         for case let plane as ARPlaneAnchor in anchors where plane.classification == .floor {
             let center = plane.transform * SIMD4<Float>(plane.center.x, plane.center.y, plane.center.z, 1)
-            floorY = center.y
+            arFloorY = min(arFloorY ?? center.y, center.y)
+            if !explicitFloor { floorY = center.y }
         }
     }
 
-    func setFloor() {
+    /// General mount calibration (the "Calibrate" button). Robot resting on the floor, floor in view:
+    /// 1. floor height from the LiDAR frame (fallback: ARKit floor plane, then the old 6-inch mount guess),
+    /// 2. phone pitch / roll reported, 3. heading: the next straight drive of ~30 cm sets mountYaw.
+    func calibrate() {
         queue.async {
             guard self.wanted, self.lastTracking == "normal", let frame = self.latestFrame,
-                  (0...0.5).contains(ProcessInfo.processInfo.systemUptime - frame.timestamp),
-                  let floor = MountedFloor.worldY(camera: frame.camera.transform) else {
-                self.report("Set floor needs a current tracked camera pose. Keep the phone mounted and try again.")
+                  (0...0.5).contains(ProcessInfo.processInfo.systemUptime - frame.timestamp) else {
+                self.report("Calibrate needs a tracked camera: press Start, wait for tracking, try again.")
                 return
             }
+            let t = frame.camera.transform, camY = t.columns.3.y
+            var source = "", floor: Float?
+            if let grid = SceneDepthGrid(frame), let found = MountCalibration.lidarFloor(grid, cameraY: camY) {
+                floor = found.y; source = "LiDAR, \(found.points) pts"
+            } else if let ar = self.arFloorY, camY - ar > 0.03, camY - ar < 1.6 {
+                floor = ar; source = "ARKit floor plane"
+            } else if let mount = MountedFloor.worldY(camera: t) {
+                floor = mount; source = "mount guess: aim the phone more at the floor and redo"
+            }
+            guard let floor else { self.report("Calibrate: no floor found. Point the phone at more floor."); return }
             self.floorY = floor
             self.explicitFloor = true
-            let heightCM = (frame.camera.transform.columns.3.y - floor) * 100
-            self.report(String(format: "Floor set from mount · camera %.1f cm above floor", heightCM))
+            let tilt = MountCalibration.tilt(t)
+            self.yawCal = (t.columns.3.x, t.columns.3.z, atan2(-t.columns.2.x, -t.columns.2.z), frame.timestamp + 90)
+            self.report(String(format: "Calibrated · floor %@ · camera %.1f cm up · pitch %+.0f° roll %+.0f° · now drive straight ~30 cm for heading",
+                               source, (camY - floor) * 100, tilt.pitch, tilt.roll))
         }
     }
+
+    /// Heading step of calibrate(): robot forward = direction of the first straight ~30 cm drive.
+    private func updateYawCalibration(_ frame: ARFrame) {
+        guard var cal = yawCal, lastTracking == "normal" else { return }
+        let t = frame.camera.transform
+        let raw = atan2(-t.columns.2.x, -t.columns.2.z)
+        if frame.timestamp > cal.until { yawCal = nil; return }
+        if abs(MountCalibration.wrap(raw - cal.heading)) > 0.10 {       // turned: start the straight leg again
+            cal = (t.columns.3.x, t.columns.3.z, raw, cal.until); yawCal = cal; return
+        }
+        let dx = t.columns.3.x - cal.x, dz = t.columns.3.z - cal.z
+        guard hypot(dx, dz) >= 0.30 else { return }
+        var offset = MountCalibration.wrap(atan2(dx, dz) - raw)
+        if abs(offset) > 2.1 { offset = MountCalibration.wrap(offset + .pi) }   // drove backwards
+        yawCal = nil
+        guard abs(offset) <= 0.8 else { report("Heading calibration ignored (drive was not straight)"); return }
+        mountYaw = offset
+        UserDefaults.standard.set(Double(offset), forKey: "mountYawRad")
+        report(String(format: "Heading calibrated · phone yawed %+.0f° on the robot", offset * 180 / .pi))
+    }
+
+    var mountYawDegrees: Double { Double(mountYaw) * 180 / .pi }
 
     // Gravity fixes roll and pitch. Store a wall tag's horizontal normal and
     // metric position so a correction cannot tilt the floor or change scale.

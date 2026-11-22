@@ -89,8 +89,8 @@ struct MotionUSBApp: App {
                 if server.running { server.stop(); camera.stop() }
                 else { server.start(); if server.running { camera.start() } }
             }.buttonStyle(.borderedProminent)
-            Button("Set floor") { camera.setFloor() }
-                .accessibilityHint("Uses the mounted phone height with the rover resting on the floor.")
+            Button("Calibrate") { camera.calibrate() }
+                .accessibilityHint("Robot on the floor with floor in view: measures the floor with LiDAR, then learns the heading from the next straight drive.")
             Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
             Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
             Button { controls.toggle() } label: {
