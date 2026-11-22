@@ -84,3 +84,27 @@ Frames: ARKit (x, y, z) = (world y, world z, world x), yaw = world th, floor_y =
 Tests: `python3 bench/tests/test_phone.py` (no phone needed). Andrew's own:
 `python3 -m unittest discover -s iter2-autonomy/dashboard -p 'test_*.py'` (the native-map tests
 need `make -C iter2-autonomy/goto host` first).
+
+## Phone in the loop: `python3 bench/run_sim.py --phone usb`
+
+The real phone replaces the world sim; the code it feeds is the Pi's, built for the Mac. The virtual car takes
+the MOVE/TURN, and nothing moves the phone, so carry it at car height (~14 cm) along the route goto draws.
+
+```
+phone 5562 LDR1 ─usbmuxd─► link.py 127.0.0.1:5562 ─► lidar_guard ─GAT1/GOB1 UDP─► tars_motor -g (guard gate)
+                                  └─ tee, TCP ────────────────────────────────────► goto nav port (map + ARKit pose)
+phone 5563 RGB1 ─usbmuxd─► link.py 127.0.0.1:5563 ─► rgb_broker :5566 ─► detect (YOLO-World, ORT) ─UDP─► goto 5571
+goto ─MOVE/TURN─► tars_motor ─► virtual SM11 (real firmware on a pty)        bench --target phone: live 2D view
+```
+
+On the Pi it's the same except `iproxy` instead of `link.py`, and `lidar_guard --nav-port` tees over UDP. A full
+LDR1 frame (1024 points) is 12332 B, over macOS's 9216 B UDP datagram cap, so on the Mac link.py tees to goto
+over TCP (goto takes both). The bytes to lidar_guard are passed through unchanged.
+
+Needs: `make -C iter2-autonomy/goto host-detect-phone` (ONNX Runtime + jpeg-turbo; `ORT_PHONE=<ORT SDK dir>`
+if ORT isn't from brew), `iter2-autonomy/goto/models/yolo_world.onnx` + `labels.txt` (get_model.sh). Without
+detect it still runs (map, pose, guard) and GOTO reports no camera frames. `lidar_guard` builds itself.
+Not set for the phone yet: `hfov_deg` (goto.conf keeps the C270's 60; the upright phone frame is narrower,
+unmeasured) and `--detect-rotate` (270, as on the Pi; check with detect `--save-frame`).
+Rehearse without a phone: `python3 bench/phone/fake_phone.py`, then `run_sim.py --phone tcp:127.0.0.1
+--phone-ports <ldr>,<rgb>`. Test: `python3 bench/tests/test_phone_loop.py`.
