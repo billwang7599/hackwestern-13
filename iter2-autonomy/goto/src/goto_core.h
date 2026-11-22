@@ -92,6 +92,12 @@ typedef struct {
     double nav_unknown_leg_mm;/* a leg through unknown floor drives at most this far, then re-plans */
     double nav_travel_cap_m;  /* optimistic routes: give up after driving this far (0 = 3 x first route + 2 m) */
     double nav_max_opt_replans;/* optimistic routes: re-plans because the map showed a wall on the route */
+    /* heading-aware, sticky routes (all 0 = off: the robot's behaviour before them) */
+    double nav_turn_cost_m;   /* A*: metres of route a 90 deg corner costs (fewer corners = fewer TURNs) */
+    double nav_start_turn_cost_m; /* A*: metres per 90 deg between the car's heading and the first leg (U-turn = 2x) */
+    double nav_sticky;        /* 1 = a map-change re-plan keeps the current route if it still fits, else repairs it */
+    double nav_sticky_frac;   /* ... unless the fresh route is cheaper by this fraction ... */
+    double nav_sticky_m;      /* ... and by at least this many metres */
     /* per-object arrive override, e.g. person is tall: arrive_h.person = 0.85 */
     int    n_arrive_over;
     char   arrive_over_label[16][32];
@@ -377,6 +383,11 @@ typedef struct {
     int unreachable;                  /* ... for some instance this GOTO: fail reason unreachable */
     double travel_m, opt_len0, last_move_mm;
     int opt_replans, leg_cut;
+    int sticky_map;                   /* the pending re-plan is because the map changed under the route */
+    int sticky_kept, sticky_repairs;  /* nav_sticky outcomes this GOTO (STATUS) */
+    int backed_off;                   /* the last plan_from_robot_1 route starts with a back-off cell */
+    int rt_vantage;                   /* the goal the current route was planned to */
+    double rt_gx, rt_gz;
     int gone_ids[8], n_gone;          /* instances looked at this GOTO with a clear view: not there */
     /* lidar_guard via tars_motor STATUS */
     int guard_known, guard_ok;

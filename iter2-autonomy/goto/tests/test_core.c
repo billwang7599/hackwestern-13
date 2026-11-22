@@ -1400,6 +1400,75 @@ static void test_map_temp_blocks_not_unreachable(void)
           "a real wall in the gap -> unreachable (%s, %.200s)", S.result, EV);
 }
 
+/* Sticky re-planning (nav_sticky). A known room, the goal 4.5 m to +x behind a wall (x 2.8..3.2)
+ * with a way round each end. A map-change re-plan:
+ *  - keeps the route it was following while it still fits and the fresh one is only a bit cheaper,
+ *  - switches when the old route is blocked,
+ *  - switches when a fresh route is clearly cheaper.
+ * mode: 0 keep, 1 blocked, 2 clearly better. Returns 1 if the route after the re-plan is the old one. */
+static int sticky_run(int sticky, int mode, char *why, size_t whylen)
+{
+    map_setup();
+    S.cfg.nav_sticky = sticky;
+    S.cfg.nav_turn_cost_m = S.cfg.nav_start_turn_cost_m = 0;
+    S.cfg.nav_optimistic = 0;
+    set_free_rect(-2, -2, 9, 8, NAV_FREE);
+    set_free_rect(2.8, 1.2, 3.2, 5.0, NAV_OCC);        /* bottom end 1.8 m from the robot's z, top end 2.0 m */
+    put_robot(1.0, 3.0, M_PI / 2);                     /* facing +x */
+    add_inst(5.5, 3.0, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    nav_pt_t old[64];
+    int on = S.path_n;
+    memcpy(old, S.path, sizeof old);
+    int went_bottom = 0;
+    for (int i = 0; i < on; i++) went_bottom |= old[i].z < 1.2f;
+    if (!went_bottom) { snprintf(why, whylen, "first route not round the bottom"); return -1; }
+    clear();
+    /* the LiDAR maps something on the route's first leg ... */
+    double mx = (PX + old[0].x) / 2, mz = (PZ + old[0].z) / 2;
+    set_free_rect(mx - 0.05, mz - 0.05, mx + 0.05, mz + 0.05, NAV_OCC);
+    advance(0.1);
+    grab_events();
+    if (S.st != ST_PLAN) { snprintf(why, whylen, "no map-change re-plan (%s)", goto_state_name(S.st)); return -1; }
+    /* ... and before the re-plan runs: */
+    set_free_rect(mx - 0.05, mz - 0.05, mx + 0.05, mz + 0.05, NAV_FREE);   /* it was a ghost */
+    if (mode == 0) set_free_rect(2.8, 4.7, 3.2, 5.0, NAV_FREE);   /* top end 1.7 m: fresh route ~0.2 m cheaper */
+    if (mode == 1) set_free_rect(2.8, -2.0, 3.2, 1.2, NAV_OCC);   /* the bottom way is walled off */
+    if (mode == 2) set_free_rect(2.8, 3.4, 3.2, 5.0, NAV_FREE);   /* top end 0.4 m: much shorter */
+    advance(1.0);
+    grab_events();
+    snprintf(why, whylen, "%.300s", EV);
+    if (S.st != ST_FOLLOW_PATH) return -1;
+    int same = S.path_n == on;
+    for (int i = 0; same && i < on; i++) same = fabsf(S.path[i].x - old[i].x) < 1e-4f && fabsf(S.path[i].z - old[i].z) < 1e-4f;
+    return same;
+}
+
+static void test_map_sticky(void)
+{
+    char why[320];
+    int r = sticky_run(1, 0, why, sizeof why);
+    CHECK(r == 1 && strstr(why, "route_kept"), "sticky: route still fits, fresh one only ~0.2 m cheaper -> kept (%d: %s)", r, why);
+    CHECK(S.sticky_kept == 1, "sticky: STATUS route_kept counts it (%d)", S.sticky_kept);
+    r = sticky_run(0, 0, why, sizeof why);
+    CHECK(r == 0, "sticky off: the same re-plan flips to the other way round the wall (%d: %s)", r, why);
+    r = sticky_run(1, 1, why, sizeof why);
+    int top = 0;
+    for (int i = 0; i < S.path_n; i++) top |= S.path[i].z > 5.0f;
+    CHECK(r == 0 && top && (strstr(why, "route_switch") || strstr(why, "route_repair")),
+          "sticky: old route walled off -> a new route round the top (%d, top %d: %s)", r, top, why);
+    r = sticky_run(1, 2, why, sizeof why);
+    top = 0;
+    for (int i = 0; i < S.path_n; i++) top |= S.path[i].z > 3.3f;
+    CHECK(r == 0 && top && strstr(why, "route_switch"), "sticky: a clearly cheaper route -> switch (%d: %s)", r, why);
+    /* stop always wins: CANCEL right after a sticky re-plan is immediate */
+    clear();
+    goto_sm_cancel(&S, T, "stop");
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1, "sticky: CANCEL -> S, idle (%s)", goto_state_name(S.st));
+}
+
 static void test_map_no_route_fails(void)
 {
     /* optimistic planning (default): the corner is walled in by KNOWN obstacles, so there's no
@@ -2298,6 +2367,7 @@ int main(void)
     test_map_occluder_inside_footprint();
     test_map_no_route_fails();
     test_map_temp_blocks_not_unreachable();
+    test_map_sticky();
     test_map_reveal_measured();
     test_map_heading_closed_loop();
     test_map_guard_escape();

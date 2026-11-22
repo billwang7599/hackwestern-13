@@ -2,7 +2,8 @@
 """pocket_maze: GOTO trash can through the maze Bill drew live on pocket_mouth (bench/world/rooms/pocket_maze.json).
 Mac only, SIM: real tars_motor/goto host builds, the virtual SM11, the world sim. Nothing here runs on the robot.
 
-    python3 bench/tests/test_maze.py [--only fresh1,fresh4,switch] [--runs 3] [--foot N] [--baseline] [-v]
+    python3 bench/tests/test_maze.py [--only fresh1,fresh4,switch] [--runs 3] [--foot N] [--baseline] [--room R]
+                                     [--no-route-sticky] [-v]
 
   fresh1   fresh run_sim at 1x, GOTO trash can from the start spot
   fresh4   the same at 4x
@@ -99,8 +100,11 @@ class Sim(T.Sim):
         return self.car_ctl({"get": 1})["truth"]
 
 
+NO_STICKY = "--no-route-sticky" in sys.argv   # A/B: goto's heading-aware / sticky routes off (as on the robot)
+
+
 def extra_args():
-    return [] if BASELINE else ["--goto-conf", f"nav_foot_cells={FOOT}"]
+    return ([] if BASELINE else ["--goto-conf", f"nav_foot_cells={FOOT}"]) + (["--no-route-sticky"] if NO_STICKY else [])
 
 
 def wait_idle(sim, g, cap_wall):
@@ -124,6 +128,10 @@ def summarise(sim, st, wall, t0, t1, bin_, log, speed):
         "replan_cap": "replan_cap" in log or "replan cap" in log, "heading_fixes": int(st.get("heading_fixes", -1)),
         "guard": int(st.get("guard_refusals", 0)) + int(st.get("guard_aborts", 0)),
         "unreachable": log.count("unreachable"), "timeout": "failed:timeout" in log,
+        "routes": log.count("event: route "), "route_kept": log.count("route_kept"),
+        "route_repair": log.count("route_repair"), "route_switch": log.count("route_switch"),
+        "guard_stops": log.count("blocked:lidar_guard") + log.count("blocked:guard"), "run_dir": sim.run_dir,
+        "sticky": "nav_sticky = 1" in open(os.path.join(sim.run_dir, "goto.conf")).read(),
     }
 
 
@@ -193,7 +201,7 @@ def switch():
 def main():
     t0 = time.monotonic()
     mode = "goto.conf default footprint (report only)" if BASELINE else f"--goto-conf nav_foot_cells={FOOT}"
-    print(f"test_maze: {ROOM}, {RUNS} run(s) each, {mode}")
+    print(f"test_maze: {ROOM}, {RUNS} run(s) each, {mode}, routes {'plain (--no-route-sticky)' if NO_STICKY else 'heading-aware + sticky'}")
     scen = [("fresh1", lambda: fresh(1.0)), ("fresh4", lambda: fresh(4.0)), ("switch", switch)]
     for name, fn in scen:
         if ONLY and name not in ONLY:

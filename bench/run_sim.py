@@ -59,6 +59,13 @@ VOICE_MODEL = os.path.join(VOICE_DIR, "models", "ggml-tiny.en-q5_1.bin")
 # sim only, so goto.conf (what the robot runs) keeps its defaults until the lead OKs the smaller guard box
 BENCH_CAR_CONF = "car_length_m = 0.40\ncar_width_m = 0.30\nsafety_margin_m = 0.02\nguard_stop_m = 0.30\n"
 
+# sim only (the robot's goto.conf keeps them 0 until the lead signs off): corners cost route length (no
+# 0/45 deg grid zigzag, so fewer TURNs + heading checks), turning away from the car's heading costs more, and
+# a map-change re-plan keeps/repairs the route it was following unless a fresh one is clearly cheaper.
+# --no-route-sticky leaves them off for A/B runs; --goto-conf key=value still overrides each.
+SIM_ROUTE_CONF = ("nav_turn_cost_m = 0.3\n"
+                  "nav_start_turn_cost_m = 0.5\n"
+                  "nav_sticky = 1\n")
 REAL_PORTS = {"motor": 5555, "goto": 5570, "det": 5571, "nav": 5572, "voice": 5574, "relay": 5575,
               "guard": 5568, "truth": 5590, "car_ctl": 5591, "world_ctl": 5592, "world_state": 5593,
               "bench": 8770, "relay_tee": 5576, "phone_room": 5594, "phone_scene": 5595}
@@ -294,6 +301,8 @@ class Stack:
             if t > 0:   # sim only: the robot keeps goto.conf's strict timeout_s
                 extra += f"timeout_s = {t:g}\n"
                 extra += "nav_max_opt_replans = 100\n"   # long sim mazes; robot keeps 25
+            if not getattr(self.a, "no_route_sticky", False):   # sim only: heading-aware + sticky routes
+                extra += SIM_ROUTE_CONF
             for kv in getattr(self.a, "goto_conf", None) or []:   # sim experiments: --goto-conf key=value
                 extra += kv.split("=", 1)[0].strip() + " = " + kv.split("=", 1)[1].strip() + "\n"
             with open(p, "w") as f:
@@ -471,6 +480,8 @@ def main(argv=None) -> int:
     ap.add_argument("--goto-timeout", type=float, default=900,
                     help="sim only: seconds a whole GOTO may take (overrides goto.conf timeout_s, 240 on the robot; "
                          "0 = use goto.conf)")
+    ap.add_argument("--no-route-sticky", action="store_true",
+                    help="sim only: leave goto's heading-aware / sticky route planning off (as on the robot), for A/B runs")
     ap.add_argument("--goto-conf", action="append", default=[], metavar="KEY=VALUE",
                     help="sim only: append a goto.conf line to the run dir's copy (repeatable; later keys win), "
                          "e.g. nav_foot_cells=2. The robot's goto.conf is untouched")

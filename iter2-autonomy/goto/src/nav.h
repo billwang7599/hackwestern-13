@@ -179,6 +179,22 @@ int    nav_field_clear(const nav_t *n, float x, float z);   /* 1 observed clear,
  * if it crosses unknown floor. */
 int    nav_field_path(nav_t *n, float sx, float sz, nav_pt_t *out, int max_out, int *unknown);
 
+/* Heading-aware planning (off by default: 0, 0 keeps plans identical to mapping.py).
+ * turn_m: metres of route a 90 deg turn along the route costs (45 deg = half), so equal-length
+ * routes with fewer corners win (no 0/45 deg grid zigzag: every corner is a TURN + heading check).
+ * start_m: metres per 90 deg between the car's heading yaw (have_yaw) and the route's first step,
+ * so a U-turn (180 deg) costs 2 x start_m. A* stays one entry per cell (the turn is charged from the
+ * cell's parent), so it is a good route, not a proven optimum. Applies to nav_plan/nav_plan_ring
+ * and nav_route_cost, not to the cost-to-go field. */
+void   nav_set_turn_cost(nav_t *n, float turn_m, float start_m, float yaw, int have_yaw);
+int    nav_turn_cost_on(const nav_t *n);
+/* Cost (in cells, 0.1 m) of driving from (sx, sz) through pts[0..count) with the planner's rules:
+ * leg length, x (1 + penalty) on unknown floor in optimistic mode, plus the turn costs above.
+ * INFINITY if any point on a leg (every 0.05 m) has the footprint blocked (as A* would see it:
+ * guard-box legality is the caller's check). Rebuilds the footprint grid: call it with the same
+ * optimistic setting as the plan it is compared with. Start cell itself isn't checked. */
+double nav_route_cost(nav_t *n, float sx, float sz, const nav_pt_t *pts, int count);
+
 /* Line of sight over the grid, ignoring the start cell and cells within
  * NAV_LOS_END_MARGIN of the end (the object itself is occupied).
  * 1 all FREE, 0 an OCC cell in between (occluded), -1 unknown/off-map cells

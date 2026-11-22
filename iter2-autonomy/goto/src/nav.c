@@ -77,6 +77,10 @@ struct nav {
     /* cost-to-go field (nav_field_build): goto's in-place recovery after a guard stop */
     double  fcost[N_CELLS];
     int     field_ok;
+    /* heading-aware A* (nav_set_turn_cost; off = 0, plans match mapping.py) */
+    double  turn_c, start_c;    /* cells of route per 90 deg: a turn along the route / car heading vs first step */
+    double  start_yaw;
+    int     have_yaw;
 };
 
 /* ---- basics ------------------------------------------------------------ */
@@ -624,6 +628,37 @@ static int is_clear(const nav_t *n, int x, int z)
 static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, double ring_min, double ring_max,
                            nav_pt_t *out, int max_out);
 
+/* ---- heading-aware cost (nav_set_turn_cost) ---------------------------- */
+
+void nav_set_turn_cost(nav_t *n, float turn_m, float start_m, float yaw, int have_yaw)
+{
+    if (!n) return;
+    n->turn_c = isfinite(turn_m) && turn_m > 0 ? turn_m / NAV_RES : 0.0;
+    n->start_c = isfinite(start_m) && start_m > 0 ? start_m / NAV_RES : 0.0;
+    n->have_yaw = have_yaw && isfinite(yaw);
+    n->start_yaw = n->have_yaw ? yaw : 0.0;
+}
+
+int nav_turn_cost_on(const nav_t *n) { return n && (n->turn_c > 0 || (n->start_c > 0 && n->have_yaw)); }
+
+static double ang_diff_deg(double a, double b)        /* |a - b| in degrees, 0..180 (radians in) */
+{
+    double d = fmod(fabs(a - b) * 180.0 / M_PI, 360.0);
+    return d > 180.0 ? 360.0 - d : d;
+}
+
+/* extra cost (cells) of a step in direction (dx, dz) from cell cur, given how cur was reached */
+static double turn_extra(const nav_t *n, int cur, int start, int dx, int dz)
+{
+    double h = atan2((double)dx, (double)dz);             /* forward = (sin yaw, cos yaw) */
+    if (cur == start) return n->have_yaw ? n->start_c * ang_diff_deg(h, n->start_yaw) / 90.0 : 0.0;
+    int p = n->parent[cur];
+    if (p < 0 || n->turn_c <= 0) return 0.0;
+    int px = cur % NAV_SIZE - p % NAV_SIZE, pz = cur / NAV_SIZE - p / NAV_SIZE;
+    if (px == dx && pz == dz) return 0.0;
+    return n->turn_c * ang_diff_deg(h, atan2((double)px, (double)pz)) / 90.0;
+}
+
 /* n->clear[]: 1 = the robot's (2r+1)^2 footprint square is all observed FREE, 2 = (optimistic
  * mode) no known obstacle in it but some unknown, 0 = blocked */
 static void build_clear(nav_t *n)
@@ -719,6 +754,7 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
         n->ign_x = tx; n->ign_z = tz; n->ign_r = NAV_GUARD_IGNORE_R;
     }
     int start = s_z * NAV_SIZE + s_x, size = 0, end = -1;
+    int turning = nav_turn_cost_on(n);
     n->g[start] = 0.0;
     n->f[start] = heuristic(start, t_x, t_z, span);
     n->heap[0] = start; n->pos[start] = 0; size = 1;
@@ -738,6 +774,7 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
             if (guard && !guard_step_ok(n, x, z, k)) continue;
             double ng = n->g[cur] + (DX[k] && DZ[k] ? sqrt(2.0) : 1.0) *
                         (n->clear[nz * NAV_SIZE + nx] == 2 ? 1.0 + n->opt_penalty : 1.0);
+            if (turning) ng += turn_extra(n, cur, start, DX[k], DZ[k]);
             int nxt = nz * NAV_SIZE + nx;
             if (ng < n->g[nxt]) {
                 n->g[nxt] = ng;
@@ -905,4 +942,37 @@ int nav_field_path(nav_t *n, float sx, float sz, nav_pt_t *out, int max_out, int
         n_out++;
     }
     return n_out;
+}
+
+/* ---- route cost (sticky re-planning) ------------------------------------ */
+
+double nav_route_cost(nav_t *n, float sx, float sz, const nav_pt_t *pts, int count)
+{
+    if (!n || count < 0 || (count > 0 && !pts) || !isfinite(sx) || !isfinite(sz)) return INFINITY;
+    n->field_ok = 0;                            /* clear[] is rebuilt */
+    build_clear(n);
+    double cost = 0, ax = sx, az = sz, prev_h = n->start_yaw;
+    int have_prev = n->have_yaw, first = 1, s_x = -1, s_z = -1;
+    nav_world_to_cell(sx, sz, &s_x, &s_z);
+    for (int i = 0; i < count; i++) {
+        double bx = pts[i].x, bz = pts[i].z, L = hypot(bx - ax, bz - az);
+        if (!isfinite(L)) return INFINITY;
+        if (L < 1e-6) continue;
+        double h = atan2(bx - ax, bz - az);
+        if (have_prev) cost += (first ? n->start_c : n->turn_c) * ang_diff_deg(h, prev_h) / 90.0;
+        /* every 0.05 m along the leg: the footprint must fit (as A* sees it); unknown costs extra */
+        int steps = (int)ceil(L / 0.05);
+        for (int k = 1; k <= steps; k++) {
+            double q = (double)k / steps;
+            int cx, cz;
+            if (!nav_world_to_cell((float)(ax + (bx - ax) * q), (float)(az + (bz - az) * q), &cx, &cz)) return INFINITY;
+            int c = n->clear[cz * NAV_SIZE + cx];
+            if (cx == s_x && cz == s_z && !c) c = 1;   /* the robot's own cell: plan_from_robot's business */
+            if (!c) return INFINITY;
+            cost += (L / steps) / NAV_RES * (c == 2 ? 1.0 + n->opt_penalty : 1.0);
+        }
+        prev_h = h; have_prev = 1; first = 0;
+        ax = bx; az = bz;
+    }
+    return cost;
 }

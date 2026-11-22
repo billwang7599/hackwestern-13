@@ -512,6 +512,63 @@ static void test_foot_cells(void)
     nav_free(n);
 }
 
+/* Heading-aware A* (nav_set_turn_cost): fewer corners on an open diagonal, the forward route over a
+ * U-turn when the two are near-equal, nav_route_cost. Off (0, 0) must leave plans as they were. */
+static int count_corners(int k) { return k - 1; }   /* corners between legs (the last point is the goal) */
+static void test_turn_cost(void)
+{
+    nav_pt_t a[256], b[256];
+    /* open room, goal off-axis: 8-connected A* has many equal-length routes */
+    room();
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    int ka = nav_plan_ring(N, cw(70), cw(70), cw(100), cw(82), 0.0f, 0.11f, a, 256);
+    nav_set_turn_cost(N, 0.3f, 0.0f, 0, 0);
+    int kb = nav_plan_ring(N, cw(70), cw(70), cw(100), cw(82), 0.0f, 0.11f, b, 256);
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    double la = 0, lb = 0;
+    { float x = cw(70), z = cw(70); for (int i = 0; i < ka; i++) { la += hypot(a[i].x - x, a[i].z - z); x = a[i].x; z = a[i].z; } }
+    { float x = cw(70), z = cw(70); for (int i = 0; i < kb; i++) { lb += hypot(b[i].x - x, b[i].z - z); x = b[i].x; z = b[i].z; } }
+    CHECK(ka > 0 && kb > 0 && count_corners(kb) <= 1 && count_corners(kb) <= count_corners(ka),
+          "turn cost: open diagonal in <= 1 corner (off: %d corners, on: %d)", count_corners(ka), count_corners(kb));
+    CHECK(fabs(la - lb) < 0.01, "turn cost: same length (%.3f vs %.3f m)", la, lb);
+    CHECK(legs_free(cw(70), cw(70), b, kb), "turn cost: legs over free floor");
+
+    /* forward vs U-turn. Robot at x=100 facing +z (yaw 0), goal 3 m to +x, a wall between them from
+     * z=86 to z=114: around its top (+z, ahead) is 0.2 m longer than around its bottom (behind). */
+    room();
+    fill(108, 86, 111, 115, NAV_OCC);
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    int k0 = nav_plan(N, cw(100), cw(99), cw(130), cw(99), a, 256);
+    CHECK(k0 > 0 && a[0].z < cw(99), "turn cost off: the shorter way, behind the robot (first corner z %.2f)", k0 > 0 ? a[0].z : 0.0f);
+    nav_set_turn_cost(N, 0.3f, 0.5f, 0.0f, 1);
+    int k1 = nav_plan(N, cw(100), cw(99), cw(130), cw(99), b, 256);
+    CHECK(k1 > 0 && b[0].z > cw(99), "start turn cost: forward (+z) over a U-turn when near-equal (first corner z %.2f)",
+          k1 > 0 ? b[0].z : 0.0f);
+    nav_set_turn_cost(N, 0.3f, 0.5f, (float)M_PI, 1);       /* facing -z: the short way is ahead now */
+    k1 = nav_plan(N, cw(100), cw(99), cw(130), cw(99), b, 256);
+    CHECK(k1 > 0 && b[0].z < cw(99), "start turn cost, facing -z: the shorter way (first corner z %.2f)", k1 > 0 ? b[0].z : 0.0f);
+    /* a much shorter way behind still wins: the penalty is a tie-breaker, not a ban */
+    fill(108, 86, 111, 125, NAV_OCC);                        /* top end now 1.1 m further away */
+    nav_set_turn_cost(N, 0.3f, 0.5f, 0.0f, 1);
+    k1 = nav_plan(N, cw(100), cw(99), cw(130), cw(99), b, 256);
+    CHECK(k1 > 0 && b[0].z < cw(99), "start turn cost: a clearly shorter way behind still wins (first corner z %.2f)",
+          k1 > 0 ? b[0].z : 0.0f);
+
+    /* nav_route_cost */
+    room();
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    nav_pt_t r[2] = {{cw(90), cw(80)}, {cw(90), cw(90)}};
+    double c = nav_route_cost(N, cw(80), cw(80), r, 2);
+    CHECK(fabs(c - 20.0) < 0.2, "route cost: 2 x 1 m legs = 20 cells (%.2f)", c);
+    nav_set_turn_cost(N, 0.3f, 0.5f, 0.0f, 1);               /* facing +z: first leg is +x (90), then a 90 corner */
+    double ct = nav_route_cost(N, cw(80), cw(80), r, 2);
+    CHECK(fabs(ct - (20.0 + 5.0 + 3.0)) < 0.2, "route cost with turns: 20 + 5 (start 90) + 3 (corner) (%.2f)", ct);
+    fill(85, 75, 86, 86, NAV_OCC);
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    CHECK(isinf(nav_route_cost(N, cw(80), cw(80), r, 2)), "route cost: a wall on a leg = INFINITY");
+    nav_reset(N);
+}
+
 int main(int argc, char **argv)
 {
     int iters = argc > 1 ? atoi(argv[1]) : 200000;
@@ -530,6 +587,7 @@ int main(int argc, char **argv)
     test_field();
     test_big_map();
     test_foot_cells();
+    test_turn_cost();
     test_fuzz(iters);
     nav_free(N);
     printf("test_nav: %d/%d passed\n", passed, passed + failed);
