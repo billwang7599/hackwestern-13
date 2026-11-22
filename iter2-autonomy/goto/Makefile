@@ -33,7 +33,7 @@ QCC      := qcc -V gcc_ntoaarch64le
 QXX      := q++ -V gcc_ntoaarch64le_cxx
 REPO     := $(abspath ../..)
 
-.PHONY: all detect host host-detect test test-nav-asan test-nav-parity test-fullstack test-fullstack-dc deploy clean
+.PHONY: all detect host host-detect host-detect-phone test test-nav-asan test-nav-parity test-fullstack test-fullstack-dc deploy clean
 
 all: build/goto
 
@@ -76,6 +76,16 @@ host: | build
 host-detect: | build
 	c++ $(CXXFLAGS) -DHAVE_ORT -I$(ORT_HOST)/include -I$(ORT_HOST)/include/onnxruntime \
 	    -o build/detect_host_ort $(DET_SRC) -L$(ORT_HOST)/lib -lonnxruntime -Wl,-rpath,$(ORT_HOST)/lib
+
+# ... plus the iPhone camera source (broker[:PORT], like the Pi's build-native.sh): the bench's phone-in-the-loop
+# mode (bench/run_sim.py --phone usb). brew install onnxruntime jpeg-turbo, or ORT_PHONE=<an ORT SDK dir with
+# include/ + lib/> (e.g. the onnxruntime-osx-arm64 release tarball). Paths may contain spaces.
+ORT_PHONE ?= $(ORT_HOST)
+JPEG_HOST ?= /opt/homebrew/opt/jpeg-turbo
+host-detect-phone: | build
+	c++ $(CXXFLAGS) -DHAVE_ORT -DHAVE_JPEG -I"$(ORT_PHONE)/include" -I"$(ORT_PHONE)/include/onnxruntime" -I"$(JPEG_HOST)/include" \
+	    -o build/detect_host_phone $(DET_SRC) -L"$(ORT_PHONE)/lib" -L"$(JPEG_HOST)/lib" -lonnxruntime -ljpeg \
+	    -Wl,-rpath,"$(ORT_PHONE)/lib" -Wl,-rpath,"$(JPEG_HOST)/lib"
 
 test: host
 	./build/test_core
