@@ -166,8 +166,9 @@ def serve():
             commands['detect'] = [str(detect), '--camera', 'broker:5566', '--model', str(model),
                                   '--labels', str(nav / 'models/labels.txt'),
                                   '--rotate', os.environ.get('TARS_DETECT_ROTATE', '270'),
-                                  '--threads', os.environ.get('TARS_DETECT_THREADS', '1'),
-                                  '--fps', os.environ.get('TARS_DETECT_FPS', '4'), '--quiet']
+                                  # measured on the Pi: 0.32 s/frame on 2 threads (YOLO-World 320 px), so ~3 fps
+                                  '--threads', os.environ.get('TARS_DETECT_THREADS', '2'),
+                                  '--fps', os.environ.get('TARS_DETECT_FPS', '3'), '--quiet']
             # docs/ARCHITECTURE.md CPU table: YOLOX is off while YOLO-World runs.
             if os.environ.get('TARS_KEEP_YOLOX') != '1':
                 del commands['ai']
