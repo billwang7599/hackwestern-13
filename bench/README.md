@@ -43,10 +43,52 @@ the whole simulated stack and then the bench.
   (pi) or `V <json>` tars_voice events (sim/usb); `listen("cam", fn)` gets relay CAM frames (pi).
 
 **Panels** (browser side): `bench/web/panels/<name>.js` calls
-`Bench.register({id, title, order, wide, mount(el, Bench)})`.
-In a panel: `Bench.on(topic, fn)`, `await Bench.api("<plugin>/<what>", body?)`, `Bench.log(src, text)`.
+`Bench.register({id, title, order, area, help, view, wide, mount(el, Bench)})`.
+In a panel: `Bench.on(topic, fn)`, `await Bench.api("<plugin>/<what>", body?)`, `Bench.log(src, text)`,
+`Bench.emit(topic, data)` (local event to this tab's `Bench.on` handlers), `Bench.openPage(id)` (`openTab` is
+the old name), `Bench.page`, `Bench.on('page', fn)`, `Bench.showView(id)`, `Bench.setBadgeDetail(text)`, and
+`Bench.mic.start()` / `await Bench.mic.stop()` (the one laptop-mic capture: a 16 kHz mono WAV, `mic` local
+event while recording).
 **STOP** and **Space** live in the shell (`web/shell.js` → `POST /api/robot/stop`), so
-stopping never depends on a panel.
+stopping never depends on a panel. The STOP button is in the top bar, which is on every page, and Space
+stops on every page unless focus is in a text box.
+
+**Pages** (a navbar under the top bar, one job per page; `area` = the page id). The top bar (STOP, SIM/REAL
+badge, connection lights, what the robot is doing) and, while the guard blocks, a plain-words note under it
+stay on every page. Pages marked *map* show the big centre view (`area: 'view'` panels: `world2d`, `mc-map`,
+`map3d`, with a switch above it) beside their column; the others use the full width in a grid
+(`wide: true` spans it).
+
+| Page (`#hash`, key) | Map | Panels |
+|---|---|---|
+| Drive `#drive` 1 (default) | yes | `command` (Talk to TARS), `drive` (WASD pad, speed, exact MOVE/TURN) |
+| Room `#room` 2 | yes, edit mode on | `room-objects` (every object and wall, 🗑 per row, Delete selected, Undo), `world-tools` (faults, sensor noise), `maps` (map demos) |
+| Memory `#memory` 3 | yes, Robot's map | `mc-memory` (what goto remembers, Forget per row, Forget all with a confirm), `mc-goto` (goto status table, GOTO/RECALL/SCAN/CANCEL, events) |
+| Voice lab `#voice` 4 | | `voice` |
+| Car `#car` 5 | | `mc-safety` (guard), `car` (virtual car readings, faults, profile), `status` (raw tars_motor STATUS) |
+| Tests `#tests` 6 | | `scenarios` (table with results), `drive-debug` (wheel chart, raw console), `recorder`, `log` |
+| Mission `#mission` 7 | | `mc-camera`, `mc-voice`, `mc-phone`, `mc-pi` |
+
+The page is the URL hash (linkable), else the last one shown (`localStorage`), else Drive; keys 1–7 switch
+pages outside text boxes. Each map page remembers its own map view. Old drawer ids still work as `area`
+(`side`→drive, `robot`→memory, `sim`/`maps`→room, `pi`→mission, `debug`→tests); an unknown id makes a new
+page. A page left with no panels (Room on the real robot: its panels are sim-only) drops out of the navbar.
+Hidden pages stay in the DOM, so panels keep their state and their topic handlers; canvases are 0×0 while
+hidden and redraw on the `resize` the shell fires after every page/view switch. `?nohelp` skips the
+first-run help (screenshots). The last log line is in the footer (click: the log, on Tests).
+
+**Removing things:**
+- *Sim room objects* (Room page): 🗑 on a row of "Things in the room" (walls are under "Walls"), **Delete
+  selected** (click a row or the object on the map first), **Del** on the map, or **right-click → Delete**
+  on the map (on any map page). All send `world/ctl {op: remove, id}`. **↶ Undo** (or ⌘Z on the Room page)
+  re-adds the last one as it was (`{op: add, obj}` / `{op: add_wall, seg}`; a re-added wall gets the next
+  wall id). ↺ Reset room puts the loaded/saved room back.
+- *goto's memory* (Memory page): **Forget** on a row sends `FORGET <label>#<id>` and **🗑 Forget all…**
+  (asks first) sends `FORGET all`, both through `POST /api/mission/goto` (mission plugin → robot link → goto).
+  goto answers `OK forgot n`. Anything the camera still sees is remembered again at once, as a new sighting.
+
+Test: `python3 bench/tests/test_pages.py` (static page/panel checks + both remove paths on a stub-car sim;
+`--static` skips the sim).
 
 **Event topics:** `status` (tars_motor STATUS, parsed), `goto` (goto STATUS + EVENTs),
 `mission` / `mission_grid` / `mission_phone` / `journal` (mission control, below),
@@ -61,7 +103,7 @@ binds the robot's real port numbers or 5590–5599; every process takes its port
 
 | Part | Files |
 |---|---|
-| shell | `bench.py`, `web/index.html`, `web/shell.js`, `web/bench.css` |
+| shell | `bench.py`, `web/index.html`, `web/shell.js`, `web/bench.css`, `web/panels/{topbar,command}.js`, `tests/test_pages.py` |
 | robot link + drive | `plugins/robot.py`, `plugins/scenarios.py`, `plugins/recorder.py`, `web/panels/{drive,status,scenarios,recorder}.js` |
 | virtual car | `car/`, `plugins/car.py`, `web/panels/car.js` |
 | sim world | `world/`, `run_sim.py`, `plugins/world.py`, `web/panels/world2d.js` |
@@ -263,7 +305,9 @@ goto + `POSE RESET` when a room loads), `BENCH_CAR_CTL` (5591), `BENCH_CAR_TRUTH
 stream, for the car plugin with the stub car), `BENCH_CAR_KIND` (`virtual` | `stub`).
 
 The 2D panel (`world2d`) is a course editor: place boxes, walls, people and goto objects, drag,
-rotate (`[` `]`), delete, save/load layouts. A fixed **SIM** badge is always on the page. Room
+rotate (`[` `]`), delete, save/load layouts (edit mode is on while the **Room** page is shown; **✏ Edit room** on the Drive page goes there; outside it a
+click only focuses the map for WASD). Faults, sensor noise and the sensor readout are the `world-tools` panel on
+the **Room** page. The header badge always says **SIM** (plus the car kind) on the sim target. Room
 format, world control (5592) and world state (5593): `bench/world/README.md`.
 
 ## Robot link, drive, status, scenarios, recorder
@@ -288,7 +332,8 @@ Tests: `python3 bench/tests/test_ui.py` (needs the host builds above + `make -C 
   Keepalive: STATUS doesn't feed tars_motor's watchdog, so while a MOVE/TURN **we** started runs,
   the poller sends PING. Manual MOVE/TURN: CANCEL goto first **only if goto is busy** (goto answers
   CANCEL with S, which would abort the move), then wait for that S to land.
-- **Drive**: hold W A S D / arrows → `POST /api/robot/keys` (teleop.py's `HoldDrive` on the
+- **Drive** (Drive page; the chart and console are `drive-debug` on the Tests page): hold W A S D / arrows,
+  or press the on-screen pad → `POST /api/robot/keys` (teleop.py's `HoldDrive` on the
   server, D at 20 Hz, S on release; the tab refreshes held keys every 100 ms and the server sends
   S if it stops for 0.35 s). Tab hidden/blurred → release. Chart: commanded l/r, tars_motor
   out_l/out_r, and the virtual car's `wl`/`wr` (topic `car`, m/s ÷ `dc_mm_s`) when present.
@@ -352,10 +397,10 @@ it, and the bench **imports** it:
 | `/state` 5 Hz SSE | topics `mission` (5 Hz), `mission_grid`, `mission_phone`, plus `status`, `goto` |
 | `/cam.mjpg` + YOLOX/detect boxes | Camera panel, `GET /api/mission/cam.jpg` (polled per new frame id) |
 | safety verdict, gate, RESET tip | Safety panel, `POST /api/mission/reset` |
-| goto table, GOTO/RECALL/FORGET/FORGET all/SCAN/CANCEL/MEMORY SAY, event log | Go-to panel, `POST /api/mission/goto`, `memory_say` |
-| object memory, phone table | Object memory + phone panel |
+| goto table, GOTO/RECALL/FORGET/FORGET all/SCAN/CANCEL/MEMORY SAY, event log | Memory page: Go-to controller + memory table (Forget, Forget all), `POST /api/mission/goto`, `memory_say` |
+| object memory, phone table | Memory page (memory table), Mission page (Phone link) |
 | map (NAV GRID / phone grid, route, pose, objects) | Map (goto) panel |
-| voice: 🎤 hold / T, text box, voice log | Robot voice panel: 🎤 hold / **V** (T is the Voice lab's mic), `text`, `audio` |
+| voice: 🎤 hold / T, text box, voice log | **Talk to TARS** box (Drive page, via the voice lab + Send to robot; 🎤 / **T**), and the Robot voice log panel (Mission page: 🎤 hold / **V**, `text`, `audio`) |
 | link pills, Pi service pills (relay R) | Pi panel |
 | `actions.command` (journals over SSH) | Pi panel "follow journals", `GET/POST /api/mission/journal`, topic `journal` |
 | `room-view.command` (SSH tunnel to 5580) | Pi panel "room view tunnel" + link / iframe, `GET/POST /api/mission/roomview` |

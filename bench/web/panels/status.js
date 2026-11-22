@@ -32,7 +32,8 @@
                  move_why: v => v !== '-' && v !== 'done'};
 
   Bench.register({
-    id: 'status', title: 'Status (tars_motor)', order: 20,
+    id: 'status', title: 'tars_motor STATUS (raw)', order: 30, area: 'car', wide: true,
+    help: 'Every field the motor server reports, grouped. Changes flash; red = an alarm (estop, tipped, blocked).',
     mount(el) {
       el.innerHTML = `<div class="st-head"><span class="st-badge age">no data</span><span class="links"></span><span class="st-badge rp" style="display:none">REPLAY</span></div>
         <div class="st-grid"></div><div class="st-goto"></div>`;

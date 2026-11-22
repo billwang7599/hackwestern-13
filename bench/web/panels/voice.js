@@ -19,7 +19,8 @@
   details.vl summary { cursor:pointer; color:var(--dim); margin:6px 0; }`;
 
   Bench.register({
-    id: 'voice', title: 'Voice lab', order: 40, wide: true,
+    id: 'voice', title: 'Voice lab', order: 40, wide: true, area: 'voice',
+    help: 'Type or speak a phrase and see exactly what the classifier decides and every line the robot would send. Hold T anywhere on the page to talk.',
     mount(el) {
       const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
       el.innerHTML = `
@@ -129,36 +130,18 @@
         refreshInfo();
       };
 
-      // ---- push-to-talk: same capture as mission control (iter2-autonomy/mission/laptop/index.html)
-      let rec = null;
+      // ---- push-to-talk: the shell's shared capture (Bench.mic, 16 kHz mono WAV, as mission control)
+      let mine = false;
       async function pttStart() {
-        if (rec) return;
-        rec = {chunks: [], stopping: false};
-        $('vl-ptt').classList.add('rec'); $('vl-ptt').textContent = '🎤 listening… release';
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
-          const ctx = new AudioContext(), src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(4096, 1, 1);
-          node.onaudioprocess = ev => rec && rec.chunks.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
-          src.connect(node); node.connect(ctx.destination);
-          Object.assign(rec, {stream, ctx, src, node, rate: ctx.sampleRate});
-          if (rec.stopping) pttStop();
-        } catch (e) { $('vl-ptt').textContent = '🎤 no microphone: ' + e; rec = null; $('vl-ptt').classList.remove('rec'); }
+        if (Bench.mic.recording) return;
+        mine = true;
+        try { await Bench.mic.start(); } catch (e) { mine = false; $('vl-ptt').textContent = '🎤 no microphone: ' + e.message; }
       }
       async function pttStop() {
-        if (!rec) return;
-        if (!rec.ctx) { rec.stopping = true; return; }
-        const r = rec; rec = null;
-        $('vl-ptt').classList.remove('rec'); $('vl-ptt').textContent = '🎤 hold to talk (T)';
-        r.node.disconnect(); r.src.disconnect(); r.stream.getTracks().forEach(t => t.stop()); r.ctx.close();
-        const n = r.chunks.reduce((a, c) => a + c.length, 0), all = new Float32Array(n);
-        let o = 0; for (const c of r.chunks) { all.set(c, o); o += c.length; }
-        const step = r.rate / 16000, out = new Int16Array(Math.floor(n / step));   // average-decimate to 16 kHz
-        for (let i = 0; i < out.length; i++) {
-          const a = Math.floor(i * step), b = Math.max(a + 1, Math.floor((i + 1) * step));
-          let s = 0; for (let j = a; j < b; j++) s += all[j]; s /= (b - a); out[i] = Math.max(-1, Math.min(1, s)) * 32767;
-        }
-        if (out.length < 1600) { Bench.log('voice', 'clip under 0.1 s: ignored'); return; }
-        const wav = wavOf(out);
+        if (!mine) return;
+        mine = false;
+        const wav = await Bench.mic.stop();
+        if (!wav) return;
         try {
           const resp = await fetch('/api/voicelab/audio?mode=' + $('vl-mode').value, {method: 'POST', headers: {'Content-Type': 'audio/wav'}, body: wav});
           const data = await resp.json();
@@ -166,16 +149,10 @@
           render(data);
         } catch (e) { $('vl-out').innerHTML = `<div class="bad">audio: ${esc(e.message)}</div>`; }
       }
-      function wavOf(pcm) {
-        const b = new ArrayBuffer(44 + pcm.length * 2), v = new DataView(b);
-        const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-        w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
-        v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 16000, true);
-        v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data');
-        v.setUint32(40, pcm.length * 2, true);
-        new Int16Array(b, 44).set(pcm);
-        return b;
-      }
+      Bench.on('mic', m => {
+        $('vl-ptt').classList.toggle('rec', !!m.on);
+        $('vl-ptt').textContent = m.on ? '🎤 listening… release' : '🎤 hold to talk (T)';
+      });
       $('vl-ptt').onmousedown = pttStart; $('vl-ptt').onmouseup = pttStop; $('vl-ptt').onmouseleave = pttStop;
       const typing = e => /^(input|textarea|select)$/i.test(e.target.tagName || '');
       window.addEventListener('keydown', e => { if ((e.key === 't' || e.key === 'T') && !e.repeat && !typing(e)) pttStart(); });

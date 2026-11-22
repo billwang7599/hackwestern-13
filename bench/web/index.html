@@ -7,15 +7,39 @@
 <link rel="stylesheet" href="/bench.css">
 <script src="/shell.js"></script>
 </head>
-<body>
-<header>
-  <button id="stop" class="stop" title="S to tars_motor, then CANCEL to goto (Space)">STOP</button>
-  <h1>TARS bench</h1>
-  <span id="badge" class="badge" title="where the robot stack is (bench.py --target)">…</span>
-  <span id="target">target: …</span>
-  <span class="offline-note">event stream lost, retrying…</span>
+<body data-page="drive">
+<header id="topbar">
+  <button id="stop" class="stop" title="Stop the robot now: S to tars_motor, then CANCEL to goto. Shortcut: Space (on every page)">■ STOP <kbd>Space</kbd></button>
+  <h1>TARS</h1>
+  <span id="badge" class="badge" title="Where the robot stack is: SIM = everything simulated on this laptop; REAL = the actual robot">…</span>
+  <span id="lights" class="lights" aria-label="connections"></span>
+  <span id="activity" class="activity" title="What the robot is doing (goto controller)">connecting…</span>
+  <span class="offline-note">lost connection to the bench, retrying…</span>
+  <span class="spacer"></span>
+  <button id="help-btn" class="ghost" title="How to use this page">? Help</button>
 </header>
-<main id="panels"></main>
-<footer><div id="log" aria-label="log"></div></footer>
+<div id="guardnote" class="guardnote" hidden></div>
+<nav id="navbar" role="tablist" aria-label="pages"></nav>
+<div id="layout">
+  <div id="pages"></div>
+  <main id="center">
+    <div id="viewbar" role="tablist" aria-label="map views"></div>
+    <div id="views"></div>
+  </main>
+</div>
+<footer id="ticker" title="Latest log line: click to open the full log (Tests page)"><span id="ticker-text" class="mono dim">log: nothing yet</span></footer>
+<div id="help" class="overlay" hidden>
+  <div class="overlay-card" role="dialog" aria-labelledby="help-title">
+    <h2 id="help-title">How to use the TARS bench</h2>
+    <ol class="steps">
+      <li><b>Check the badge.</b> <span class="badge sim">SIM</span> means a simulated car on this laptop; <span class="badge real">REAL ROBOT</span> means the real one moves.</li>
+      <li><b>Pick a page</b> in the bar under the header: <b>Drive</b> (talk, drive, map), <b>Room</b> (edit the sim room, delete things), <b>Memory</b> (what the robot remembers; forget things), <b>Voice lab</b>, <b>Car</b>, <b>Tests</b>, <b>Mission</b>. Keys <kbd>1</kbd>…<kbd>7</kbd> switch pages.</li>
+      <li><b>Talk to it</b> on the Drive page: type a command (or hold <kbd>T</kbd> / 🎤 and speak), or click a suggestion like <i>“go to the trash can”</i>. Keep <b>Send to robot</b> on, or it's only a dry run.</li>
+      <li><b>Drive by hand</b>: hold <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys (click the map first so the page has focus).</li>
+      <li><b>Stop</b> any time, on any page: the red <b>STOP</b> button or <kbd>Space</kbd>.</li>
+    </ol>
+    <div style="text-align:right"><button id="help-close" class="primary">Got it</button></div>
+  </div>
+</div>
 </body>
 </html>

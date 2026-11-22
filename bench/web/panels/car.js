@@ -2,7 +2,8 @@
 // sliders and fault buttons. Talks to plugins/car.py (/api/car/...), topic `car`.
 'use strict';
 Bench.register({
-  id: 'car', title: 'Virtual car (SM11)', order: 30,
+  id: 'car', title: 'Virtual car (SM11)', order: 20, area: 'car',
+  help: 'The simulated car’s true state, car faults (push, tip, brownout…) and its motor guesses (none measured yet).',
   mount(el, B) {
     const SLIDERS = [
       // key, label, min, max, step
@@ -24,7 +25,7 @@ Bench.register({
     ];
     el.innerHTML = `
       <div class="mono" data-k="head">no car yet: <code>python3 bench/car/launch.py</code></div>
-      <table class="mono" style="margin:6px 0"><tbody data-k="tbl"></tbody></table>
+      <table class="dt" style="margin:6px 0"><thead><tr><th>Reading</th><th>Value</th></tr></thead><tbody data-k="tbl"></tbody></table>
       <div data-k="bars" style="display:grid;grid-template-columns:auto 1fr auto;gap:2px 6px;align-items:center;font-size:12px"></div>
       <h3 style="font-size:12px;color:var(--dim);margin:10px 0 4px">Faults</h3>
       <div data-k="faults" style="display:flex;flex-wrap:wrap;gap:4px"></div>
@@ -93,7 +94,7 @@ Bench.register({
     const bPwmL = bar('pwm L'), bPwmR = bar('pwm R'), bWl = bar('wheel L'), bWr = bar('wheel R');
 
     const fmt = (x, d = 2) => (x === undefined || x === null) ? '–' : Number(x).toFixed(d);
-    const row = (k, v, cls = '') => `<tr><td class="dim">${k}</td><td class="${cls}">${v}</td></tr>`;
+    const row = (k, v, cls = '') => `<tr><td class="k">${k}</td><td class="${cls}">${v}</td></tr>`;
 
     B.on('car', d => {
       const t = d.truth;

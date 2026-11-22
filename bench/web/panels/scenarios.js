@@ -2,9 +2,8 @@
 'use strict';
 (() => {
   const css = `
-  .sc-list { display:grid; grid-template-columns: 1fr auto; gap:3px 8px; align-items:center; font-size:13px; }
-  .sc-list .needs { font: 10px var(--mono); color: var(--dim); }
-  .sc-res { font: 11px var(--mono); margin-left:4px; }
+  .sc-list td:first-child { font: 13px system-ui, sans-serif; }
+  .sc-res { font: 11px var(--mono); white-space:nowrap; }
   .sc-run { margin-top:8px; border-top:1px solid var(--line); padding-top:6px; }
   .sc-steps { max-height:180px; overflow:auto; font: 12px/1.35 var(--mono); }
   .sc-steps .pass { color: var(--ok); } .sc-steps .fail { color: var(--bad); } .sc-steps .skip, .sc-steps .ask { color: var(--warn); }
@@ -15,13 +14,14 @@
   const COL = {pass: 'ok', fail: 'bad', error: 'bad', aborted: 'bad', skip: 'warn', running: 'dim'};
 
   Bench.register({
-    id: 'scenarios', title: 'Scenarios', order: 30,
+    id: 'scenarios', title: 'Scenarios (bring-up checks)', order: 10, area: 'tests',
+    help: 'One-click scripted checks with pass/fail and measured numbers. STOP aborts a run.',
     async mount(el) {
-      el.innerHTML = `<div class="dim where" style="font-size:12px;margin-bottom:4px"></div><div class="sc-list"></div>
+      el.innerHTML = `<div class="dim where" style="font-size:12px;margin-bottom:4px"></div><div class="tbl-scroll" style="max-height:420px"><table class="dt sc-list"><thead><tr><th>Check</th><th>Needs</th><th>PI_TEST</th><th>Last result</th><th></th></tr></thead><tbody></tbody></table></div>
         <div class="sc-run" style="display:none"><div><b class="name"></b> <span class="state"></span> <span class="dim wh"></span>
         <button class="cancel" style="float:right">cancel</button></div>
         <div class="sc-prompt" style="display:none"></div>
-        <table class="sc-nums"></table><div class="sc-steps"></div></div>`;
+        <table class="dt sc-nums"></table><div class="sc-steps"></div></div>`;
       const $ = s => el.querySelector(s);
       let info;
       try { info = await Bench.api('scenarios/list'); }
@@ -29,15 +29,16 @@
       $('.where').textContent = info.robot ? `STOP / Space aborts a run. car plugin: ${info.car ? 'yes' : 'no'}, world: ${info.world ? 'yes' : 'no'}`
                                            : 'robot plugin not loaded: nothing can run';
       const results = {};
-      const list = $('.sc-list');
+      const list = $('.sc-list tbody');
       for (const s of info.scenarios) {
-        const a = document.createElement('div');
-        a.innerHTML = `<span></span> <span class="sc-res" data-r="${s.name}"></span><div class="needs"></div>`;
-        a.firstChild.textContent = s.title;
-        a.querySelector('.needs').textContent = `${s.name} · needs ${s.needs}${s.pi_test ? ' · PI_TEST ' + s.pi_test : ''}`;
-        const b = document.createElement('button'); b.textContent = 'run'; b.disabled = !info.robot;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td></td><td class="dim"></td><td class="dim"></td><td><span class="sc-res dim" data-r="${s.name}">not run</span></td><td class="act"></td>`;
+        tr.children[0].textContent = s.title; tr.children[0].title = s.name;
+        tr.children[1].textContent = s.needs; tr.children[2].textContent = s.pi_test || '';
+        const b = document.createElement('button'); b.textContent = '▶ run'; b.disabled = !info.robot;
         b.onclick = () => Bench.api('scenarios/run', {name: s.name}).catch(e => Bench.log('scenario', e.message));
-        list.append(a, b);
+        tr.children[4].appendChild(b);
+        list.append(tr);
       }
       $('.cancel').onclick = () => Bench.api('scenarios/cancel', {});
       Bench.on('scenario', s => {
@@ -46,7 +47,9 @@
         $('.state').textContent = s.state.toUpperCase(); $('.state').className = COL[s.state] || '';
         $('.wh').textContent = `on ${s.where} (backend ${s.backend})${s._replay ? ' [replay]' : ''}  ${s.elapsed}s`;
         $('.cancel').style.display = s.state === 'running' ? '' : 'none';
-        $('.sc-nums').innerHTML = Object.entries(s.numbers || {}).map(([k, v]) => `<tr><td>${k}</td><td>${v.v}</td><td class="dim">${v.unit || ''}</td></tr>`).join('');
+        const nums = Object.entries(s.numbers || {});
+        $('.sc-nums').innerHTML = nums.length ? '<thead><tr><th>Measured</th><th>Value</th><th>Unit</th></tr></thead>' +
+          nums.map(([k, v]) => `<tr><td class="k">${k}</td><td class="num">${v.v}</td><td class="dim">${v.unit || ''}</td></tr>`).join('') : '';
         const st = $('.sc-steps'); st.innerHTML = '';
         for (const x of s.steps || []) {
           const d = document.createElement('div'); d.className = x.kind;

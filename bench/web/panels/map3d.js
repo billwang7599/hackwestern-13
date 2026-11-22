@@ -3,7 +3,8 @@
 // and shown in an iframe. This panel only picks the source and shows link state.
 'use strict';
 Bench.register({
-  id: 'map3d', title: 'iPhone 3D map', order: 40, wide: true,
+  id: 'map3d', title: 'iPhone 3D map', view: '🧊 3D map (iPhone)', order: 40, wide: true, area: 'view',
+  help: 'The iPhone LiDAR 3D map (Andrew’s room view). Pick a source: the sim room, a recording or the live phone.',
   mount(el, B) {
     el.innerHTML = `
       <div class="m3-bar">

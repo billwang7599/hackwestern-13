@@ -32,14 +32,11 @@
   }
 
   Bench.register({
-    id: 'world2d', title: 'Sim world (2D)', order: 5, wide: true,
+    id: 'world2d', title: 'Sim world (2D)', view: '🗺 Room (sim)', order: 5, wide: true, area: 'view',
+    help: 'Top-down view of the simulated room: the car, its route, what the camera sees and the go-to target.',
     mount(el, B) {
-      // ---------- always-visible SIM badge (fixed on the page, not only in this panel)
-      const badge = h('div', {id: 'sim-badge', title: 'This is the simulated world, not the real robot'}, 'SIM');
-      css(badge, {position: 'fixed', top: '8px', right: '12px', zIndex: 1000, background: '#e6b450', color: '#1a1300',
-        font: '700 14px/1 system-ui, sans-serif', padding: '6px 10px', borderRadius: '6px', letterSpacing: '.08em',
-        boxShadow: '0 1px 6px rgba(0,0,0,.5)', pointerEvents: 'none'});
-      document.body.appendChild(badge);
+      // the SIM badge is the shell's header badge (always visible); this adds the car kind to it
+      const badge = {set textContent(t) { B.setBadgeDetail(t.replace(/^SIM · /, '')); }};
 
       let W = null;          // latest world event
       let motorPose = null;  // tars_motor dead-reckoned pose (world frame)
@@ -52,43 +49,172 @@
       let view = {s: 80, ox: 0, oy: 0};
       let dirty = true;
 
-      // ---------- layout
-      const banner = h('div', {class: 'mono'});
-      css(banner, {fontSize: '18px', fontWeight: '600', padding: '6px 10px', marginBottom: '6px', borderRadius: '6px',
-        background: '#0d1215', border: '1px solid var(--line)', display: 'flex', gap: '14px', alignItems: 'baseline', flexWrap: 'wrap'});
-      const roomSel = h('select');
+      // ---------- layout: the big view (room bar, edit tools, canvas) here; faults, noise, sensors in the Sim tab
+      const banner = h('div', {class: 'mono'});   // goto + guard line, shown in the Sim tab (the header has the plain-words version)
+      css(banner, {fontSize: '13px', display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', marginBottom: '6px'});
+      const roomSel = h('select', {title: 'Pick a room layout'});
       const saveName = h('input', {placeholder: 'save as…', size: 14});
-      const bar = h('div', {}, roomSel,
-        h('button', {onclick: () => act('load', {name: roomSel.value})}, 'Load'),
-        h('button', {onclick: () => act('reset', {}), title: 'Reload this room as loaded/saved, car to start, goto restarted'}, 'Reset'),
-        saveName, h('button', {onclick: save}, 'Save'));
+      // editing lives on the Room page: this button just goes there (or back to Drive)
+      const editBtn = h('button', {title: 'Edit the room: add, move and delete boxes, walls, people and objects (the Room page)',
+        onclick: () => (B.openPage ? B.openPage(editing ? 'drive' : 'room') : setEdit(!editing))}, '✏ Edit room');
+      const legendBtn = h('button', {class: 'ghost', title: 'What the shapes on the map mean', onclick: () => { legend.hidden = !legend.hidden; }}, 'Legend');
+      const bar = h('div', {}, h('span', {class: 'dim'}, 'Room'), roomSel,
+        h('button', {onclick: () => act('load', {name: roomSel.value}), title: 'Load the picked room (car back to its start, goto restarted)'}, 'Load'),
+        h('button', {onclick: () => act('reset', {}), title: 'Reload this room as loaded/saved, car to start, goto restarted'}, '↺ Reset'),
+        editBtn, h('span', {style: {flex: 1}}), legendBtn);
       css(bar, {display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px'});
       const toolBar = h('div');
-      css(toolBar, {display: 'flex', gap: '4px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px'});
+      css(toolBar, {display: 'none', gap: '4px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px',
+        padding: '4px 6px', border: '1px dashed var(--accent)', borderRadius: '6px'});
       const toolBtns = {};
+      toolBar.append(h('span', {class: 'dim', style: {fontSize: '12px'}}, 'Add:'));
       for (const [id, name] of TOOLS) {
         toolBtns[id] = h('button', {onclick: () => setTool(id)}, name);
         toolBar.append(toolBtns[id]);
       }
-      const labelSel = h('select', {onchange: () => { objLabel = labelSel.value; setTool('object'); }});
-      toolBar.append(labelSel);
+      const labelSel = h('select', {onchange: () => { objLabel = labelSel.value; setTool('object'); }, title: 'Which object “Object” places'});
+      toolBar.append(labelSel, saveName, h('button', {onclick: save, title: 'Save this layout as a new room'}, 'Save room'));
       const selInfo = h('span', {class: 'mono dim'});
-      toolBar.append(h('span', {style: {width: '12px'}}), selInfo);
-      const canvas = h('canvas', {tabindex: 0});
-      css(canvas, {height: '540px', cursor: 'crosshair', outline: 'none'});
-      const legend = h('div', {class: 'dim'},
-        '■ car (truth)  ◇ phone pose (what goto is told)  ○ tars_motor dead reckoning  ▲ camera cone  — route  · guard rays. ',
-        'Select: drag to move, drag an end to stretch a wall, [ ] rotate, Del removes. Box: drag out. Wall: click-drag.');
-      css(legend, {fontSize: '12px', margin: '4px 0'});
+      toolBar.append(h('span', {style: {width: '12px'}}), selInfo,
+        h('span', {class: 'dim', style: {fontSize: '11px', width: '100%'}}, 'Select: drag to move, drag a wall end to stretch, [ ] rotate, Del or right-click → Delete removes, ⌘Z undoes it, Esc deselects. Box: drag out. Wall: click-drag.'));
+      let editing = false;
+      function setEdit(on) {
+        editing = on; toolBar.style.display = on ? 'flex' : 'none';
+        editBtn.classList.toggle('primary', on);
+        editBtn.textContent = on ? '✓ Done editing' : '✏ Edit room';
+        if (!on) { setTool('select'); sel = null; }
+        dirty = true; window.dispatchEvent(new Event('resize'));
+      }
+      B.on('page', p => { if ((p === 'room') !== editing) setEdit(p === 'room'); });
+      const canvas = h('canvas', {tabindex: 0, title: 'Click here, then hold W A S D to drive'});
+      css(canvas, {position: 'absolute', inset: 0, height: '100%', cursor: 'default', outline: 'none'});
+      const seeing = h('div', {class: 'mono'});
+      css(seeing, {position: 'absolute', bottom: '8px', right: '8px', background: 'rgba(11,16,19,.85)', padding: '4px 8px',
+        borderRadius: '6px', fontSize: '12px', pointerEvents: 'none', maxWidth: '60%'});
+      const legend = h('div', {class: 'dim', hidden: ''},
+        h('div', {}, h('b', {}, 'white car'), ' = where the car really is · ', h('b', {style: {color: '#e6b450'}}, '◇'), ' = where the phone thinks it is (what goto is told) · ',
+          h('b', {style: {color: '#a77ad6'}}, '○'), ' = wheel-count estimate (tars_motor)'),
+        h('div', {}, h('b', {style: {color: '#5aa9e6'}}, 'blue line'), ' = planned route · faint line = path driven · light-blue cone = camera view · ',
+          h('b', {style: {color: '#4cc38a'}}, 'green line'), ' = the camera sees that object · thin rays = the LiDAR obstacle check (red = blocked) · ',
+          h('b', {style: {color: '#ffffff'}}, 'pulsing ring'), ' = the go-to target'));
+      css(legend, {position: 'absolute', left: '8px', bottom: '28px', right: '8px', background: 'rgba(11,16,19,.92)', padding: '6px 8px',
+        borderRadius: '6px', fontSize: '12px', border: '1px solid var(--line)'});
+      const wrap = h('div', {}, canvas, seeing, legend);
+      css(wrap, {position: 'relative', flex: '1 1 0', minHeight: '200px'});
+      el.append(bar, toolBar, wrap);
+
+      // Sim tab: goto/guard line, sensor readout, faults, sensor noise
       const side = h('div');
-      css(side, {display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '6px'});
+      css(side, {display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px', marginTop: '6px'});
       const faultBox = h('div'), sliderBox = h('div');
       side.append(faultBox, sliderBox);
       const sensors = h('div', {class: 'mono'});
       css(sensors, {fontSize: '12px', marginTop: '6px', whiteSpace: 'pre-wrap'});
-      el.append(banner, bar, toolBar, canvas, legend, sensors, side);
+      B.register({id: 'world-tools', title: 'Faults and sensor noise (sim)', order: 10, area: 'room',
+        help: 'Break things on purpose to see how the robot copes. Faults toggle on click; sliders change the sim sensors live.',
+        mount(el2) { el2.append(banner, sensors, side); }});
+      // Room page: every object and wall as a table, with delete buttons and undo
+      const objTbody = h('tbody'), wallTbody = h('tbody');
+      const undoBar = h('div', {class: 'undo-bar', hidden: ''});
+      const delSelBtn = h('button', {class: 'danger', disabled: '', title: 'Delete the object or wall selected on the map or in the table (Del)', onclick: () => removeSel()}, '🗑 Delete selected');
+      const wallsBox = h('details', {}, h('summary', {class: 'dim', style: {cursor: 'pointer', fontSize: '12px', margin: '8px 0 4px'}}, 'Walls'),
+        h('div', {class: 'tbl-scroll', style: {maxHeight: '200px'}}, h('table', {class: 'dt', 'data-k': 'walls'},
+          h('thead', {}, h('tr', {}, h('th', {}, 'Wall'), h('th', {}, 'From (x, y)'), h('th', {}, 'To (x, y)'), h('th', {}, 'Length'), h('th', {}, ''))), wallTbody)));
+      B.register({id: 'room-objects', title: 'Things in the room', order: 1, area: 'room',
+        help: 'Every object in the sim room. Click a row to select it on the map; 🗑 deletes it (Undo brings it back). You can also right-click it on the map → Delete.',
+        mount(el2) {
+          el2.append(h('div', {class: 'toolbar'}, delSelBtn,
+              h('button', {title: 'Put the room back as it was loaded or saved (car to start, goto restarted)', onclick: () => act('reset', {})}, '↺ Reset room'),
+              h('span', {class: 'dim', style: {fontSize: '12px'}}, 'Add things with the tools above the map.')),
+            undoBar,
+            h('div', {class: 'tbl-scroll'}, h('table', {class: 'dt nowrap', 'data-k': 'objects'},
+              h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Type'), h('th', {title: 'metres, x forward / y left from the room origin'}, 'x, y m'), h('th', {}, ''))), objTbody)),
+            wallsBox);
+        }});
+      let tableKey = '';
+      const f2 = v => (+v).toFixed(2);
+      function kindOf(o) { return o.kind === 'person' || o.label === 'person' ? 'person' : o.label ? (o.solid === false ? o.label + ' (walk-through)' : o.label) : 'box (obstacle)'; }
+      function renderTables() {
+        const r = W && W.room;
+        delSelBtn.disabled = !sel;
+        const key = r ? JSON.stringify([r.objects.map(o => [o.id, o.label, f2(o.x), f2(o.y), o.r, o.w, o.d]), r.walls.map(w => w.map(f2)), sel && sel.id]) : '';
+        if (key === tableKey) return;
+        tableKey = key;
+        if (!r) { objTbody.replaceChildren(h('tr', {class: 'empty-row'}, h('td', {colspan: 4}, 'waiting for the sim room…'))); wallTbody.replaceChildren(); return; }
+        objTbody.replaceChildren(...(r.objects.length ? r.objects.map(o => {
+          const tr = h('tr', {'data-id': o.id, class: sel && sel.id === o.id ? 'sel' : '', style: {cursor: 'pointer'},
+              onclick: () => { sel = {kind: 'obj', id: o.id}; dirty = true; renderTables(); }},
+            h('td', {title: o.r !== undefined ? `⌀ ${f2(2 * o.r)} m` : `${f2(o.w)} × ${f2(o.d)} m`}, o.id), h('td', {}, kindOf(o)), h('td', {class: 'num'}, `${f2(o.x)}, ${f2(o.y)}`),
+            h('td', {class: 'act'},
+              ...(o.label && o.label !== 'person' ? [h('button', {title: `Send GOTO ${o.label}`, onclick: ev => { ev.stopPropagation(); sendGoto(o.label); }}, '➜')] : []),
+              ' ', h('button', {class: 'danger', 'data-del': o.id, title: `Delete ${o.id}`, onclick: ev => { ev.stopPropagation(); removeId(o.id); }}, '🗑')));
+          return tr;
+        }) : [h('tr', {class: 'empty-row'}, h('td', {colspan: 4}, 'the room is empty: add things with the tools above the map'))]));
+        wallTbody.replaceChildren(...r.walls.map((w, i) => h('tr', {'data-id': 'w' + i, class: sel && sel.id === 'w' + i ? 'sel' : '', style: {cursor: 'pointer'},
+            onclick: () => { sel = {kind: 'wall', id: 'w' + i}; dirty = true; renderTables(); }},
+          h('td', {}, 'w' + i), h('td', {class: 'num'}, `${f2(w[0])}, ${f2(w[1])}`), h('td', {class: 'num'}, `${f2(w[2])}, ${f2(w[3])}`),
+          h('td', {class: 'num'}, f2(Math.hypot(w[2] - w[0], w[3] - w[1])) + ' m'),
+          h('td', {class: 'act'}, h('button', {class: 'danger', 'data-del': 'w' + i, title: `Delete wall w${i}`, onclick: ev => { ev.stopPropagation(); removeId('w' + i); }}, '🗑')))));
+        wallsBox.querySelector('summary').textContent = `Walls (${r.walls.length})`;
+      }
+      // removal with a one-step undo (the removed object/wall is re-added as it was)
+      let lastRemoved = null;
+      async function removeId(id) {
+        const r = W && W.room; if (!r) return;
+        let saved = null;
+        if (/^w\d+$/.test(id)) { const w = r.walls[+id.slice(1)]; if (w) saved = {kind: 'wall', seg: w.slice(), name: 'wall ' + id}; }
+        else { const o = r.objects.find(o => o.id === id); if (o) saved = {kind: 'obj', obj: JSON.parse(JSON.stringify(o)), name: o.id}; }
+        const res = await ctl({op: 'remove', id});
+        if (sel && sel.id === id) sel = null;
+        dirty = true;
+        if (!res.ok || !saved) return;
+        lastRemoved = saved;
+        B.log('world', `deleted ${saved.name}`);
+        undoBar.replaceChildren(h('span', {}, `Deleted ${saved.name}.`), h('button', {onclick: undo}, '↶ Undo'),
+          h('span', {class: 'dim'}, '(⌘Z)'), h('span', {style: {flex: 1}}), h('button', {class: 'ghost', onclick: () => { undoBar.hidden = true; }}, '✕'));
+        undoBar.hidden = false;
+      }
+      async function undo() {
+        const u = lastRemoved; if (!u) return;
+        lastRemoved = null; undoBar.hidden = true;
+        const res = u.kind === 'wall' ? await ctl({op: 'add_wall', seg: u.seg}) : await ctl({op: 'add', obj: u.obj});
+        B.log('world', res.ok ? `restored ${u.name}` : `undo failed: ${res.error}`);
+      }
+      window.addEventListener('keydown', ev => {
+        if (ev.key !== 'z' || !(ev.metaKey || ev.ctrlKey) || ev.shiftKey || !editing || !lastRemoved) return;
+        const tag = (ev.target.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        ev.preventDefault(); undo();
+      });
+      // right-click on the map: Delete / GOTO for what's under the pointer
+      let menu = null;
+      const closeMenu = () => { if (menu) { menu.remove(); menu = null; } };
+      window.addEventListener('mousedown', ev => { if (menu && !menu.contains(ev.target)) closeMenu(); });
+      window.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeMenu(); });
+      canvas.addEventListener('contextmenu', ev => {
+        if (!W || !W.room) return;
+        ev.preventDefault(); closeMenu();
+        const [x, y] = ev2w(ev);
+        const o = hitObj(x, y), hw = o ? null : hitWall(x, y);
+        const items = [];
+        if (o) {
+          sel = {kind: 'obj', id: o.id};
+          items.push(h('div', {class: 'dim'}, `${o.id} (${kindOf(o)})`),
+            h('button', {class: 'danger', 'data-menu': 'delete', onclick: () => { closeMenu(); removeId(o.id); }}, `🗑 Delete ${o.id}`));
+          if (o.label && o.label !== 'person') items.push(h('button', {onclick: () => { closeMenu(); sendGoto(o.label); }}, `➜ GOTO ${o.label}`));
+        } else if (hw) {
+          sel = {kind: 'wall', id: 'w' + hw.i};
+          items.push(h('div', {class: 'dim'}, `wall w${hw.i}`),
+            h('button', {class: 'danger', 'data-menu': 'delete', onclick: () => { closeMenu(); removeId('w' + hw.i); }}, `🗑 Delete wall w${hw.i}`));
+        } else items.push(h('div', {class: 'dim'}, 'nothing here: right-click an object or wall'));
+        if (!editing && B.openPage) items.push(h('button', {onclick: () => { closeMenu(); B.openPage('room'); }}, '✏ Edit room…'));
+        dirty = true;
+        menu = h('div', {class: 'ctxmenu', role: 'menu'}, ...items);
+        menu.style.left = Math.min(ev.clientX, innerWidth - 200) + 'px'; menu.style.top = Math.min(ev.clientY, innerHeight - 120) + 'px';
+        document.body.appendChild(menu);
+      });
 
-      faultBox.append(h('div', {class: 'dim'}, 'Faults (click to toggle)'));
+      faultBox.append(h('div', {class: 'dim'}, 'Faults (click to toggle; red = on)'));
       const faultBtns = {};
       for (const [name, text, extra] of FAULTS) {
         const b = h('button', {onclick: () => {
@@ -100,7 +226,7 @@
         faultBox.append(b);
       }
       faultBox.append(h('button', {class: 'stop', style: {margin: '2px'}, onclick: () => ctl({op: 'fault', name: 'clear'})}, 'clear faults'));
-      sliderBox.append(h('div', {class: 'dim'}, 'Sensor models (live)'));
+      sliderBox.append(h('div', {class: 'dim'}, 'Sensor noise and errors (live)'));
       const sliders = {};
       for (const [k, text, lo, hi, step] of SLIDERS) {
         const v = h('span', {class: 'mono'});
@@ -209,7 +335,11 @@
 
       // ---------- banner + sensor text
       function updateText() {
-        if (!W) { banner.textContent = 'waiting for the world sim… (start it with bench/run_sim.py)'; return; }
+        if (!W) { banner.textContent = 'waiting for the world sim… (start it with bench/run_sim.py)'; seeing.textContent = 'waiting for the sim room…'; return; }
+        const dets = (W.dets || []);
+        seeing.replaceChildren(h('span', {class: 'dim'}, 'Camera sees: '),
+          dets.length ? h('span', {class: dets.some(d => d.fp) ? 'warn' : 'ok'}, dets.map(d => `${d.fp ? 'FALSE ' : ''}${d.label} ${d.conf ?? ''}`).join(', '))
+                      : h('span', {class: 'dim'}, 'nothing right now'));
         const g = W.goto;
         const parts = [];
         const car = W.car_kind === 'virtual' ? 'virtual SM11' : (W.truth && W.truth.stub ? 'STUB CAR (no physics)' : (W.car_kind || 'no car'));
@@ -323,6 +453,18 @@
           const [px, py] = S(o.x, o.y);
           label(ctx, px, py - (o.r !== undefined ? o.r : Math.max(o.w, o.d) / 2) * s - 5, o.label || o.id, '#dbe4ea', 12);
         }
+        // the go-to target: a pulsing ring on every object with that label
+        const gt = W.goto && W.goto.state && W.goto.state !== 'idle' && W.goto.target ? String(W.goto.target).replace(/_/g, ' ') : '';
+        if (gt) {
+          const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 250);
+          for (const o of r.objects) {
+            if ((o.label || '') !== gt) continue;
+            const [px, py] = S(o.x, o.y), rr = (o.r !== undefined ? o.r : Math.max(o.w, o.d) / 2) * s + 8 + 4 * pulse;
+            ctx.strokeStyle = `rgba(255,255,255,${0.5 + 0.5 * pulse})`; ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.arc(px, py, rr, 0, 7); ctx.stroke();
+            label(ctx, px, py + rr + 14, 'go-to target', '#ffffff', 11);
+          }
+        }
         // route
         if (W.route && W.route.length) {
           ctx.strokeStyle = '#5aa9e6'; ctx.lineWidth = 2.5;
@@ -416,9 +558,11 @@
       let lastSend = 0;
       canvas.addEventListener('mousedown', ev => {
         canvas.focus();
+        if (ev.button !== 0) return;   // right-click = the Delete/GOTO menu
         const [x, y] = ev2w(ev);
         if (!W || !W.room) return;
         if (window.World2DPick) { const f = window.World2DPick; window.World2DPick = null; f(x, y); return; }  // one click for another panel
+        if (!editing) return;   // view mode: clicking only focuses the map (for WASD)
         if (tool === 'select') {
           const o = hitObj(x, y);
           if (o) { sel = {kind: 'obj', id: o.id}; drag = {kind: 'obj', id: o.id, dx: o.x - x, dy: o.y - y}; }
@@ -467,6 +611,7 @@
         drag = null; dirty = true;
       });
       canvas.addEventListener('keydown', ev => {
+        if (!editing) return;
         if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); removeSel(); }
         else if (ev.key === '[') rotate(-15);
         else if (ev.key === ']') rotate(15);
@@ -477,7 +622,7 @@
         const o = W.room.objects.find(o => o.id === sel.id);
         if (o) ctl({op: 'update', id: o.id, yaw: (o.yaw || 0) + deg * Math.PI / 180});
       }
-      function removeSel() { if (sel) { ctl({op: 'remove', id: sel.id}); sel = null; dirty = true; } }
+      function removeSel() { if (sel) removeId(sel.id); }
       function defaultSize(label) {
         return ({'trash can': {r: 0.15, h: 0.4}, chair: {w: 0.45, d: 0.45, h: 0.85}, person: {r: 0.2, h: 1.7},
           backpack: {w: 0.32, d: 0.22, h: 0.45}, 'water bottle': {r: 0.04, h: 0.25}, table: {w: 1.2, d: 0.7, h: 0.75},
@@ -488,8 +633,8 @@
       // ---------- frame loop
       let lastText = 0;
       function frame(ts) {
-        if (dirty) { draw(); dirty = false; }
-        if (ts - lastText > 200) { updateText(); lastText = ts; }
+        if (dirty || (W && W.goto && W.goto.state && W.goto.state !== 'idle')) { draw(); dirty = false; }
+        if (ts - lastText > 200) { updateText(); renderTables(); lastText = ts; }
         requestAnimationFrame(frame);
       }
       window.addEventListener('resize', () => { dirty = true; });
