@@ -119,9 +119,32 @@ static void test_json_contract()
     CHECK(u.find("class17") != std::string::npos, "unknown class index -> class<N>");
 }
 
+static void test_rotate()
+{
+    // 3x2 frame, red channel = 10*y + x (the pixel's own coordinates)
+    Image in, o;
+    in.resize(3, 2);
+    for (int y = 0; y < 2; y++)
+        for (int x = 0; x < 3; x++) in.px[(y * 3 + x) * 3] = (uint8_t)(10 * y + x);
+    auto at = [&](int x, int y) { return (int)o.px[(y * o.w + x) * 3]; };
+    rotate_cw(in, 90, o);   // clockwise: the bottom-left pixel becomes the top-left one
+    CHECK(o.w == 2 && o.h == 3 && at(0, 0) == 10 && at(1, 0) == 0 && at(0, 2) == 12 && at(1, 2) == 2,
+          "rotate 90 cw (%dx%d: %d %d %d %d)", o.w, o.h, at(0, 0), at(1, 0), at(0, 2), at(1, 2));
+    rotate_cw(in, 270, o);  // counter-clockwise: the top-right pixel becomes the top-left one
+    CHECK(o.w == 2 && o.h == 3 && at(0, 0) == 2 && at(1, 0) == 12 && at(0, 2) == 0 && at(1, 2) == 10,
+          "rotate 270 cw (%d %d %d %d)", at(0, 0), at(1, 0), at(0, 2), at(1, 2));
+    rotate_cw(in, 180, o);
+    CHECK(o.w == 3 && o.h == 2 && at(0, 0) == 12 && at(2, 1) == 0, "rotate 180");
+    rotate_cw(in, -90, o);  // = 270
+    CHECK(o.w == 2 && at(0, 0) == 2, "rotate -90 = 270");
+    rotate_cw(in, 0, o);
+    CHECK(o.w == 3 && o.px == in.px, "rotate 0 copies");
+}
+
 int main()
 {
     test_color();
+    test_rotate();
     test_letterbox();
     test_decode();
     test_json_contract();

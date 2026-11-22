@@ -268,7 +268,7 @@ ML at normal priority means a stop can never be starved, whatever the fps.
 
 - **`iter2-autonomy/goto/detect` (YOLO-World, ONNX Runtime) is the only object detector that feeds `goto`.** It's the one that knows "trash can"; COCO/YOLOX doesn't.
 - Andrew's **YOLOX** (5565) and **MiDaS** (5567) serve the phone dashboard, depth fusion and the guard's inferred-obstacle veto (5569) only. In GOTO mode they're off (§5).
-- Proposed, **not agreed or built**: `detect` reading frames from Andrew's latest-frame broker (5566). As built, `detect` keeps its own camera source (C270 via camapi). Either way the output is the same JSON on 5571.
+- **Built, not yet run on QNX:** `detect --camera broker:5566` reads the iPhone camera from Andrew's latest-frame broker (5566), turns it upright (`--rotate`) and decodes it with libjpeg. `service.py` starts it when `TARS_ENABLE_GOTO=1` and turns YOLOX off then (table above). The C270 (camapi) source is still there. Either way the output is the same JSON on 5571.
 - **`iter2-autonomy/dashboard/mapping.py` and the Python dashboard are visualization**, not robot runtime. The planner that moves the wheels is `iter2-autonomy/goto/nav.c` (C, same grid, same A*, parity-tested against `mapping.py`).
 
 ## 7. Honest status (2026-11-21)

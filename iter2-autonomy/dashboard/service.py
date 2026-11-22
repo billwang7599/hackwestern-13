@@ -90,6 +90,40 @@ def serve():
             commands['guard'] += ['--require-clear', '1']
         else:
             raise ValueError('TARS_ENABLE_GOTO must be 0, 1 or map')
+    # Real-robot mode for the laptop sim's pieces (bench/run_sim.py fakes these three):
+    #  detect: YOLO-World on the mounted iPhone's camera (rgb_broker 5566) -> goto detections 5571.
+    #          Only with autonomy on. TARS_DETECT_ROTATE turns the phone's sensor-orientation
+    #          frames upright (default 270 = 90 deg counter-clockwise, unverified: check with
+    #          `build/detect --camera broker --nomodel --frames 1 --save-frame up.ppm --rotate 270`).
+    #  voice:  tars_voice from TARS_VOICE_DIR (make -C iter2-autonomy/voice deploy), TARS_ENABLE_VOICE=1.
+    #          Don't also run its start_voice.sh.
+    #  relay:  mission_relay for the laptop bench (--target pi), only when MISSION_KEY is set.
+    cwds = {}
+    if nav_mode == '1':
+        detect, model = nav / 'build/detect', nav / 'models/yolo_world.onnx'
+        if detect.is_file() and model.is_file():
+            commands['detect'] = [str(detect), '--camera', 'broker:5566', '--model', str(model),
+                                  '--labels', str(nav / 'models/labels.txt'),
+                                  '--rotate', os.environ.get('TARS_DETECT_ROTATE', '270'),
+                                  '--threads', os.environ.get('TARS_DETECT_THREADS', '1'),
+                                  '--fps', os.environ.get('TARS_DETECT_FPS', '4'), '--quiet']
+            # docs/ARCHITECTURE.md CPU table: YOLOX is off while YOLO-World runs.
+            if os.environ.get('TARS_KEEP_YOLOX') != '1':
+                del commands['ai']
+                print('detect on: YOLOX worker off (TARS_KEEP_YOLOX=1 keeps it)', flush=True)
+        else:
+            print(f'No {detect} or {model}: GOTO will stop with "no camera frames"', flush=True)
+    if os.environ.get('TARS_ENABLE_VOICE') == '1':
+        voice_dir = Path(os.environ.get('TARS_VOICE_DIR', '/data/home/qnxuser/voice'))
+        if not (voice_dir / 'tars_voice').is_file():
+            raise ValueError(f'TARS_ENABLE_VOICE=1 but no {voice_dir}/tars_voice (set TARS_VOICE_DIR)')
+        commands['voice'] = [str(voice_dir / 'tars_voice'), '-c', 'voice.conf']
+        cwds['voice'] = str(voice_dir)
+    relay = HERE.parent / 'mission/build/mission_relay'
+    if env.get('MISSION_KEY'):
+        if not relay.is_file():
+            raise ValueError(f'MISSION_KEY set but no {relay} (make -C iter2-autonomy/mission native)')
+        commands['relay'] = [str(relay)]
 
     def launch(name):
         child_env = env
@@ -100,7 +134,8 @@ def serve():
             if not os.path.isfile(preload):
                 raise RuntimeError('Missing QNX goto loopback binding library')
             child_env = dict(env, LD_PRELOAD=preload + (':' + env['LD_PRELOAD'] if env.get('LD_PRELOAD') else ''))
-        children[name] = subprocess.Popen(commands[name], env=child_env, stdin=subprocess.DEVNULL)
+        children[name] = subprocess.Popen(commands[name], env=child_env, stdin=subprocess.DEVNULL,
+                                          cwd=cwds.get(name))
         print(f'Started {name}: {children[name].pid}', flush=True)
     def terminate(proc):
         if proc.poll() is None:
@@ -116,7 +151,8 @@ def serve():
         admin.bind(ADDRESS)
         admin.listen(4)
         # Refuse to compete with an independently running proxy.
-        for port in (5555, *phone_ports, *((5570, 5571, 5572) if 'goto' in commands else ())):
+        for port in (5555, *phone_ports, *((5570, 5571, 5572) if 'goto' in commands else ()),
+                     *((5574,) if 'voice' in commands else ()), *((5575,) if 'relay' in commands else ())):
             with socket.socket() as probe:
                 if probe.connect_ex(('127.0.0.1', port)) == 0:
                     raise RuntimeError(f'Port {port} already in use; stop the existing proxy first')
