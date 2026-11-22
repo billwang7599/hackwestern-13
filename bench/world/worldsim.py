@@ -238,6 +238,26 @@ class World:
                 self.load(C.normalise_room(self.original), teleport=False)
                 return {"ok": True, "rev": self.rev, "car": car and [round(v, 3) for v in car],
                         "goto_memory": C.goto_memory_text(self.room, car=car)}
+            if op == "set_memory":    # the room's "memory" (bench Memory panel); goto is restarted by the caller
+                mem = []
+                for m in msg.get("memory") or []:
+                    if not isinstance(m, dict) or not (m.get("label") or m.get("id")):
+                        return {"ok": False, "error": f"memory entry needs label or id: {m!r}"}
+                    e = {k: m[k] for k in ("id", "label") if m.get(k)}
+                    try:
+                        if "x" in m or "y" in m:
+                            e["x"], e["y"] = round(float(m["x"]), 3), round(float(m["y"]), 3)
+                    except (KeyError, TypeError, ValueError):
+                        return {"ok": False, "error": f"memory entry needs both x and y: {m!r}"}
+                    if m.get("state") in C.MEM_STATES and m["state"] != "fresh":
+                        e["state"] = m["state"]
+                    mem.append(e)
+                self.room["memory"] = mem
+                self.original["memory"] = json.loads(json.dumps(mem))   # Reset map / reset start with it too
+                self.send_room()
+                car = self.pose_now() or self._start()
+                return {"ok": True, "rev": self.rev, "memory": mem, "car": [round(v, 3) for v in car],
+                        "goto_memory": C.goto_memory_text(self.room, car=car)}
             if op == "car_to_start":  # only the car moves: room, drawn walls, faults and goto untouched
                 s = self.room["start"]
                 self.car_ctl({"pose": {"x": s["x"], "y": s["y"], "th": s["th"]}})

@@ -81,6 +81,7 @@ the car restarted.
 | `{"op": "save", "name", "overwrite"?, "about"?}` | `{"ok", "path"}` or `{"ok": false, "exists": true}` |
 | `{"op": "set", "params": {...}}` (shorthand `{"set": {...}}`) | `{"ok", "params"}` |
 | `{"op": "fault", "name", "on"?: true, "s"?: seconds}` (shorthand `{"fault": name}`) | `{"ok"}` |
+| `{"op": "set_memory", "memory": [{"label"\|"id", "x"?, "y"?, "state"?}]}` | `{"ok", "rev", "memory", "car", "goto_memory"}`: the room's (and its reset copy's) memory; the caller restarts goto with `goto_memory` |
 | `{"op": "teleport", "x", "y", "th"}` / `{"op": "car", "msg": {...}}` | passed to the car's 5591 |
 | `{"op": "seed_nav", "points": [[x_ark, y, z_ark], ...]}` | `{"ok", "packets", "points"}`. **Bench map demo B only:** the points go to goto's nav port as LDR1 packets on the phone feed (≤ 1000 per packet, this feed's seq/uptime, the pose the phone believes now, tracking OK), sent before the next live packet. See `bench/maps/README.md` |
 

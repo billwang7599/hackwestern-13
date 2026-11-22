@@ -31,7 +31,7 @@ REPO = os.path.dirname(HERE)
 
 # Panels that only mean something with the simulated car/room. Hidden on the real targets
 # (usb = real Uno + motors on this Mac, pi = the real robot) unless --all-panels.
-SIM_ONLY_PANELS = {"car.js", "world2d.js"}
+SIM_ONLY_PANELS = {"car.js", "world2d.js", "gotomem.js"}
 
 CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
           ".css": "text/css; charset=utf-8", ".json": "application/json",

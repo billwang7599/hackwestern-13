@@ -22,6 +22,19 @@ Routes (all world edits go through world control, env BENCH_WORLD_CTL, default 5
                                 memory); the car stays where it is
   POST /api/world/save {name, overwrite?}
   POST /api/world/goto {label}  GOTO <label> through the robot plugin (if loaded)
+  GET  /api/world/memory        goto's live object memory in room metres (goto MEMORY, polled on request):
+                                {"ok", "entries": [{"key": "trash can#1", "label", "id", "state", "x", "y",
+                                "age", "conf", "frame"}], "room_memory": the room's saved "memory", "raw"}
+  POST /api/world/memory {op, ...}  edit goto's memory to set up a test case (SIM, run_sim only for edits):
+     forget {key?}              goto FORGET <key> (one, e.g. "trash can#1") or everything; no restart
+     add {label, x, y, state?}  goto remembers a <label> at x, y (room metres); state fresh|stale|gone
+     add {object}               ... the room object <object id> where it really is
+     update {key, x?, y?, state?}  move an entry / change its state
+     set {entries: [{label, x, y, state?}]}  replace the whole memory
+     to_room {write?}           the live memory becomes the room's "memory" (reloads with it; Save room keeps
+                                it); write: true also saves the room file under its current name
+   add/update/set: S + CANCEL first (stop always wins), then goto is restarted with the edited memory
+   (its nav map is lost; the car stays where it is). The reply carries the new live "entries".
 """
 from __future__ import annotations
 
@@ -239,6 +252,123 @@ def _car_to_start():
     return (200 if rep.get("ok") else 400), rep
 
 
+# ------------------------------------------------------------------ goto memory (Memory panel)
+def _memory_live() -> dict:
+    """goto MEMORY -> room-frame entries (common.memory_to_world)"""
+    r = _robot()
+    if r is None:
+        return {"ok": False, "error": "robot plugin not loaded: can't ask goto"}
+    try:
+        raw = r.send("goto", "MEMORY", timeout=2.0, src="memory")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"goto: {e}"}
+    parsed = C.parse_goto_memory(raw)
+    room = _room or (ctl({"op": "get_room"}).get("room"))
+    if parsed is None or not room:
+        return {"ok": False, "error": f"goto MEMORY: {raw!r}" if parsed is None else "no room yet", "raw": raw}
+    st = ctl({"op": "get_state"}).get("state") or {}
+    t = st.get("truth")
+    car = (float(t["x"]), float(t["y"]), float(t["th"])) if t else None
+    return {"ok": True, "entries": C.memory_to_world(room["start"], parsed, car), "pose": parsed["pose"],
+            "car": car and [round(v, 3) for v in car], "room_memory": room.get("memory", []), "raw": raw}
+
+
+def _memory_restart(entries: list[dict], why: str) -> tuple[int, dict]:
+    """S + CANCEL, then a fresh goto whose memory is `entries` (room metres); the car stays put"""
+    if not SUP:
+        return 503, {"ok": False, "error": "not started by run_sim: memory edits need goto restarted (forget works)"}
+    r = _robot()
+    stopped = r.stop(f"memory {why}") if r is not None else None
+    room = _room or ctl({"op": "get_room"}).get("room")
+    st = ctl({"op": "get_state"}).get("state") or {}
+    t = st.get("truth")
+    car = (float(t["x"]), float(t["y"]), float(t["th"])) if t else None
+    if not room or car is None:
+        return 503, {"ok": False, "error": "no room or car pose from the world sim"}
+    mem = [{"label": e["label"], "x": float(e["x"]), "y": float(e["y"]),
+            **({"state": e["state"]} if e.get("state") in C.MEM_STATES else {})} for e in entries]
+    text = C.goto_memory_text({"start": room["start"], "objects": room["objects"], "memory": mem}, car=car)
+    _route.update({"route": None, "i": 0})
+    sup = supervisor({"op": "restart_goto", "memory": text})
+    if not sup or not sup.get("ok"):
+        return 500, {"ok": False, "error": f"goto restart failed: {sup}"}
+    live = {}
+    end = time.monotonic() + 6
+    while time.monotonic() < end:          # goto re-bases its memory on the first STATUS: wait for it
+        time.sleep(0.3)
+        live = _memory_live()
+        if live.get("ok") and len(live["entries"]) == len(mem) and \
+                all(e["frame"] == "map" for e in live["entries"]):
+            break
+    _bench.log("memory", f"{why}: goto restarted with {len(mem)} remembered thing(s)")
+    return 200, {**live, "ok": bool(live.get("ok")), "stopped": stopped, "goto_restart": sup}
+
+
+def _memory_op(m: dict) -> tuple[int, dict]:
+    op = m.get("op")
+    if op == "forget":
+        r = _robot()
+        if r is None:
+            return 503, {"ok": False, "error": "robot plugin not loaded"}
+        key = " ".join(str(m.get("key") or "").split())
+        rep = r.send("goto", f"FORGET {key}".strip(), timeout=2.0, src="memory")
+        _bench.log("memory", f"FORGET {key or '(all)'} -> {rep}")
+        return 200, {**_memory_live(), "ok": rep.startswith("OK"), "reply": rep}
+    if op not in ("add", "update", "set", "to_room"):
+        return 400, {"ok": False, "error": "ops: forget, add, update, set, to_room"}
+    live = _memory_live()
+    if not live.get("ok"):
+        return 503, live
+    entries = [dict(e) for e in live["entries"]]
+    state = m.get("state")
+    if state is not None and state not in C.MEM_STATES:
+        return 400, {"ok": False, "error": f"state: one of {C.MEM_STATES}"}
+    try:
+        if op == "add":
+            if m.get("object"):
+                o = next((o for o in (_room or {}).get("objects", []) if o["id"] == m["object"]), None)
+                if o is None or not o.get("label"):
+                    return 400, {"ok": False, "error": f"no labelled object {m['object']!r}"}
+                e = {"label": o["label"], "x": o["x"], "y": o["y"]}
+            else:
+                label = " ".join(str(m.get("label") or "").split())
+                if not label:
+                    return 400, {"ok": False, "error": "add needs label (or object)"}
+                e = {"label": label, "x": float(m["x"]), "y": float(m["y"])}
+            entries.append({**e, "state": state or "fresh"})
+        elif op == "update":
+            e = next((e for e in entries if e["key"] == m.get("key")), None)
+            if e is None:
+                return 404, {"ok": False, "error": f"no memory entry {m.get('key')!r}"}
+            if "x" in m:
+                e["x"] = float(m["x"])
+            if "y" in m:
+                e["y"] = float(m["y"])
+            if state:
+                e["state"] = state
+        elif op == "set":
+            entries = [{"label": " ".join(str(e["label"]).split()), "x": float(e["x"]), "y": float(e["y"]),
+                        "state": e.get("state") or "fresh"} for e in m.get("entries") or []]
+            if any(not e["label"] or e["state"] not in C.MEM_STATES for e in entries):
+                return 400, {"ok": False, "error": "every entry needs label, x, y (state fresh|stale|gone)"}
+    except (KeyError, TypeError, ValueError) as e:
+        return 400, {"ok": False, "error": f"bad request: {e}"}
+    if op == "to_room":
+        mem = [{"label": e["label"], "x": e["x"], "y": e["y"],
+                **({"state": e["state"]} if e["state"] != "fresh" else {})} for e in entries]
+        rep = ctl({"op": "set_memory", "memory": mem})
+        if rep.get("ok") and m.get("write"):
+            name = (_room or {}).get("name") or ctl({"op": "get_room"}).get("room", {}).get("name", "")
+            sv = ctl({"op": "save", "name": name, "overwrite": True})
+            rep = {**rep, "saved": sv}
+            if not sv.get("ok"):
+                rep["ok"] = False
+        rep.pop("goto_memory", None)
+        _bench.log("memory", f"live memory -> room memory ({len(mem)}){' and saved' if m.get('write') else ''}")
+        return (200 if rep.get("ok") else 400), rep
+    return _memory_restart(entries, op)
+
+
 def setup(bench) -> None:
     global _bench
     _bench = bench
@@ -292,6 +422,15 @@ def setup(bench) -> None:
         bench.log("world", f"GOTO {label} -> {rep}")
         return 200, {"ok": rep.startswith("OK"), "reply": rep}
 
+    def r_memory_get(q, b):
+        rep = _memory_live()
+        return (200 if rep.get("ok") else 503), rep
+
+    def r_memory_post(q, b):
+        return _memory_op(_body(b))
+
+    bench.route("GET", "/api/world/memory", r_memory_get)
+    bench.route("POST", "/api/world/memory", r_memory_post)
     bench.route("GET", "/api/world/room", r_room)
     bench.route("GET", "/api/world/rooms", r_rooms)
     bench.route("POST", "/api/world/ctl", r_ctl)

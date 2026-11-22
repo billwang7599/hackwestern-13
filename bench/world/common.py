@@ -232,7 +232,8 @@ SEED_EPOCH = 4294967295
 def goto_memory_text(room: dict, now: float | None = None, car=None) -> str | None:
     """room["memory"] -> goto memory.txt (format of test_fullstack.mem_file): 'inst' in motor mm,
     'navw' in the ark frame. An entry {"id": obj} remembers that object where it is now;
-    {"id", "x", "y"} remembers it somewhere else (the moved-bin demo).
+    {"id", "x", "y"} remembers it somewhere else (the moved-bin demo); {"label", "x", "y"} remembers
+    a <label> at x, y with no object behind it. "state": fresh (default) | stale | gone.
     car = (x, y, th) world pose of the car right now: adds goto's 'pose' line so its memory frame
     (motor mm from the room start) agrees with where the car is, even away from the start.
     None = no memory and no car pose."""
@@ -252,11 +253,82 @@ def goto_memory_text(room: dict, now: float | None = None, car=None) -> str | No
         x = float(m.get("x", o["x"] if o else 0.0))
         y = float(m.get("y", o["y"] if o else 0.0))
         k += 1
+        state = m.get("state") if m.get("state") in MEM_STATES else "fresh"
         mx, my, _ = world_to_motor(room["start"], x, y)
         xa, za, _ = world_to_ark(room["start"], x, y)
-        out.append(f"inst {k} fresh {mx:.1f} {my:.1f} 0.00 1000 0.800 3 {now:.1f} {label}")
+        out.append(f"inst {k} {state} {mx:.1f} {my:.1f} 0.00 1000 0.800 3 {now:.1f} {label}")
         out.append(f"navw {k} {xa:.3f} {za:.3f} {label}")
     return "\n".join(out) + "\n" if k or car is not None else None
+
+
+MEM_STATES = ("fresh", "stale", "gone")
+_MEM_ENTRY = re.compile(r"^(?P<label>.+?)#(?P<id>\d+) (?P<state>\w+)(?P<rest>(?: \S+=\S*)*)\s*$")
+
+
+def parse_goto_memory(reply: str) -> dict | None:
+    """goto's MEMORY reply ("OK n=2 pose=x,y,h; trash can#1 fresh x=.. y=.. age=.. conf=.. map=xa,za; ...")
+    -> {"n", "pose": (x_mm, y_mm, h_deg) | None, "entries": [{"label", "id", "state", "x_mm", "y_mm",
+    "age", "conf", "map": (xa, za) | None}]}. None if it isn't an OK MEMORY reply."""
+    reply = (reply or "").strip()
+    if not reply.startswith("OK"):
+        return None
+    parts = [p.strip() for p in reply[2:].split(";")]
+    head = dict(x.split("=", 1) for x in parts[0].split() if "=" in x)
+    pose = None
+    if "pose" in head:
+        try:
+            pose = tuple(float(v) for v in head["pose"].split(","))[:3]
+        except ValueError:
+            pose = None
+    out = []
+    for p in parts[1:]:
+        m = _MEM_ENTRY.match(p)
+        if not m:
+            continue
+        kv = dict(x.split("=", 1) for x in m["rest"].split() if "=" in x)
+
+        def num(k, d=None):
+            try:
+                return float(kv[k])
+            except (KeyError, ValueError):
+                return d
+        mp = None
+        if kv.get("map") and kv["map"] != "-":
+            try:
+                xa, za = (float(v) for v in kv["map"].split(","))
+                mp = (xa, za)
+            except ValueError:
+                mp = None
+        out.append({"label": m["label"], "id": int(m["id"]), "state": m["state"], "x_mm": num("x", 0.0),
+                    "y_mm": num("y", 0.0), "age": num("age"), "conf": num("conf"), "map": mp})
+    return {"n": int(head.get("n", len(out)) or 0), "pose": pose, "entries": out}
+
+
+def memory_to_world(start: dict, parsed: dict, car=None) -> list[dict]:
+    """goto's parsed MEMORY -> room-frame entries [{"key": "label#id", "label", "id", "state", "x", "y",
+    "age", "conf", "frame"}]. Uses the entry's map (ARKit) position when goto has one (fixed to the
+    room in the sim); otherwise places it relative to the car: goto's memory-frame car pose
+    (MEMORY pose=) against the car's real world pose `car` (x, y, th). Last resort: motor mm from the
+    room start."""
+    pose = parsed.get("pose")
+    res = []
+    for e in parsed.get("entries", []):
+        if e.get("map"):
+            x, y, _ = ark_to_world(start, e["map"][0], e["map"][1])
+            frame = "map"
+        elif car is not None and pose is not None:
+            px, py, ph = pose
+            dx, dy = (e["x_mm"] - px) / 1000.0, -(e["y_mm"] - py) / 1000.0   # memory frame, y left
+            a = car[2] + math.radians(ph)
+            x = car[0] + math.cos(a) * dx - math.sin(a) * dy
+            y = car[1] + math.sin(a) * dx + math.cos(a) * dy
+            frame = "car"
+        else:
+            x, y, _ = motor_to_world(start, e["x_mm"], e["y_mm"], 0.0)
+            frame = "start"
+        res.append({"key": f"{e['label']}#{e['id']}", "label": e["label"], "id": e["id"], "state": e["state"],
+                    "x": round(x, 3), "y": round(y, 3), "age": e.get("age"), "conf": e.get("conf"), "frame": frame})
+    return res
 
 
 # ------------------------------------------------------------------ goto config

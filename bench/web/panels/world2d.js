@@ -48,6 +48,9 @@
       const trail = [];
       let view = {s: 80, ox: 0, oy: 0};
       let dirty = true;
+      let liveMem = null;    // goto's memory in room metres (from the gotomem panel), null = not polled
+      let memDrag = null;    // {key, x, y} while dragging a memory ring
+      B.on('gotomem', e => { liveMem = e; dirty = true; });
 
       // ---------- layout: the big view (room bar, edit tools, canvas) here; faults, noise, sensors in the Sim tab
       const banner = h('div', {class: 'mono'});   // goto + guard line, shown in the Sim tab (the header has the plain-words version)
@@ -446,8 +449,16 @@
           ctx.strokeStyle = isSel ? '#5aa9e6' : '#c8d3db'; ctx.lineWidth = isSel ? 5 : 4; ctx.lineCap = 'round';
           ctx.beginPath(); ctx.moveTo(...S(w[0], w[1])); ctx.lineTo(...S(w[2], w[3])); ctx.stroke();
         });
-        // remembered-elsewhere ghosts (room memory with its own x, y: the moved-bin demo)
-        for (const m of r.memory || []) {
+        // goto's live memory (Memory edit panel, GET /api/world/memory): a dashed ring per entry, draggable there
+        const MEMCOL = {fresh: '#4cc38a', stale: '#e6b450', gone: '#7d8a96'};
+        for (const m of liveMem || []) {
+          const [px, py] = memDrag && memDrag.key === m.key ? S(memDrag.x, memDrag.y) : S(m.x, m.y);
+          const col = MEMCOL[m.state] || MEMCOL.fresh;
+          ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(px, py, 0.16 * s, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+          label(ctx, px, py + 0.16 * s + 12, `remembers ${m.key}${m.state !== 'fresh' ? ' (' + m.state + ')' : ''}`, col, 11);
+        }
+        // remembered-elsewhere ghosts (room memory with its own x, y: the moved-bin demo), until goto's live memory arrives
+        for (const m of liveMem ? [] : r.memory || []) {
           if (m.x === undefined) continue;
           const [px, py] = S(m.x, m.y);
           ctx.strokeStyle = '#4cc38a'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(px, py, 0.16 * s, 0, 7); ctx.stroke(); ctx.setLineDash([]);
@@ -576,6 +587,10 @@
         if (!W || !W.room) return;
         if (window.World2DPick) { const f = window.World2DPick; window.World2DPick = null; f(x, y); return; }  // one click for another panel
         if (!editing) return;   // view mode: clicking only focuses the map (for WASD)
+        if (tool === 'select' && liveMem && window.GotoMemEditable && window.GotoMemEditable()) {
+          const m = liveMem.find(m => Math.hypot(m.x - x, m.y - y) < 0.2);
+          if (m) { memDrag = {key: m.key, x: m.x, y: m.y, dx: m.x - x, dy: m.y - y}; dirty = true; return; }
+        }
         if (tool === 'select') {
           const o = hitObj(x, y);
           if (o) { sel = {kind: 'obj', id: o.id}; drag = {kind: 'obj', id: o.id, dx: o.x - x, dy: o.y - y}; }
@@ -590,6 +605,7 @@
         dirty = true;
       });
       window.addEventListener('mousemove', ev => {
+        if (memDrag) { const [x, y] = ev2w(ev); memDrag.x = x + memDrag.dx; memDrag.y = y + memDrag.dy; memDrag.moved = true; dirty = true; return; }
         if (!drag && !ghost) return;
         const [x, y] = ev2w(ev);
         if (ghost) { ghost.b = [x, y]; dirty = true; return; }
@@ -608,6 +624,11 @@
         drag.moved = true; dirty = true;
       });
       window.addEventListener('mouseup', () => {
+        if (memDrag) {
+          const m = memDrag; memDrag = null; dirty = true;
+          if (m.moved && window.GotoMemMoved) window.GotoMemMoved(m.key, Math.round(m.x * 1000) / 1000, Math.round(m.y * 1000) / 1000);
+          return;
+        }
         if (ghost) {
           const g = ghost; ghost = null;
           const len = Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]);

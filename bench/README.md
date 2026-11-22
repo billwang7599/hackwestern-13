@@ -113,6 +113,30 @@ first-run help (screenshots). The last log line is in the footer (click: the Log
 - *goto's memory* (Memory page): **Forget** on a row sends `FORGET <label>#<id>` and **🗑 Forget all…**
   (asks first) sends `FORGET all`, both through `POST /api/mission/goto` (mission plugin → robot link → goto).
   goto answers `OK forgot n`. Anything the camera still sees is remembered again at once, as a new sighting.
+- *Editing goto's memory to set up a test* (SIM, Room page → **🧠 Memory edit**, `web/panels/gotomem.js`,
+  routes in `plugins/world.py`): a live table of goto's `MEMORY` in room metres (polled ~1 s), Forget / Forget
+  all, **＋ Add on map** (pick a label and fresh/stale/gone, then click the map), **Remember real position**
+  per room object, edit x/y (Enter) or state in the table, drag a dashed ring on the map (only while this
+  sub-tab is shown), **Use as room memory** (the live memory becomes the room's `"memory"`, so Reset map
+  and reloads start with it and Save room keeps it) and **💾 Save memory to room** (that, plus overwriting
+  the room file under its current name). The map draws goto's live memory as dashed rings (green fresh,
+  amber stale, grey gone).
+  - `GET /api/world/memory` → `{"ok", "entries": [{"key": "trash can#1", "label", "id", "state", "x", "y",
+    "age", "conf", "frame"}], "room_memory", "car", "raw"}`. `frame` = `map` (from goto's ARKit `map=`
+    position, fixed to the room) or `car` (from goto's memory-frame `pose=` against the car's real pose).
+  - `POST /api/world/memory {op, ...}`: `forget {key?}` (goto `FORGET`, no restart) · `add {label, x, y,
+    state?}` · `add {object}` (a room object where it really is) · `update {key, x?, y?, state?}` · `set
+    {entries: [{label, x, y, state?}]}` · `to_room {write?}`. 404 for an unknown key, 400 for a bad state.
+  - `add`/`update`/`set` change goto's memory by rewriting its memory file and restarting it through
+    run_sim's `restart_goto` (needs run_sim; 503 otherwise). **S + CANCEL go first**, so an edit during a
+    go-to stops the car. goto's nav map is cleared and the car stays where it is (the file gets the car's
+    real `pose` line, as in Reset map). Entries are rewritten with conf 0.80 and seen 3. goto C,
+    tars_motor and every robot protocol are unchanged.
+  - Camera sightings keep coming in: an entry for something the camera can see moves to (or is
+    duplicated at) the sighting.
+  - Test: `python3 bench/tests/test_memory.py` (run_sim with the bench on :8777: every op, goto's own
+    `rel_dist`/`rel_bearing` against the sim's truth after each edit with the car turned away from the
+    start, and an edit mid-GOTO stopping the car).
 
 Test: `python3 bench/tests/test_pages.py` (static page/panel checks + both remove paths on a stub-car sim;
 `--static` skips the sim).
