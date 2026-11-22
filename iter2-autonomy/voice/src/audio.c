@@ -14,7 +14,13 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifdef __QNX__
+/* QNX io-audio capture (`input = qnx`). TARS_NO_QNX_AUDIO: a QNX image without the audio headers
+ * (no sys/asoundlib.h): every other input (phone, wav, raw) still works; `make native` sets it then. */
+#if defined(__QNX__) && !defined(TARS_NO_QNX_AUDIO)
+#define TARS_QNX_AUDIO 1
+#endif
+
+#ifdef TARS_QNX_AUDIO
 #include <sys/asoundlib.h>
 #endif
 
@@ -53,7 +59,7 @@ struct audio_src {
     int16_t *in;                   /* decoded mono input at the file's rate */
     long in_n, in_used;
     phone_t *ph;
-#ifdef __QNX__
+#ifdef TARS_QNX_AUDIO
     snd_pcm_t *pcm;
     int frag;                      /* bytes per fragment */
     int16_t *qbuf;
@@ -113,7 +119,7 @@ static int wav_load(audio_src_t *a, const char *path, char *err, int errlen)
     return -1;
 }
 
-#ifdef __QNX__
+#ifdef TARS_QNX_AUDIO
 static int qnx_open(audio_src_t *a, const char *arg, char *err, int errlen)
 {
     int card = -1, dev = 0, rc;
@@ -457,11 +463,11 @@ audio_src_t *audio_open(const char *spec, char *err, int errlen)
         a->kind = SRC_PHONE;
         if (ph_open(a, spec[5] == ':' ? spec + 6 : NULL, err, errlen) < 0) { audio_close(a); return NULL; }
     } else if (!strncmp(spec, "qnx", 3)) {
-#ifdef __QNX__
+#ifdef TARS_QNX_AUDIO
         a->kind = SRC_QNX;
         if (qnx_open(a, spec[3] == ':' ? spec + 4 : NULL, err, errlen) < 0) { audio_close(a); return NULL; }
 #else
-        snprintf(err, errlen, "'qnx' input only exists in the QNX build (use wav:FILE or raw:-)");
+        snprintf(err, errlen, "'qnx' input isn't in this build (QNX with io-audio headers only); use phone, wav:FILE or raw:-");
         free(a);
         return NULL;
 #endif
@@ -499,7 +505,7 @@ int audio_read(audio_src_t *a, int16_t *buf, int n)
     case SRC_PHONE:
         return ph_read(a->ph, buf, n);
     case SRC_QNX:
-#ifdef __QNX__
+#ifdef TARS_QNX_AUDIO
         return qnx_read(a, buf, n);
 #endif
     default:
@@ -527,7 +533,7 @@ void audio_close(audio_src_t *a)
         free(a->ph->fifo);
         free(a->ph);
     }
-#ifdef __QNX__
+#ifdef TARS_QNX_AUDIO
     if (a->pcm) {
         snd_pcm_plugin_flush(a->pcm, SND_PCM_CHANNEL_CAPTURE);
         snd_pcm_close(a->pcm);

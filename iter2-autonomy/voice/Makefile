@@ -147,6 +147,18 @@ NARCH ?= -march=armv8.2-a+dotprod+fp16
 NDEFS := -D_QNX_SOURCE -D_XOPEN_SOURCE=600 -DNDEBUG -DGGML_USE_CPU -DGGML_USE_CPU_REPACK
 NINC  := -I$(WSRC)/include -I$(WSRC)/ggml/include -I$(GG) -I$(ND)/gen
 NOPT  := -O3 -fno-strict-aliasing
+# QNX io-audio (a USB mic, `input = qnx`, and mic_test) only if its headers are installed; the demo's
+# phone mic (`input = phone`, TCP 5577) doesn't need them.
+NAUDIO := $(shell test -f /usr/include/sys/asoundlib.h && echo yes)
+ifeq ($(NAUDIO),yes)
+NADEF :=
+NALIB := -lasound
+NMIC  := $(ND)/mic_test
+else
+NADEF := -DTARS_NO_QNX_AUDIO
+NALIB :=
+NMIC  :=
+endif
 W_C   := $(GG)/ggml.c $(GG)/ggml-alloc.c $(GG)/ggml-quants.c
 W_CXX := $(GG)/ggml.cpp $(GG)/ggml-backend.cpp $(GG)/ggml-backend-meta.cpp $(GG)/ggml-opt.cpp \
          $(GG)/ggml-threading.cpp $(GG)/gguf.cpp $(GG)/ggml-backend-dl.cpp $(GG)/ggml-backend-reg.cpp \
@@ -182,19 +194,20 @@ $(ND)/libwhisper_all.a: $(NOBJ)
 $(ND)/tars_voice: $(SRCS) src/*.h intent/*.h $(ND)/libwhisper_all.a
 	@mkdir -p $(ND)
 	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c src/main.c -o $(ND)/main.o
-	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c src/audio.c -o $(ND)/audio.o
+	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(NADEF) $(INC) -c src/audio.c -o $(ND)/audio.o
 	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c src/vad.c -o $(ND)/vad.o
 	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c src/stt.c -o $(ND)/stt.o
 	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c intent/intent.c -o $(ND)/intent.o
 	$(NCXX) -o $@ $(ND)/main.o $(ND)/audio.o $(ND)/vad.o $(ND)/stt.o $(ND)/intent.o \
-	      $(ND)/libwhisper_all.a -lasound -lsocket -lm
+	      $(ND)/libwhisper_all.a $(NALIB) -lsocket -lm
 	@echo ">> built $@  (run from this directory: ./build/native/tars_voice -c voice.conf --dry)"
+	@test "$(NAUDIO)" = yes || echo ">> no sys/asoundlib.h: built without the QNX USB-mic input (phone/wav/raw only), no mic_test"
 
 $(ND)/mic_test: qnx/mic_test.c src/audio.c src/audio.h
 	@mkdir -p $(ND)
 	$(NCC) $(CFLAGS) -D_QNX_SOURCE -Isrc -o $@ qnx/mic_test.c src/audio.c -lasound -lsocket -lm
 
-native: $(ND)/mic_test $(ND)/tars_voice
+native: $(NMIC) $(ND)/tars_voice
 native-mic: $(ND)/mic_test
 
 # ---------------------------------------------------------------- deploy
