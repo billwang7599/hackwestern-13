@@ -42,17 +42,19 @@
       <div class="drv-console"></div>`;
       const $ = s => el.querySelector(s);
       const held = new Set();
+      let shift = false;   // Shift+W = keyboard override towards an obstacle (robot plugin docstring)
       let speed = 0.5, robotOk = Bench.info.plugins.includes('robot');
       if (!robotOk) { el.classList.add('drv-disabled'); $('.msg').textContent = 'robot plugin not loaded: driving disabled'; }
 
       // ---- keys
       function paintKeys() { el.querySelectorAll('.drv-keys span').forEach(s => s.classList.toggle('on', held.has(s.dataset.k))); }
       async function push() {
-        try { await Bench.api('robot/keys', {held: [...held], speed}); }
+        try { await Bench.api('robot/keys', {held: [...held], speed, shift}); }
         catch (e) { $('.msg').textContent = 'keys: ' + e.message; }
       }
       const typing = t => ['input', 'textarea', 'select'].includes((t.tagName || '').toLowerCase()) && t.type !== 'range' && t.type !== 'checkbox';
       window.addEventListener('keydown', ev => {
+        if (ev.shiftKey !== shift) { shift = ev.shiftKey; if (held.size) push(); }
         const k = KEYMAP[ev.code];
         if (!k || typing(ev.target) || !robotOk) return;
         ev.preventDefault();
@@ -60,11 +62,20 @@
         held.add(k); paintKeys(); push();
       });
       window.addEventListener('keyup', ev => {
+        if (ev.shiftKey !== shift) { shift = ev.shiftKey; if (held.size) push(); }
         const k = KEYMAP[ev.code];
         if (!k || !held.has(k)) return;
         held.delete(k); paintKeys(); push();
       });
-      const release = () => { if (held.size) { held.clear(); paintKeys(); push(); } };
+      // guard in plain words (status.guard.help from the robot plugin); '' = nothing to explain
+      const hint = $('.msg').textContent;
+      Bench.on('status', st => {
+        const g = st && st.guard, m = $('.msg');
+        if (!robotOk || !g) return;
+        m.textContent = g.help || hint;
+        m.style.color = g.help ? 'var(--warn, #e6b450)' : '';
+      });
+      const release = () => { shift = false; if (held.size) { held.clear(); paintKeys(); push(); } };
       window.addEventListener('blur', release);
       document.addEventListener('visibilitychange', () => { if (document.hidden) release(); });
       // heartbeat: the server stops the drive if this goes quiet for 0.35 s

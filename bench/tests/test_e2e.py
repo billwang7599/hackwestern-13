@@ -17,6 +17,9 @@ it proves the laptop stack and the glue, not the car. Covers:
   collide    a box dropped right behind the car, then reverse: the car's physics hits it (contact)
   moved      room demo_moved_bin through the bench: arrives at the new spot
   detour     room demo_detour: EXPECTED failed:blocked (goto vs the real ±0.45 m guard corridor)
+  unstick    open_bin: GOTO trash can arrives in front of the bin, the guard reads BLOCKED (GOB1),
+             a plain D is refused, held WASD S backs the car away (bench sends KD), STOP halts it,
+             W without Shift stays refused, the keyboard key never shows up in any event
 """
 from __future__ import annotations
 
@@ -477,6 +480,75 @@ def sc_detour(sim: Sim):
     check(st.get("state") == "idle", f"goto ended, not stuck ({res})")
 
 
+def sc_unstick(sim: Sim):
+    print("unstick: parked at the bin with the guard BLOCKED, WASD S still backs away (KD override)")
+    sim.load_room("open_bin")
+    sim.http("POST", "/api/world/goto", {"label": "trash can"})
+    st = sim.wait_goto_idle(180)
+    check(st.get("result") == "arrived", f"GOTO trash can in open_bin arrived ({st.get('result')})")
+    g = {}
+    end = time.monotonic() + 5
+    while time.monotonic() < end:
+        g = sim.http("GET", "/api/robot/state")[1].get("guard") or {}
+        if g.get("state") == "blocked":
+            break
+        time.sleep(0.2)
+    if not check(g.get("state") == "blocked" and g.get("reason") == "guard_blocked",
+                 f"guard BLOCKED in front of the bin ({g.get('state')}/{g.get('reason')})"):
+        results.append(("unstick", "FAIL", f"guard never blocked: {g}"))
+        return
+    check(bool(g.get("help")) and g.get("override") is True, f"guard has plain help text + override ({g.get('help', '')[:60]}...)")
+    r = sim.send("motor", "D -0.5 -0.5")
+    check(r.startswith("ERR guard_blocked"), f"plain D reverse refused while blocked, as on the robot ({r})")
+    sim.send("motor", "S")
+    time.sleep(0.3)
+
+    def back_m(a, b):        # how far b is behind a along a's heading
+        return -((b["x"] - a["x"]) * math.cos(a["th"]) + (b["y"] - a["y"]) * math.sin(a["th"]))
+    n0 = len(sim.events)
+    # while still BLOCKED: W (towards the bin) without Shift stays a plain D, which is refused
+    w0 = sim.truth()
+    end = time.monotonic() + 0.8
+    while time.monotonic() < end:
+        sim.http("POST", "/api/robot/keys", {"held": ["w"]})
+        time.sleep(0.1)
+    sim.http("POST", "/api/robot/keys", {"held": []})
+    time.sleep(0.3)
+    fwd = -back_m(w0, sim.truth())
+    check(fwd < 0.01, f"W without Shift stays refused towards the bin ({fwd * 1000:.0f} mm)")
+    t0 = sim.truth()
+    lines = []
+    end = time.monotonic() + 1.5
+    while time.monotonic() < end:          # the browser's 100 ms key heartbeat
+        lines += sim.http("POST", "/api/robot/keys", {"held": ["s"], "speed": 0.5})[1].get("lines", [])
+        time.sleep(0.1)
+    mid = sim.truth()
+    out = (sim.http("GET", "/api/robot/state")[1].get("status") or {})
+    code, r = sim.http("POST", "/api/robot/stop", {"why": "e2e unstick"})
+    t_stop = time.monotonic()
+    moved = back_m(t0, mid)
+    # once it has backed out of the corridor the guard clears and the same key goes as a plain D
+    check(moved > 0.03, f"WASD S backed the car away from the bin: {moved * 1000:.0f} mm "
+                        f"(tars_motor out {out.get('out_l')}/{out.get('out_r')}, guard {out.get('guard_reason')})")
+    check(any(l == "KD <key> s" for l in lines), f"the bench sent KD for the held S ({lines[:2]})")
+    time.sleep(0.6)
+    st = sim.http("GET", "/api/robot/state")[1].get("status") or {}
+    a = sim.truth()
+    time.sleep(0.5)
+    b = sim.truth()
+    drift = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
+    check(st.get("out_l") == 0 and st.get("out_r") == 0 and drift < 0.005,
+          f"STOP halted it: out {st.get('out_l')}/{st.get('out_r')}, drift {drift * 1000:.1f} mm over 0.5 s "
+          f"(checked {time.monotonic() - t_stop:.1f} s after STOP)")
+    with sim.lock:
+        evs = json.dumps([e for _, _, e in sim.events[n0:]])
+    key_leak = re.search(r"KD [0-9a-f]{32}", evs) is not None
+    check(not key_leak, "the keyboard key never appears in bench events")
+    ok = moved > 0.03 and drift < 0.005 and fwd < 0.01 and not key_leak
+    results.append(("unstick (WASD out of guard BLOCKED)", "PASS" if ok else "FAIL",
+                    f"backed {moved * 1000:.0f} mm, stop drift {drift * 1000:.1f} mm, W {fwd * 1000:.0f} mm"))
+
+
 def main():
     t0 = time.monotonic()
     print(f"load {load():.1f}")
@@ -493,7 +565,7 @@ def main():
         for name, fn in (("scenarios", sc_scenarios), ("goto", sc_goto), ("route", sc_route_seen), ("stop", sc_stop),
                          ("voice", sc_voice), ("box", sc_box), ("collide", sc_collide), ("phone", sc_phone_box),
                          ("moved", lambda s: sc_goto(s, "demo_moved_bin", "goto demo_moved_bin")),
-                         ("detour", sc_detour)):
+                         ("detour", sc_detour), ("unstick", sc_unstick)):
             if not want(name):
                 continue
             try:

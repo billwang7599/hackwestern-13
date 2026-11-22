@@ -58,7 +58,8 @@ DEFAULTS = {
     "guard_hz": 100,             # GAT1 rate, like lidar_guard (tars_motor's TTL is 100 ms)
     "guard_stop_m": 0.6,
     "guard_half_w": 0.45,
-    "guard_gob1": False,         # tag obstacle denials GOB1 (lidar_guard --identify-obstacles 1)
+    "guard_gob1": True,          # tag obstacle denials GOB1, as the robot runs lidar_guard (service.py
+                                 # passes --identify-obstacles 1); only reason "obstacle", never tracking
     # webcam + YOLO
     "cam_hz": 8,
     "cam_latency_ms": 120,
@@ -559,7 +560,8 @@ class World:
         permit = verdict in ("CLEAR", "CAUTION")
         if self.fault("guard_stale"):
             us -= 300000                       # 300 ms old: tars_motor drops it (TTL 100 ms)
-        magic = b"GOB1" if self.params["guard_gob1"] and verdict == "BLOCKED" else b"GAT1"
+        # lidar_guard.cpp:389 tags GOB1 only for BLOCKED with reason "obstacle"
+        magic = b"GOB1" if self.params["guard_gob1"] and verdict == "BLOCKED" and reason == "obstacle" else b"GAT1"
         self.udp.sendto(magic + us.to_bytes(8, "big") + bytes([1 if permit else 0]), ("127.0.0.1", self.args.guard))
         self.counts["gat"] += 1
         self.guard_out = {"verdict": verdict, "permit": int(permit), "reason": reason,

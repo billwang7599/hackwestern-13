@@ -153,6 +153,7 @@ class Stack:
     # ------------------------------------------------------------ bring-up
     def start(self):
         P = self.ports
+        self.keyboard_auth = secrets.token_hex(16)     # 32 chars, like iter2-autonomy/dashboard/service.py
         self.build()
         # 1. car: the virtual SM11 if its launcher exists, else the stub
         pty = None
@@ -180,7 +181,10 @@ class Stack:
             self.car_kind = "stub"
         # 2. tars_motor
         backend = ["-b", "uno", "-d", pty] if pty else ["-b", "stub"]
-        self.spawn("tars_motor", [MOTOR_BIN, *backend, "-p", str(P["motor"]), "-r", "0", "-l", "-g", str(P["guard"])])
+        # TARS_KEYBOARD_AUTH: the robot's service.py gives tars_motor a fresh keyboard key per boot so a
+        # human's KD drive can get past a classified (GOB1) obstacle block; the bench WASD shares it.
+        self.spawn("tars_motor", [MOTOR_BIN, *backend, "-p", str(P["motor"]), "-r", "0", "-l", "-g", str(P["guard"])],
+                   env=dict(os.environ, TARS_KEYBOARD_AUTH=self.keyboard_auth))
         self.must(wait_for(lambda: port_open(P["motor"]), 8), "tars_motor didn't open its port", "tars_motor")
         if pty:     # the firmware says READY ~1.6 s after the port opens
             ok = wait_for(lambda: "ready=1" in " ".join(line_cmd(P["motor"], ["STATUS"])), 10)
@@ -243,7 +247,8 @@ class Stack:
             env = dict(os.environ, BENCH_WORLD_CTL=str(P["world_ctl"]), BENCH_WORLD_STATE=str(P["world_state"]),
                        BENCH_SUPERVISOR=str(self.ports["supervisor"]), BENCH_CAR_CTL=str(P["car_ctl"]),
                        BENCH_CAR_TRUTH=str(truth_copy), BENCH_CAR_KIND=self.car_kind,
-                       TARS_BENCH_PHONE_ROOM_PORT=str(P["phone_room"]), TARS_BENCH_PHONE_SCENE_PORT=str(P["phone_scene"]))
+                       TARS_BENCH_PHONE_ROOM_PORT=str(P["phone_room"]), TARS_BENCH_PHONE_SCENE_PORT=str(P["phone_scene"]),
+                       TARS_KEYBOARD_AUTH=self.keyboard_auth)
             argv = [sys.executable, os.path.join(HERE, "bench.py"), "--port", str(P["bench"]), "--target", "sim",
                     "--motor", f"127.0.0.1:{P['motor']}", "--goto", f"127.0.0.1:{P['goto']}",
                     "--voice", f"127.0.0.1:{P['voice']}"]
