@@ -221,7 +221,7 @@ BC0000000000000000000018 = {isa = PBXFileReference; lastKnownFileType = sourceco
                 SWIFT_OBJC_BRIDGING_HEADER = RoomTag.h;
                 COREML_CODEGEN_LANGUAGE = Swift;
                 HEADER_SEARCH_PATHS = "$(SRCROOT)/../../vendor/apriltag";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Accept a sensor-stream connection from your development computer.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Accept sensor and drive connections from the robot's Pi over USB or Wi-Fi.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Use the rear camera and LiDAR to map nearby obstacles and recognize objects.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Stream motion readings to your robot over a USB connection.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -244,7 +244,7 @@ BC0000000000000000000018 = {isa = PBXFileReference; lastKnownFileType = sourceco
                 SWIFT_OBJC_BRIDGING_HEADER = RoomTag.h;
                 COREML_CODEGEN_LANGUAGE = Swift;
                 HEADER_SEARCH_PATHS = "$(SRCROOT)/../../vendor/apriltag";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Accept a sensor-stream connection from your development computer.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Accept sensor and drive connections from the robot's Pi over USB or Wi-Fi.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Use the rear camera and LiDAR to map nearby obstacles and recognize objects.";
 				INFOPLIST_KEY_NSMotionUsageDescription = "Stream motion readings to your robot over a USB connection.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

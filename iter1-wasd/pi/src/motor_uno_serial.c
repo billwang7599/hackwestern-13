@@ -17,6 +17,7 @@
  * error, hang-up), it is (re)opened every second; the server keeps running. */
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +43,10 @@ static motor_event_t evq[EV_CAP];
 static int  ev_head, ev_tail;
 static long long last_open_try;
 static unsigned dropped;
+static char opened_path[PATH_MAX];
+static int confirmed;
+static long long next_path_check, next_probe, last_reply;
+static int queue_line(const char *line);
 static int  waiting_logged;
 
 static long long now_ms(void)
@@ -54,7 +59,10 @@ static long long now_ms(void)
 static int uno_open(void)
 {
     last_open_try = now_ms();
-    fd = open(dev_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
+    /* Open exactly the endpoint we resolved, even if the bridge republishes
+     * its symlink between realpath() and open(). */
+    if (realpath(dev_path, opened_path))
+        fd = open(opened_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd < 0) {
         if (!waiting_logged++)
             fprintf(stderr, "[uno] %s not there yet (%s), retrying every %d ms\n",
@@ -76,7 +84,11 @@ static int uno_open(void)
     in_overflow = 0;
     /* Note: opening the Uno's USB port pulses DTR, which reboots it. It
      * answers READY ~1.5 s later; until then our lines are simply lost. */
-    fprintf(stderr, "[uno] opened %s @115200\n", dev_path);
+    confirmed = 0;
+    last_reply = next_path_check = last_open_try;
+    next_probe = last_open_try + REOPEN_MS;
+    fprintf(stderr, "[uno] opened %s -> %s @115200\n", dev_path, opened_path);
+    queue_line("\nS\nV\n?\n");
     return 0;
 }
 
@@ -85,6 +97,10 @@ static void uno_lost(const char *why)
     fprintf(stderr, "[uno] lost %s (%s), retrying every %d ms\n", dev_path, why, REOPEN_MS);
     close(fd);
     fd = -1;
+    confirmed = 0;
+    out_len = in_len = 0;
+    ev_tail = ev_head;
+    last_open_try = now_ms();
 }
 
 static motor_event_t *ev_push(motor_event_kind_t k, int v)
@@ -101,6 +117,13 @@ static motor_event_t *ev_push(motor_event_kind_t k, int v)
 
 static void parse_line(char *s)
 {
+    /* Both stepper and DC firmware answer '?' with this status line. */
+    if (!strncmp(s, "# arms ", 7)) {
+        if (!confirmed) fprintf(stderr, "[uno] confirmed firmware on %s\n", opened_path);
+        confirmed = 1;
+        last_reply = now_ms();
+        return;
+    }
     if (s[0] == '#') {                     /* diagnostics: log, never act on */
         fprintf(stderr, "[uno] %s\n", s);
         return;
@@ -179,12 +202,8 @@ static void flush_out(void)
     }
 }
 
-static int send_line(const char *line)
+static int queue_line(const char *line)
 {
-    if (fd < 0) {
-        if (now_ms() - last_open_try >= REOPEN_MS) uno_open();
-        if (fd < 0) return -1;
-    }
     size_t n = strlen(line);
     if (out_len + n > OUT_CAP) {
         if (dropped++ % 100 == 0) fprintf(stderr, "[uno] TX buffer full, dropping lines\n");
@@ -193,17 +212,45 @@ static int send_line(const char *line)
     memcpy(outbuf + out_len, line, n);
     out_len += n;
     flush_out();
-    return 0;
+    return fd < 0 ? -1 : 0;
+}
+
+static int uno_link(void)
+{
+    long long now = now_ms();
+    if (fd < 0 && now - last_open_try >= REOPEN_MS) uno_open();
+    if (fd < 0) return 0;
+    if (now >= next_path_check) {
+        char current[PATH_MAX];
+        if (!realpath(dev_path, current) || strcmp(current, opened_path)) {
+            uno_lost("serial endpoint changed");
+            return 0;
+        }
+        next_path_check = now + 100;
+    }
+    read_input();
+    if (fd < 0) return 0;
+    if (now - last_reply >= 5000) {
+        uno_lost("firmware reply timeout");
+        return 0;
+    }
+    if (now >= next_probe) {
+        queue_line(confirmed ? "?\n" : "\nS\nV\n?\n");
+        next_probe = now + REOPEN_MS;
+    }
+    flush_out();
+    return confirmed;
+}
+
+static int send_line(const char *line)
+{
+    return confirmed ? queue_line(line) : -1;
 }
 
 static int uno_init(const char *dev)
 {
     snprintf(dev_path, sizeof dev_path, "%s", dev);
-    /* A missing device is NOT fatal: at boot the USB serial port may appear
-     * seconds after tars_motor starts. send_line() keeps retrying. */
-    /* V: a DC Uno that did NOT reboot on open (no DTR reset) still says WHEELS DC.
-     * Stepper firmware ignores it. If it did reboot, it says WHEELS before READY. */
-    if (uno_open() == 0) { send_line("S\n"); send_line("V\n"); }
+    uno_open();
     return 0;
 }
 
@@ -224,7 +271,6 @@ static int uno_drive(float l, float r)
     char line[48];
     snprintf(line, sizeof line, "D %.3f %.3f\n", l, r);
     int rc = send_line(line);
-    if (fd >= 0) read_input();
     return rc;
 }
 
@@ -289,7 +335,7 @@ static void uno_shutdown(void)
 {
     if (fd < 0) return;
     out_len = 0;                       /* stop wins over anything still queued */
-    send_line("S\n");
+    queue_line("\nS\n");
     /* Bounded drain: tcdrain() can block forever if nothing reads the port. */
     for (int i = 0; i < 20 && fd >= 0 && out_len; i++) {
         struct timespec ts = { 0, 10 * 1000000L };
@@ -305,6 +351,7 @@ const motor_backend_t motor_uno_serial = {
     .name = "uno",
     .default_dev = "/dev/serusb1",     /* TODO: verify on the Pi 5 QNX image */
     .init = uno_init,
+    .link = uno_link,
     .drive = uno_drive,
     .gesture = NULL,
     .shutdown = uno_shutdown,

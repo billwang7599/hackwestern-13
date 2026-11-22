@@ -114,6 +114,9 @@ struct MotionUSBApp: App {
                     let key = (keyboard?["last_press"] as? [String])?.joined(separator: "+") ?? ""
                     Text((pi.connected ? "Pi online" : "Pi offline") + " · " +
                          (pi.connected && keyboard?["connected"] as? Bool == true ? "Keys " + (key.isEmpty ? "ready" : key) : "Keys offline"))
+                    TimelineView(.periodic(from: .now, by: 5)) { _ in
+                        Text("Wi-Fi " + (wifiAddress() ?? "off")).font(.caption.monospaced())
+                    }
                     TimelineView(.periodic(from: .now, by: 0.3)) { _ in
                         let guardState = ObstaclePresentation(status: pi.latestStatus, connected: currentGuardConnection)
                         Text(guardState.title).foregroundStyle(guardState.color).fontWeight(.bold)
@@ -292,6 +295,22 @@ struct QNXDepthPanel: View {
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+}
+
+/// The phone's Wi-Fi IPv4 address: what the Pi needs in state/phone-host.
+func wifiAddress() -> String? {
+    var list: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&list) == 0, let first = list else { return nil }
+    defer { freeifaddrs(list) }
+    for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+        let ifa = entry.pointee
+        guard String(cString: ifa.ifa_name) == "en0", let addr = ifa.ifa_addr,
+              addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        if getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
+                       nil, 0, NI_NUMERICHOST) == 0 { return String(cString: host) }
+    }
+    return nil
 }
 
 final class PiStatusServer: ObservableObject {

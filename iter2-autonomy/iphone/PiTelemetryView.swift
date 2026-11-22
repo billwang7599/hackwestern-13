@@ -176,6 +176,44 @@ struct PiTelemetryView: View {
     }
 }
 
+/// Drives while held: resends every 0.2 s (the Pi expires a drive after 0.5 s)
+/// and halts on release. A dropped USB or Wi-Fi link stops the car the same way.
+struct HoldDriveButton: View {
+    let label: String
+    let left: Double, right: Double
+    @ObservedObject var pi: PiStatusServer
+    @Binding var lastTap: String
+    @State private var timer: Timer?
+
+    var body: some View {
+        Text(label).font(.body.bold()).foregroundStyle(.white)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(timer == nil ? Color.accentColor : Color.green, in: RoundedRectangle(cornerRadius: 8))
+            .opacity(pi.connected ? 1 : 0.4)
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in if timer == nil && pi.connected { begin() } }
+                .onEnded { _ in end() })
+            .onDisappear { end() }
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private func begin() {
+        lastTap = label
+        pi.command(["op": "control_phone"])
+        send()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in send() }
+    }
+
+    private func send() { pi.command(["op": "drive", "left": left, "right": right]) }
+
+    private func end() {
+        guard let running = timer else { return }
+        running.invalidate()
+        timer = nil
+        pi.command(["op": "halt"])
+    }
+}
+
 /// Every diagnostic value here is echoed by the Pi, not assumed from a tap.
 struct ManualDrivePanel: View {
     @ObservedObject var pi: PiStatusServer
@@ -187,26 +225,21 @@ struct ManualDrivePanel: View {
         guard v.count == 2 else { return "—" }
         return String(format: "L %+.2f / R %+.2f", v[0], v[1])
     }
-    private func pulse(_ label: String, _ left: Double, _ right: Double) {
-        lastTap = label
-        pi.command(["op": "control_phone"])
-        pi.command(["op": "drive", "left": left, "right": right])
-    }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Manual drive & input check").font(.title2.bold())
-            Text("Tap for a 0.5-second pulse at 25% speed. Each tap takes phone control; the LiDAR guard still decides whether movement is allowed.")
+            Text("Hold to drive at 25% speed over USB or Wi-Fi; release stops. Each press takes phone control; the LiDAR guard still decides whether movement is allowed.")
                 .font(.caption).foregroundStyle(.secondary)
             VStack(spacing: 8) {
-                Button("W ↑ Forward") { pulse("W", 0.25, 0.25) }
+                HoldDriveButton(label: "W ↑ Forward", left: 0.25, right: 0.25, pi: pi, lastTap: $lastTap)
                 HStack {
-                    Button("A ← Left") { pulse("A", -0.25, 0.25) }
-                    Button("STOP") { lastTap = "STOP"; pi.command(["op": "halt"]) }.tint(.red)
-                    Button("D Right →") { pulse("D", 0.25, -0.25) }
+                    HoldDriveButton(label: "A ← Left", left: -0.25, right: 0.25, pi: pi, lastTap: $lastTap)
+                    Button("STOP") { lastTap = "STOP"; pi.command(["op": "halt"]) }
+                        .buttonStyle(.borderedProminent).tint(.red).disabled(!pi.connected)
+                    HoldDriveButton(label: "D Right →", left: 0.25, right: -0.25, pi: pi, lastTap: $lastTap)
                 }
-                Button("S ↓ Reverse") { pulse("S", -0.25, -0.25) }
-            }.buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
-                .disabled(!pi.connected)
+                HoldDriveButton(label: "S ↓ Reverse", left: -0.25, right: -0.25, pi: pi, lastTap: $lastTap)
+            }.frame(maxWidth: .infinity)
             Text("Last phone tap: \(lastTap)").font(.caption)
             Divider()
             let keys = keyboard["keys"] as? [String] ?? []

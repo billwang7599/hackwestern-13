@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import termios
 import tty
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "build/tars_motor_host"
@@ -344,8 +345,11 @@ def test_stub() -> None:
 # ------------------------------------------------------------------ part 2: uno over a pty
 class FakeUno:
     def __init__(self):
+        self.answer_status = True
         self.master, self.slave = os.openpty()
-        tty.setraw(self.slave)
+        tty.setraw(self.slave, termios.TCSANOW)
+        # QNX can recycle a PTY with bytes left in its output queue.
+        termios.tcflush(self.slave, termios.TCIOFLUSH)
         # Never give a reconnecting backend a recyclable /dev/ttys path directly.
         # Removing this unique alias on cleanup prevents an orphan from opening
         # a later SSH/terminal PTY that reuses the same device number.
@@ -369,7 +373,12 @@ class FakeUno:
                 except OSError:
                     return
                 *done, self.buf = self.buf.split(b"\n")
-                self.lines += [d.decode() for d in done if d]  # firmware ignores empty resync lines
+                for line in done:
+                    if line == b"?":
+                        if self.answer_status:
+                            self.send("# arms 0 0 tilt 0 tipped 0 accel none wheels dc 0 0 move -\r\n")
+                    elif line:
+                        self.lines.append(line.decode())
 
     def pump(self, seconds: float = 0.0) -> None:
         time.sleep(seconds + 0.03)
@@ -744,7 +753,7 @@ def test_uno_reconnect() -> None:
         c = Client(srv.port)
         check(c.cmd("PING") == "OK PONG", "TCP works without the Uno")
         st = c.status()
-        check(st["l"] == 0.0 and st["why"] == "watchdog", f"stopped {st}")
+        check(st["l"] == 0.0 and st["why"] == "uno_disconnected" and st["uno_link"] == "down", f"stopped {st}")
         time.sleep(1.2)
         check(sum("not there yet" in l for l in srv.log) == 1, "doesn't spam the log")
 
@@ -755,11 +764,25 @@ def test_uno_reconnect() -> None:
         check(len(ds) > 5, f"found the Uno once it appeared ({len(ds)} D lines)")
         check(srv.wait_log(r"\[uno\] opened"), "opened")
 
-        u1.close()                                    # unplugged
-        check(srv.wait_log(r"\[uno\] lost", 1.0), "loss detected")
+        check(c.status()["uno_link"] == "up", "first Uno confirmed")
+        check(c.cmd("D .4 .4") == "OK", "old endpoint accepts drive")
         u2 = FakeUno()
-        point(u2.path)
-        u2.pump(1.5)
+        u2.answer_status = False
+        point(u2.path)    # bridge moved; old PTY still exists and accepts writes
+        check(srv.wait_log(r"serial endpoint changed", 1.0), "live port replacement detected")
+        deadline = time.monotonic() + 3
+        while len(u2.lines) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        check(u2.lines[:2] == ["S", "V"], f"replacement gets stop and handshake first: {u2.lines[:5]}")
+        check(c.status()["uno_link"] == "down", "open port alone isn't connected")
+        check(c.cmd("D .5 .5") == "ERR uno_disconnected", "refuse drive until firmware replies")
+        check(c.cmd("BEEP 1") == "ERR uno_disconnected", "refuse buzzer while unconfirmed")
+        u2.answer_status = True
+        u2.pump(1.3)
+        check(c.status()["uno_link"] == "up", "handshake retried without reopening")
+        check(all(line == "D 0.000 0.000" for line in u2.lines if line.startswith("D ")),
+              "neither old nor unconfirmed drive replayed")
+        u1.close()
         ds = [l for l in u2.lines if l.startswith("D ")]
         check(len(ds) > 5, f"reconnected after replug ({len(ds)} D lines)")
         check(sum("[uno] opened" in l for l in srv.log) == 2, "opened twice")
@@ -768,8 +791,18 @@ def test_uno_reconnect() -> None:
         st = c.status()
         check(st["ready"] == "1" and st["btn_teach"] == "1", f"events flow after replug {st}")
         check(c.cmd("PING") == "OK PONG" and srv.proc.poll() is None, "server never went down")
-        c.close()
+        u2.answer_status = False
+        check(srv.wait_log("firmware reply timeout", 6.5), "silent firmware expires on the same port")
+        check(c.status()["uno_link"] == "down", "heartbeat timeout clears confirmed status")
+        u2.answer_status = True
+        u2.pump(1.5)
+        check(c.status()["uno_link"] == "up", "same-port firmware recovery")
         u2.close()
+        time.sleep(0.3)
+        check(c.status()["uno_link"] == "down", "unplug clears link status")
+        c.close()
+        os.unlink(link)
+        os.rmdir(d)
     finally:
         rc = srv.stop()
     check(rc == 0, f"clean exit {rc}")

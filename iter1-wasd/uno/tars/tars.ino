@@ -1353,7 +1353,8 @@ void setup() {
 
   Wire.begin();
   Wire.setClock(400000);
-#if defined(WIRE_HAS_TIMEOUT)
+// The Uno AVR Wire library provides this API without defining WIRE_HAS_TIMEOUT.
+#if defined(ARDUINO_ARCH_AVR) || defined(WIRE_HAS_TIMEOUT)
   Wire.setWireTimeout(3000, true);
 #endif
   if (accelInit()) {

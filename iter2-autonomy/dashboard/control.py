@@ -233,6 +233,7 @@ class MotorLink:
                     guard_permit=values.get('guard_permit') == '1',
                     guard_age_ms=int(values.get('guard_age_ms', '-1')),
                     guard_epoch=int(values.get('guard_epoch', '0')),
+                    uno_link=values.get('uno_link', 'unknown'),
                     arduino_ready_count=int(values.get('ready', '0')),
                     move=values.get('move', 'unknown'), move_kind=values.get('move_kind', '-'),
                     move_id=int(values.get('move_id', '0')), move_req=float(values.get('move_req', '0')),
@@ -244,11 +245,14 @@ class MotorLink:
             if self.nav_event and time.monotonic() - self.nav_event_time < 2:
                 value.update(nav_event=self.nav_event, nav_event_id=self.nav_event_time)
             fresh = self.received and time.monotonic() - self.received < 0.4
-            connected = self.connected and bool(fresh)
+            service_connected = self.connected and bool(fresh)
+            connected = service_connected and value.get('uno_link') != 'down'
             value.update(connected=connected, requested=list(self.requested),
                          command_error=self.error,
                          status_age_ms=round((time.monotonic() - self.received) * 1000) if self.received else None)
-            if not connected:
+            if service_connected and not connected:
+                value.update(inhibited=True, reason='uno_disconnected', output=[0, 0])
+            elif not connected:
                 value.update(inhibited=True, reason='motor_disconnected', output=[0, 0])
             elif self.denied_generation == self.generation:
                 value.update(inhibited=True, reason='new_command_required')

@@ -5,6 +5,7 @@ import pty
 import select
 import signal
 import time
+import termios
 import tty
 from pathlib import Path
 
@@ -33,13 +34,22 @@ def bridge(handle):
     coding = (115200).to_bytes(4,'little') + bytes([0,0,8])
     if control(handle,0x21,0x20,0,0,coding,7,500)!=7:
         raise OSError('Uno line coding failed')
-    control(handle,0x21,0x22,0,0,None,0,500)
-    time.sleep(.1)
-    control(handle,0x21,0x22,3,0,None,0,500)
+    for state in (0, 3):
+        rc = control(handle, 0x21, 0x22, state, 0, None, 0, 500)
+        if rc != 0:
+            raise OSError(f'Uno CDC control-line change failed ({rc})')
+        if state == 0:
+            time.sleep(.1)
+    # DTR resets even an externally powered Uno. Keep application traffic out
+    # of the bootloader until the sketch has had time to start.
+    time.sleep(2)
     master, slave = pty.openpty()
     target = os.ttyname(slave)
     try:
-        tty.setraw(slave)
+        tty.setraw(slave, termios.TCSANOW)
+        # QNX can recycle a PTY with bytes left in its output queue.
+        termios.tcflush(slave, termios.TCIOFLUSH)
+        os.set_blocking(master, False)
         os.chmod(target,0o660)
         os.chown(target,int(os.environ['SUDO_UID']),int(os.environ['SUDO_GID']))
         if os.path.islink(path): os.unlink(path)
@@ -47,19 +57,48 @@ def bridge(handle):
         print('Uno connected via '+target,flush=True)
         buf=C.create_string_buffer(128)
         count=C.c_int()
+        tx = b""
+        rx = b""
+        stalled = None
+        awaiting_reply = None
+        tx_bytes = rx_bytes = 0
         while True:
-            if select.select([master],[],[],0)[0]:
-                data=os.read(master,512)
-                if bulk(handle,0x04,data,len(data),C.byref(count),50) or count.value!=len(data):
-                    raise OSError('Uno write failed')
-            rc=bulk(handle,0x83,buf,128,C.byref(count),10)
-            if rc not in (0,-7): raise OSError('Uno read failed '+str(rc))
-            if count.value: os.write(master,buf.raw[:count.value])
+            if not tx and select.select([master], [], [], 0)[0]:
+                tx = os.read(master, 64)
+            if tx:
+                rc = bulk(handle, 0x04, tx, len(tx), C.byref(count), 50)
+                if rc not in (0, -7):
+                    raise OSError(f'Uno write failed ({rc})')
+                if b'?' in tx[:count.value] and awaiting_reply is None:
+                    awaiting_reply = time.monotonic()
+                tx_bytes += count.value
+                tx = tx[count.value:]
+                if count.value:
+                    stalled = None
+                elif stalled is None:
+                    stalled = time.monotonic()
+                elif time.monotonic() - stalled >= 1:
+                    raise OSError('Uno write stalled')
+            if not rx:
+                rc = bulk(handle, 0x83, buf, 128, C.byref(count), 10)
+                if rc not in (0, -7):
+                    raise OSError(f'Uno read failed ({rc})')
+                rx = buf.raw[:count.value]
+                if rx:
+                    awaiting_reply = None
+                    rx_bytes += len(rx)
+            if awaiting_reply is not None and time.monotonic() - awaiting_reply > 6:
+                raise OSError(f'Uno USB reply timeout (sent {tx_bytes}, received {rx_bytes} bytes)')
+            if rx:
+                try:
+                    rx = rx[os.write(master, rx):]
+                except BlockingIOError:
+                    time.sleep(.005)
     finally:
         if os.path.islink(path) and os.readlink(path)==target: os.unlink(path)
         os.close(master); os.close(slave)
 
-def connect_once():
+def connect_once(session=bridge):
     ctx = P()
     rc = init(C.byref(ctx))
     if rc:
@@ -84,7 +123,7 @@ def connect_once():
                 if rc:
                     raise OSError(f'Uno {vendor:04x}:{product:04x} enumerated, open failed ({rc})')
                 try:
-                    bridge(handle)
+                    session(handle)
                 finally:
                     close(handle)
                 return

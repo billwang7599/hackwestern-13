@@ -98,6 +98,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
+#include <poll.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -192,6 +193,7 @@ static const char *gesture_name = "none";
 static int   tipped, tilt_deg, bumps;
 static long long last_tip_ms, bump_until_ms;
 static int   ready_count;
+static int   link_up;  /* protected by lock once worker threads start */
 
 /* exact moves (MOVE/TURN). State under `lock`; uno_pending is control-thread only. */
 typedef enum { MV_IDLE, MV_RUNNING, MV_DONE, MV_ABORTED } mv_state_t;
@@ -515,6 +517,22 @@ static void *control_thread(void *arg)
         if (next.tv_nsec >= 1000000000L) { next.tv_nsec -= 1000000000L; next.tv_sec++; }
         long long now = now_ms();
 
+        int connected = !motor->link || motor->link();
+        pthread_mutex_lock(&lock);
+        if (link_up && !connected) {
+            ++guard_epoch;                 /* invalidate outstanding drive leases */
+            target_l = target_r = out_l = out_r = 0;
+            keyboard_until = 0;
+            req_move = uno_pending = 0;
+            ctl_move_abort_locked("uno_disconnected");
+            req_gesture = NULL;
+            req_dev_gesture[0] = 0;
+            req_stop_gesture = req_halt = 1;
+            memset(arm_req, 0, sizeof arm_req);
+        }
+        link_up = connected;
+        pthread_mutex_unlock(&lock);
+
         /* 1. events: from the co-processor, then injected ones (SIM) */
         motor_event_t ev;
         for (int i = 0; i < 64 && motor->poll && motor->poll(&ev); i++) ctl_event(&ev, now);
@@ -602,8 +620,8 @@ static void *control_thread(void *arg)
             ctl_move_abort_locked("obstacle");
         int bumped = now < bump_until_ms;
         if (blocked || tipped || bumped || (!gate_ok && !key_drive)) { tl = tr = 0.0f; target_l = target_r = 0.0f; }
-        estop = wd_tripped || blocked || tipped || bumped || (!gate_ok && !key_drive);
-        estop_why = tipped ? "tipped" : bumped ? "bump" : blocked ? "obstacle"
+        estop = !link_up || wd_tripped || blocked || tipped || bumped || (!gate_ok && !key_drive);
+        estop_why = !link_up ? "uno_disconnected" : tipped ? "tipped" : bumped ? "bump" : blocked ? "obstacle"
                   : (!gate_ok && !key_drive) ? guard_reason : wd_tripped ? "watchdog" : "none";
         last_dist = dist;
         /* Hard stop on estop (no slew); smooth otherwise. */
@@ -687,6 +705,7 @@ static int pivot_fits(float deg, float speed)
 
 static const char *motion_refused(void)
 {
+    if (!link_up) return "uno_disconnected";
     if (tipped) return "tipped over: stand TARS up, then send RESET";
     if (!guard_permit) return guard_reason;
     return NULL;
@@ -729,7 +748,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         if (leased && epoch != guard_epoch) {
             target_l = target_r = 0.0f;
             snprintf(reply, rlen, "ERR guard epoch changed; new command required\n");
-        } else if ((why = motion_refused()) != NULL && !(keyboard && keyboard_obstacle && !tipped)) {
+        } else if ((why = motion_refused()) != NULL && !(link_up && keyboard && keyboard_obstacle && !tipped)) {
             target_l = target_r = 0.0f;
             snprintf(reply, rlen, "ERR %s\n", why);
         } else if (left > 0) {
@@ -867,7 +886,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         feed_watchdog();
         long long left = bump_until_ms - now_ms();
         /* pivot = this TURN runs only because of the fresh-BLOCKED exception: limit it */
-        int pivot = (why = motion_refused()) != NULL && kind == 'R' && !tipped && guard_pivot_ok();
+        int pivot = (why = motion_refused()) != NULL && link_up && kind == 'R' && !tipped && guard_pivot_ok();
         if (why && !pivot) {
             snprintf(reply, rlen, "ERR %s\n", why);
         } else if (pivot && fabsf(amt) > PIVOT_BLOCKED_MAX_DEG + 1e-3f) {
@@ -962,6 +981,11 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
             return;
         }
         pthread_mutex_lock(&lock);
+        if (!link_up) {
+            pthread_mutex_unlock(&lock);
+            snprintf(reply, rlen, "ERR uno_disconnected\n");
+            return;
+        }
         if (led) { led_pattern = v; req_led = v; } else req_beep = v;
         pthread_mutex_unlock(&lock);
         snprintf(reply, rlen, "OK\n");
@@ -999,7 +1023,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         long long bl = bump_until_ms - now_ms();
         snprintf(reply, rlen,
                  "OK %.2f %.2f %ld %.2f %d why=%s arm0=%.1f arm1=%.1f arm0_tgt=%.1f arm1_tgt=%.1f "
-                 "gesture=%s tipped=%d tilt=%d bump_ms=%lld bumps=%d ready=%d backend=%s "
+                 "gesture=%s tipped=%d tilt=%d bump_ms=%lld bumps=%d ready=%d backend=%s uno_link=%s "
                  "stop_ms=%ld vis=%s vis_fps=%.1f vis_cam_ms=%d vis_stop_ms=%d vis_see=%s "
                  "vis_age_ms=%lld move=%s move_id=%d move_kind=%s move_req=%.1f move_done=%.1f "
                  "move_why=%s move_est_ms=%d wheel_d=%.1f wheel_t=%.1f btn_teach=%d btn_forget=%d "
@@ -1008,6 +1032,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
                  out_l, out_r, ms_since(&last_cmd), last_dist, estop, estop_why,
                  arm_pos[0], arm_pos[1], arm_tgt[0], arm_tgt[1], gesture_name,
                  tipped, tilt_deg, bl > 0 ? bl : 0, bumps, ready_count, motor->name,
+                 !motor->link ? "na" : link_up ? "up" : "down",
                  stop_ms, vis_mode, vis_fps, vis_cam_ms, vis_stop_ms, vis_see,
                  vis_at_ms ? now_ms() - vis_at_ms : -1LL,
                  mv_names[mv_state], mv_id, mv_kind == 'M' ? "MOVE" : mv_kind == 'R' ? "TURN" : "-",
@@ -1179,6 +1204,7 @@ int main(int argc, char **argv)
         if (!strcmp(motor_backends[i]->name, cfg_backend)) motor = motor_backends[i];
     if (!motor) { fprintf(stderr, "unknown backend '%s'\n", cfg_backend); return 2; }
     if (!cfg_dev) cfg_dev = motor->default_dev;
+    link_up = !motor->link;
     if (motor->init(cfg_dev) != 0) { fprintf(stderr, "backend init failed\n"); return 1; }
     obstacle_init();
 
@@ -1228,7 +1254,12 @@ int main(int argc, char **argv)
                 motor->name, cfg_dev, cfg_port, cfg_wd_ms, cfg_rt_prio);
     }
 
+    /* QNX may deliver SIGTERM to a worker, leaving accept asleep in main. */
+    struct pollfd listener = { .fd = srv, .events = POLLIN };
     while (running) {
+        int readable = poll(&listener, 1, 250);
+        if (readable < 0 && errno != EINTR) { perror("poll listener"); break; }
+        if (readable <= 0 || !running) continue;
         int c = accept(srv, NULL, NULL);
         if (c < 0) { if (errno == EINTR) continue; perror("accept"); break; }
         setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);

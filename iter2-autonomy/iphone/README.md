@@ -19,6 +19,25 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -derivedDataPath /tmp/hw13-motion-build -allowProvisioningUpdates build
 ```
 
+## Wi-Fi instead of USB
+
+The phone listens on the same ports over Wi-Fi. The app shows its address
+(**Wi-Fi 172.23.x.x** under the status line). On the Pi:
+
+```sh
+echo <phone-ip> > ~/projects/iphone-usb/pi/dashboard/state/phone-host
+cd ~/projects/iphone-usb/pi/dashboard && python3 service.py stop && python3 service.py start
+```
+
+`service.py` then runs `iphone-usb/wifi_proxy.py` in place of usbmuxd/iproxy,
+so every Pi service still connects to `127.0.0.1:<port>`. Delete `phone-host`
+and restart to go back to USB. `TARS_PHONE_HOST` overrides the file. Motion
+still goes through `tars_motor` and the LiDAR guard. The drive buttons in
+**More controls** drive while held (resent every 0.2 s) and stop on release;
+the Pi drops a drive after 0.5 s without a resend, so a lost Wi-Fi link stops
+the car. Both devices must be on a network that allows device-to-device
+traffic (a phone hotspot works).
+
 ## Use
 
 **Camera** shows a fast local RGB/depth pair, and a separate source-matched QNX

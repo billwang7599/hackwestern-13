@@ -37,6 +37,8 @@ typedef struct motor_backend {
     const char *default_dev;
     /* dev = backend-specific string (serial path for pico/uno, ignored for stub). 0 = ok */
     int  (*init)(const char *dev);
+    /* Service the physical link once per control tick. 1 after firmware replies. */
+    int (*link)(void);
     /* left/right in [-1, 1]. Called every tick (also keeps the co-processor's
      * own watchdog fed). 0 = ok */
     int  (*drive)(float left, float right);

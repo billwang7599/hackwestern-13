@@ -48,9 +48,21 @@ def serve():
             raise ValueError('Hardware mode requires an explicit TARS_MOTOR_DEVICE=/dev/...')
         motor_command += ['-d', device]
     print('Motor backend: ' + backend + (' (no physical motor output)' if backend == 'stub' else ''), flush=True)
+    # Wi-Fi phone link: TARS_PHONE_HOST, or the address in state/phone-host.
+    phone_host = os.environ.get('TARS_PHONE_HOST', '').strip()
+    if not phone_host and (STATE / 'phone-host').is_file():
+        phone_host = (STATE / 'phone-host').read_text().strip()
+    if phone_host:
+        phone_link = {'wifi_proxy': [sys.executable, str(USB / 'wifi_proxy.py'), phone_host,
+                                     *map(str, phone_ports)]}
+    else:
+        phone_link = {
+            'usbmuxd': ['sudo', '-n', 'sh', str(USB / 'run-usbmuxd.sh')],
+            **{f'proxy{p}': [str(USB / 'install/bin/iproxy'), '-l', '-s', '127.0.0.1', f'{p}:{p}'] for p in phone_ports},
+        }
+    print('Phone link: ' + (f'Wi-Fi {phone_host}' if phone_host else 'USB'), flush=True)
     commands = {
-        'usbmuxd': ['sudo', '-n', 'sh', str(USB / 'run-usbmuxd.sh')],
-        **{f'proxy{p}': [str(USB / 'install/bin/iproxy'), '-l', '-s', '127.0.0.1', f'{p}:{p}'] for p in phone_ports},
+        **phone_link,
         **({'uno_bridge': ['sudo', '-n', sys.executable, str(USB / 'uno_bridge.py')]}
            if backend == 'uno' and device == str(STATE / 'uno-serial') else {}),
         'motor': motor_command,
@@ -138,7 +150,7 @@ def serve():
                         # Avoid rapid restart loops on a persistent error.
                         time.sleep(1)
                         launch(name)
-                if running and time.monotonic() - last_probe >= 10:
+                if running and 'usbmuxd' in children and time.monotonic() - last_probe >= 10:
                     last_probe = time.monotonic()
                     try:
                         result = subprocess.run([str(USB / 'install/bin/idevice_id'), '-l'], env=env,
@@ -194,7 +206,8 @@ def main():
         except OSError as error:
             raise SystemExit(f'Service unavailable: {error}')
     else:
-        raise SystemExit('Usage: service.py start|stop|status|gui|headless')
+        raise SystemExit('Usage: service.py start|stop|status|gui|headless\n'
+                         'Wi-Fi phone: echo <phone-ip> > state/phone-host (rm it for USB), then restart')
 
 
 if __name__ == '__main__':

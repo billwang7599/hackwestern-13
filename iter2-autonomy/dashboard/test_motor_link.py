@@ -14,6 +14,18 @@ class MotorBridgeTests(unittest.TestCase):
         for bad in ('OK nan 0 1 -1 0 why=none', 'OK inf 0 1 -1 0 why=none', 'ERR no'):
             with self.assertRaises(ValueError): MotorLink.parse_status(bad)
 
+    def test_unconfirmed_uno_on_live_motor_socket(self):
+        link = MotorLink()
+        link.connected = True
+        link.received = time.monotonic()
+        for state in ('down', 'up'):
+            link.latest = link.parse_status(f'OK 0 0 0 -1 1 why=watchdog backend=uno uno_link={state}')
+            snapshot = link.snapshot()
+            self.assertEqual(snapshot['connected'], state == 'up')
+            if state == 'down':
+                self.assertEqual(snapshot['reason'], 'uno_disconnected')
+                self.assertTrue(snapshot['inhibited'])
+
     def test_mailbox_lease_and_consumed_command(self):
         link = MotorLink()
         link.update(.2, .2, 1)
