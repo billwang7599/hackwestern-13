@@ -1862,10 +1862,11 @@ static void do_plan(goto_sm *s)
         s->plan_sx = x;
         s->plan_sz = z;
         s->route_guard_ok = !s->relaxed && route_guard_clear(s, x, z, 0);
-        if (s->optimistic && s->opt_len0 <= 0) {
+        if (s->optimistic) {                   /* travel cap: 3 x the longest optimistic estimate + 2 m */
             double len = 0, px = x, pz = z;
             for (int j = 0; j < n; j++) { len += hypot(s->path[j].x - px, s->path[j].z - pz); px = s->path[j].x; pz = s->path[j].z; }
-            s->opt_len0 = len > 0.1 ? len : 0.1;
+            len += s->travel_m;                 /* what it has driven + what's left = this estimate's total */
+            if (len > s->opt_len0) s->opt_len0 = len > 0.1 ? len : 0.1;
         }
         char t[112];
         snprintf(t, sizeof t, "route %s #%d %d%s%s", target_name(s), s->mem_id, n, s->relaxed ? " relaxed" : "",

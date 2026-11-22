@@ -52,8 +52,11 @@ BUILD = os.path.join(GOTO_DIR, "build")
 # so at 0.6 m the zone is +-0.35 m wide (tan 30 deg x 0.6); the 0.45 m half-width matters
 # only further out. (This used to be 3 parallel rays at +-0.18 m to 0.55 m: much narrower
 # than the real guard, so detours that pass 0.2-0.35 m from a box looked fine here.)
-GUARD_M = 0.6
-GUARD_HALF_W = 0.45
+GUARD_M = float(os.environ.get("FULLSTACK_GUARD_STOP", "0.6"))        # lidar_guard --stop-distance
+GUARD_HALF_W = float(os.environ.get("FULLSTACK_GUARD_HALF_W", "0.45"))  # lidar_guard --half-width
+# FULLSTACK_CONF_EXTRA="car_length_m=0.20;car_width_m=0.175;guard_stop_m=0.30": appended to goto.conf
+# for this run (later keys win). Set FULLSTACK_GUARD_* to what `goto --guard-flags` prints for it.
+CONF_EXTRA = [kv.strip() for kv in os.environ.get("FULLSTACK_CONF_EXTRA", "").split(";") if kv.strip()]
 GUARD_HFOV = math.radians(60)
 GUARD_RAYS = 31           # every 2 deg across the cone
 CAN_R, CAN_H = 0.15, 0.40
@@ -356,9 +359,14 @@ class Goto:
             os.remove(self.mem)
         self.logp = os.path.join(BUILD, f"fs_goto_{self.ctl}.log")
         self.logf = open(self.logp, "w")
+        conf = os.path.join(GOTO_DIR, "goto.conf")
+        if CONF_EXTRA:
+            conf = os.path.join(BUILD, f"fs_conf_{self.ctl}.conf")
+            with open(os.path.join(GOTO_DIR, "goto.conf")) as src, open(conf, "w") as dst:
+                dst.write(src.read() + "\n" + "\n".join(CONF_EXTRA) + "\n")
         args = [GOTO, "-m", f"127.0.0.1:{motor_port}", "-p", str(self.ctl), "-u", str(self.det),
                 "-n", str(self.nav if nav else 0), "-r", "0", "-M", self.mem, "-v",
-                "-o", os.path.join(GOTO_DIR, "objects.txt"), "-c", os.path.join(GOTO_DIR, "goto.conf")]
+                "-o", os.path.join(GOTO_DIR, "objects.txt"), "-c", conf]
         self.p = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=self.logf)
         for _ in range(100):
             try:
@@ -590,7 +598,8 @@ def sc_dropbox():
         inside = placed and any(abs(p[0] - placed[0][0]) < 0.175 + 0.1 and abs(p[1] - placed[0][1]) < 0.45 + 0.1
                                 for p in st.sens.trace)
         check(not inside, "never drove into the box (centre stays > 0.1 m outside it)")
-        check(st.sens.guard_denials > 0, f"the guard saw the box ({st.sens.guard_denials} denials)")
+        if GUARD_M >= 0.5:                      # the box face lands 0.5 m ahead: inside a 0.6 m guard only
+            check(st.sens.guard_denials > 0, f"the guard saw the box ({st.sens.guard_denials} denials)")
         check(s["result"] == "arrived" and d < 0.95,
               f"got round the box and docked at the bin ({s['result']}, {d:.2f} m, replans={s.get('replans')})")
     finally:
@@ -907,7 +916,8 @@ def sc_glass():
         check(not inside, "never drove through the glass")
         check(any(e.startswith("backtrack") for e in ev), "stopped by the guard on the unmapped pane -> backtrack event")
         check(s["result"] == "arrived" and d < 0.95, f"backtracked, re-planned round it and docked ({s['result']}, {d:.2f} m)")
-        check(int(s.get("guard_aborts", 0)) + int(s.get("guard_refusals", 0)) <= 3,
+        # a narrow guard corridor (SM11: +-0.17 m) marks a narrow strip per refusal: more tries for a 0.9 m pane
+        check(int(s.get("guard_aborts", 0)) + int(s.get("guard_refusals", 0)) <= (3 if GUARD_HALF_W >= 0.4 else 6),
               f"few guard stops for the one unmapped pane ({s.get('guard_refusals')} refused, {s.get('guard_aborts')} aborted)")
     finally:
         st.close()

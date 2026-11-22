@@ -149,8 +149,8 @@ floor only. If that fails (the way in is round a wall's end the phone hasn't see
 cost, inflating only known walls. Such a route (`route ... optimistic`) is driven in legs of at most
 `nav_unknown_leg_mm` wherever they cross unseen floor. Whenever the LiDAR maps a wall where the
 footprint would go, the robot stops and re-plans (`blocked:map`, its own cap `nav_max_opt_replans`
--> `failed:replan_cap`). Total driving is capped (`nav_travel_cap_m`, default 3 x the first optimistic
-route + 2 m -> `failed:travel_cap`). If there's no route even through unknown floor, known walls
+-> `failed:replan_cap`). Total driving is capped (`nav_travel_cap_m`, default 3 x the longest optimistic
+estimate this GOTO (driven so far + route left) + 2 m -> `failed:travel_cap`). If there's no route even through unknown floor, known walls
 enclose the spot: `failed:unreachable`, with no spinning and no driving. A search spin never starts
 where a mapped wall hides the remembered spot: it goes to a stand-off cell with a view, or to the
 spot itself, first (`failed:no_line_of_sight` if neither is possible). Guard stops on optimistic legs
