@@ -9,7 +9,7 @@ builds, the virtual SM11 (real firmware on a pty), the world sim. Nothing here r
            Recorded per run: result, wall time and sim time (car truth clock) from GOTO to idle,
            distance driven (the car's odometer), final pose and distance to the bin, goto's
            replans / guard_refusals / guard_aborts / backtracks, and blocked:map events in goto.log.
-           Checks, fast vs 1x: same result; wall time at least 0.6 x N times lower; final spot within
+           Checks, fast vs 1x: same result; sim clock >= 0.85 N x the wall clock; wall time >= 0.5 N x lower; final spot within
            0.5 m; drive distance within 40 % (+0.5 m); guard refusals + aborts within 2.
   live     run_sim --speed 1 with the bench: POST /api/world/speed {4} -> world, car and goto (-T 4)
            all at 4x, memory kept; a MOVE 1000 at 4x lands like at 1x in ~1/4 the wall time;
@@ -243,8 +243,12 @@ def sc_room(room):
             continue
         for r in rows[sp]:
             check(r["result"] == b["result"], f"{room} {sp:g}x: same result as 1x ({r['result']} vs {b['result']})")
+            # the clock: sim seconds per wall second during the go-to (host stalls fall back to 1x)
+            clock = r["sim_s"] / max(0.01, r["wall_s"])
+            check(clock >= 0.85 * sp, f"{room} {sp:g}x: sim clock ran {clock:.2f}x the wall clock")
+            # end to end: also depends on the route goto picked, which varies run to run (pocket_mouth)
             ratio = b["wall_s"] / max(0.01, r["wall_s"])
-            check(ratio >= 0.6 * sp, f"{room} {sp:g}x: wall time {r['wall_s']:.1f} s vs {b['wall_s']:.1f} s ({ratio:.1f}x faster)")
+            check(ratio >= 0.5 * sp, f"{room} {sp:g}x: wall time {r['wall_s']:.1f} s vs {b['wall_s']:.1f} s ({ratio:.1f}x faster)")
             d = math.hypot(r["x"] - b["x"], r["y"] - b["y"])
             check(d <= 0.5, f"{room} {sp:g}x: ends {d:.2f} m from where 1x ended")
             check(abs(r["drove_m"] - b["drove_m"]) <= 0.4 * b["drove_m"] + 0.5,
