@@ -84,18 +84,22 @@ struct MotionUSBApp: App {
     }
 
     private var primaryControls: some View {
-        HStack(spacing: 4) {
+        VStack(alignment: .trailing, spacing: 3) {
+          HStack(spacing: 4) {
             Button(server.running ? "Stop sensors" : "Start") {
                 if server.running { server.stop(); camera.stop() }
                 else { server.start(); if server.running { camera.start() } }
             }.buttonStyle(.borderedProminent)
             Button("Calibrate") { camera.calibrate() }
                 .accessibilityHint("Robot on the floor with floor in view: measures the floor with LiDAR, then learns the heading from the next straight drive.")
-            Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
-            Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
             Button { controls.toggle() } label: {
                 Image(systemName: controls ? "xmark" : "slider.horizontal.3")
             }.accessibilityLabel(controls ? "Close controls" : "More controls")
+          }
+          HStack(spacing: 4) {
+            Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
+            Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
+          }
         }.buttonStyle(.bordered).controlSize(.small).font(.caption).lineLimit(1).minimumScaleFactor(0.7)
     }
 
@@ -141,7 +145,7 @@ struct MotionUSBApp: App {
                         .buttonStyle(.borderedProminent).tint(.red).disabled(!pi.connected)
                     Toggle(isOn: Binding(get: { voice.airpodsArmed }, set: { voice.setAirPodsTrigger($0) })) {
                         Label(voice.listening ? "Listening" : "AirPods talk", systemImage: voice.listening ? "mic.fill" : "airpodspro")
-                    }.toggleStyle(.button).tint(voice.listening ? .red : .accentColor).disabled(!pi.connected || mic.enabled)
+                    }.toggleStyle(.button).tint(voice.listening ? .red : .accentColor).disabled(mic.enabled)
                 }.controlSize(.small).font(.caption)
                 primaryControls
                 if !voice.problem.isEmpty { Text(voice.problem).font(.caption2).foregroundStyle(.orange) }
@@ -154,12 +158,14 @@ struct MotionUSBApp: App {
     private var expandedMenu: some View {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 6) {
+                menuCard(width: 330) { controlColumn }
                 menuCard(width: 300) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Audio & AirPods").font(.headline)
                         Toggle("AirPods push-to-talk (stem press)", isOn: Binding(get: { voice.airpodsArmed },
                                                                                set: { voice.setAirPodsTrigger($0) }))
-                            .disabled(!pi.connected || mic.enabled)
+                            .disabled(mic.enabled)
+                        if mic.enabled { Text("Off while Robot mic is on (one mic user at a time).").foregroundStyle(.orange) }
                         Toggle("Robot mic (AirPods, say \"TARS…\")", isOn: Binding(get: { mic.enabled },
                                                                      set: { robotMic = $0; mic.setEnabled($0) }))
                             .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. QNXplorer replies from the phone speaker.")
@@ -202,8 +208,6 @@ struct MotionUSBApp: App {
         HStack(spacing: 2) {
             feed("YOLO", camera.qnxInspectionImage, camera.qnxInspectionTimestamp)
             feed("LiDAR", camera.inspectionImage, camera.inspectionTimestamp)
-            PointCloudView(map: cloud, compact: true)
-                .frame(maxWidth: .infinity).clipped().accessibilityLabel("3D surroundings")
             SurroundingsView(map: pi.surroundings, connected: pi.connected, onCommand: pi.command, compact: true)
                 .frame(maxWidth: .infinity).clipped().accessibilityLabel("Floor minimap")
         }
@@ -217,19 +221,15 @@ struct MotionUSBApp: App {
                 // of the top half. The full controls panel takes the whole top half when open.
                 let full = g.size.height + g.safeAreaInsets.top + g.safeAreaInsets.bottom
                 let third = full / 3 - g.safeAreaInsets.top
-                let half = full / 2 - g.safeAreaInsets.top
                 VStack(spacing: 2) {
                     if controls {
-                        VStack(spacing: 2) {
-                            controlColumn.frame(height: 64)
-                            expandedMenu
-                        }.frame(height: max(120, half))
+                        expandedMenu.frame(height: max(90, third))
                     } else {
-                        HStack(alignment: .top, spacing: 6) {
-                            dataColumn.frame(maxWidth: .infinity)
-                            controlColumn.frame(maxWidth: .infinity)
-                        }.frame(height: max(60, third))
-                        visualStrip.frame(height: max(40, half - third - 2))
+                        HStack(alignment: .top, spacing: 4) {
+                            dataColumn.frame(width: g.size.width * 0.24)
+                            visualStrip.frame(maxWidth: .infinity)
+                            controlColumn.frame(width: g.size.width * 0.30)
+                        }.frame(height: max(90, third))
                     }
                     Spacer(minLength: 0)
                 }.padding(.horizontal, 4)

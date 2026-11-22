@@ -232,7 +232,7 @@ struct VoiceCommandPanel: View {
                         .font(.caption).foregroundStyle(voice.listening ? Color.red : Color.secondary)
                 }
             }
-            .disabled(!pi.connected || micBusy)
+            .disabled(micBusy)
             if micBusy {
                 Text("Turn off \"Robot mic (AirPods)\" to use hold-to-talk; the robot mic already hears you.")
                     .font(.caption).foregroundStyle(.orange)
