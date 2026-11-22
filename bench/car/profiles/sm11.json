@@ -16,7 +16,7 @@
     "batt_v": {
       "value": 7.4,
       "measured": false,
-      "source": "2x18650 nominal (PI_TEST \u00a72b: 2x18650 typical, 8.4 V fresh / ~7.0 V flat; kit battery unverified)"
+      "source": "2x18650 nominal (PI_TEST §2b: 2x18650 typical, 8.4 V fresh / ~7.0 V flat; kit battery unverified)"
     },
     "batt_r_ohm": {
       "value": 0.3,
@@ -66,7 +66,7 @@
     "brake_tau_s": {
       "value": 0.03,
       "measured": false,
-      "source": "guess: BRAKE_ON_STOP shorts the motor (PI_TEST \u00a72b 'stops dead')"
+      "source": "guess: BRAKE_ON_STOP shorts the motor (PI_TEST §2b 'stops dead')"
     },
     "coast_tau_s": {
       "value": 0.25,
@@ -174,14 +174,14 @@
       "source": "TT 1:48 folklore: ~0.8 kgf.cm stall at 6 V on a 32.5 mm wheel = 2.4 N, over (6 - v_keep) V"
     },
     "length_m": {
-      "value": 0.2,
+      "value": 0.4,
       "measured": false,
-      "source": "estimated from photo, 65 mm TT wheel as scale (the user's photo of the real car, 2026-11-21): overall ~20 cm incl. wheels (was 0.255); a longer deck for the Pi/iPhone grows this"
+      "source": "the user, 2026-11-21: car is ~0.40 m long and 0.30 m wide incl. side buffers (not tape-measured); was a photo guess"
     },
     "width_m": {
-      "value": 0.175,
+      "value": 0.3,
       "measured": false,
-      "source": "estimated from photo, 65 mm TT wheel as scale (the user's photo of the real car, 2026-11-21): overall ~17.5 cm across the wide tyres (was 0.18)"
+      "source": "the user, 2026-11-21: car is ~0.40 m long and 0.30 m wide incl. side buffers (not tape-measured); was a photo guess"
     },
     "brown_hold_ms": {
       "value": 5,

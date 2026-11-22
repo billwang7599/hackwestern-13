@@ -209,6 +209,15 @@ class Stack:
                              "--nav", str(P["nav"]), "--det", str(P["det"]), "--seed", str(self.a.seed)])
         self.must(wait_for(lambda: port_open(P["world_ctl"]), 8), "world sim didn't open its control port", "world")
         self.rows.append(("world sim", f"TCP+UDP {P['world_ctl']}", f"room {self.room['name']}, state UDP {P['world_state']}"))
+        # the sim's lidar_guard box = goto.conf's car size (goto --guard-flags), like service.py on the robot
+        try:
+            f = subprocess.run([GOTO_BIN, "-c", os.path.join(GOTO_DIR, "goto.conf"), "--guard-flags"],
+                               capture_output=True, text=True, timeout=5).stdout.split()
+            hw, stop = float(f[f.index("--half-width") + 1]), float(f[f.index("--stop-distance") + 1])
+            line_cmd(P["world_ctl"], [json.dumps({"op": "set", "params": {"guard_half_w": hw, "guard_stop_m": stop}})])
+            self.rows.append(("sim guard box", "-", f"half-width {hw:.3f} m, stop {stop:.3f} m (from goto.conf)"))
+        except Exception as e:   # noqa: BLE001 - keep the worldsim defaults
+            self.rows.append(("sim guard box", "-", f"worldsim defaults (guard-flags failed: {e})"))
         # 5. voice (optional: needs the host build + model; building fetches whisper.cpp)
         model = self.a.voice_model or os.environ.get("TARS_VOICE_MODEL") or VOICE_MODEL
         if self.a.no_voice:

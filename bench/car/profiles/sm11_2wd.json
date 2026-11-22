@@ -13,7 +13,7 @@
     "batt_v": {
       "value": 7.4,
       "measured": false,
-      "source": "2x18650 nominal (PI_TEST \u00a72b: 2x18650 typical, 8.4 V fresh / ~7.0 V flat; kit battery unverified)"
+      "source": "2x18650 nominal (PI_TEST §2b: 2x18650 typical, 8.4 V fresh / ~7.0 V flat; kit battery unverified)"
     },
     "batt_r_ohm": {
       "value": 0.3,
@@ -28,7 +28,7 @@
     "driver_drop_v": {
       "value": 1.8,
       "measured": false,
-      "source": "L298N datasheet: ~1.8-3.2 V total drop; low end at TT currents (driver chip itself unverified, PI_TEST \u00a72b)"
+      "source": "L298N datasheet: ~1.8-3.2 V total drop; low end at TT currents (driver chip itself unverified, PI_TEST §2b)"
     },
     "kv_mps_per_v": {
       "value": 0.147,
@@ -63,7 +63,7 @@
     "brake_tau_s": {
       "value": 0.03,
       "measured": false,
-      "source": "guess: BRAKE_ON_STOP shorts the motor (PI_TEST \u00a72b 'stops dead')"
+      "source": "guess: BRAKE_ON_STOP shorts the motor (PI_TEST §2b 'stops dead')"
     },
     "coast_tau_s": {
       "value": 0.25,
@@ -118,7 +118,7 @@
     "uno_resets_below_v": {
       "value": 6.0,
       "measured": false,
-      "source": "worst case: the Uno runs off the kit battery (VIN regulator dropout); with the Pi's USB powering it, set 0 (PI_TEST \u00a72b power notes)"
+      "source": "worst case: the Uno runs off the kit battery (VIN regulator dropout); with the Pi's USB powering it, set 0 (PI_TEST §2b power notes)"
     },
     "boot_ms": {
       "value": 1600,
@@ -129,6 +129,16 @@
       "value": 1,
       "measured": false,
       "source": "MPU6050 fitted on A4/A5 (the kit has none: without one tip/bump is off; set 0 to test that)"
+    },
+    "length_m": {
+      "value": 0.4,
+      "measured": false,
+      "source": "the user, 2026-11-21: car is ~0.40 m long and 0.30 m wide incl. side buffers (not tape-measured); was a photo guess"
+    },
+    "width_m": {
+      "value": 0.3,
+      "measured": false,
+      "source": "the user, 2026-11-21: car is ~0.40 m long and 0.30 m wide incl. side buffers (not tape-measured); was a photo guess"
     }
   }
 }
