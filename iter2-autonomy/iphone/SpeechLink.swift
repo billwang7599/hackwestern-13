@@ -253,7 +253,7 @@ final class SpeechLink: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
     func start() {
         guard listener == nil else { return }
         do {
-            let parameters = NWParameters.tcp
+            let parameters = piLinkParameters()
             parameters.allowLocalEndpointReuse = true
             let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: SpeechLinkProtocol.port)!)
             self.listener = listener

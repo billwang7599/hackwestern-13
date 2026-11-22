@@ -45,7 +45,7 @@ final class ScenePacketStream {
     }
 
     func start(port: UInt16, error: @escaping (String) -> Void) throws {
-        let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+        let listener = try NWListener(using: piLinkParameters(), on: NWEndpoint.Port(rawValue: port)!)
         self.listener = listener
         listener.stateUpdateHandler = { state in
             if case .failed(let reason) = state { error("Port \(port): \(reason.localizedDescription)") }

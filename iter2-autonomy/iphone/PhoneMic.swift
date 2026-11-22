@@ -530,7 +530,7 @@ final class PhoneMic: ObservableObject {
         q.async {
             guard self.listener == nil else { return }
             do {
-                let params = NWParameters.tcp
+                let params = piLinkParameters()
                 params.allowLocalEndpointReuse = true
                 let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: MicStreamProtocol.port)!)
                 l.newConnectionHandler = { [weak self] c in self?.accept(c) }

@@ -305,6 +305,20 @@ struct QNXDepthPanel: View {
     }
 }
 
+/// TCP for every Pi link, over USB (iproxy) or Wi-Fi: no Nagle delay on small
+/// control/guard lines, and keepalives so a dropped Wi-Fi link closes in ~5 s.
+func piLinkParameters() -> NWParameters {
+    let tcp = NWProtocolTCP.Options()
+    tcp.noDelay = true
+    tcp.enableKeepalive = true
+    tcp.keepaliveIdle = 2
+    tcp.keepaliveInterval = 1
+    tcp.keepaliveCount = 3
+    let parameters = NWParameters(tls: nil, tcp: tcp)
+    parameters.allowLocalEndpointReuse = true
+    return parameters
+}
+
 /// The phone's Wi-Fi IPv4 address: what the Pi needs in state/phone-host.
 func wifiAddress() -> String? {
     var list: UnsafeMutablePointer<ifaddrs>?
@@ -380,7 +394,7 @@ final class PiStatusServer: ObservableObject {
     func start() {
         guard listener == nil else { return }
         do {
-            let listener = try NWListener(using: .tcp, on: 5559)
+            let listener = try NWListener(using: piLinkParameters(), on: 5559)
             self.listener = listener
             listener.stateUpdateHandler = { [weak self] state in
                 if case .failed(let error) = state {
@@ -476,7 +490,7 @@ final class PiStatusServer: ObservableObject {
 }
 
 final class MotionServer: ObservableObject {
-    @Published var status = "Press Start after connecting USB"
+    @Published var status = "Press Start (USB or Wi-Fi)"
     @Published var running = false
     @Published var sent: UInt64 = 0
     private let motion = CMMotionManager()
@@ -498,7 +512,7 @@ final class MotionServer: ObservableObject {
             status = "Accelerometer or gyroscope unavailable"; return
         }
         do {
-            let listener = try NWListener(using: .tcp, on: 5557)
+            let listener = try NWListener(using: piLinkParameters(), on: 5557)
             self.listener = listener
             listener.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
