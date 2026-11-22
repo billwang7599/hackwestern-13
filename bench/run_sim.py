@@ -289,8 +289,12 @@ class Stack:
         if not os.path.exists(p):
             with open(os.path.join(GOTO_DIR, "goto.conf")) as f:
                 text = f.read()
+            extra = BENCH_CAR_CONF
+            t = getattr(self.a, "goto_timeout", 0) or 0
+            if t > 0:   # sim only: the robot keeps goto.conf's strict timeout_s
+                extra += f"timeout_s = {t:g}\n"
             with open(p, "w") as f:
-                f.write(text.rstrip("\n") + "\n\n# bench/run_sim.py BENCH_CAR_CONF\n" + BENCH_CAR_CONF)
+                f.write(text.rstrip("\n") + "\n\n# bench/run_sim.py BENCH_CAR_CONF\n" + extra)
         return p
 
     def start_goto(self, mem_text: str | None):
@@ -461,6 +465,9 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--speed", type=float, default=1.0,
                     help="demo sim speed (1 = real time; 2, 4 for demos; virtual car only; 0.25..16)")
+    ap.add_argument("--goto-timeout", type=float, default=900,
+                    help="sim only: seconds a whole GOTO may take (overrides goto.conf timeout_s, 240 on the robot; "
+                         "0 = use goto.conf)")
     ap.add_argument("--ports-file", default="", help="write ports + pids as JSON here once everything is up")
     a = ap.parse_args(argv)
     if not 0.25 <= a.speed <= 16:
