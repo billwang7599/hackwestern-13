@@ -95,15 +95,20 @@ def serve():
     env = dict(os.environ, LD_LIBRARY_PATH=str(USB / 'install/lib'))
     children = {}
     backend = os.environ.get('TARS_MOTOR_BACKEND', 'stub')
-    if backend not in ('stub', 'uno', 'pico'):
-        raise ValueError('TARS_MOTOR_BACKEND must be stub, uno, or pico')
+    if backend not in ('stub', 'uno', 'pico', 'gpio'):
+        raise ValueError('TARS_MOTOR_BACKEND must be stub, uno, pico, or gpio')
     flat_layout = HERE.parent.name == 'pi'
     motor_dir = HERE.parent if flat_layout else HERE.parents[1] / 'iter1-wasd/pi'
     phone_ports = (5557, 5558, 5559, 5561, 5562, 5563)
     if not flat_layout:
         phone_ports += (5573, 5577)    # 5573 TARS speech -> phone, 5577 phone mic (AirPods) -> tars_voice
     motor_command = [str(motor_dir / 'build/tars_motor'), '-b', backend, '-l', '-g', '5568']
-    if backend != 'stub':
+    if backend == 'gpio':
+        # Pi GPIO straight into the L298N (no Uno). TARS_MOTOR_DEVICE = options, e.g. "invl,min=0.4".
+        device = os.environ.get('TARS_MOTOR_DEVICE', '')
+        if device:
+            motor_command += ['-d', device]
+    elif backend != 'stub':
         device = os.environ.get('TARS_MOTOR_DEVICE')
         if not device or not (device.startswith('/dev/') or device == str(STATE / 'uno-serial')):
             raise ValueError('Hardware mode requires an explicit TARS_MOTOR_DEVICE=/dev/...')

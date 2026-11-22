@@ -16,8 +16,12 @@ def main():
         fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return
-    env = dict(os.environ, TARS_MOTOR_BACKEND='uno',
-               TARS_MOTOR_DEVICE=str(STATE / 'uno-serial'))
+    # Pi GPIO straight into the L298N (no Uno). Options (invl, invr, swap, min=) go in
+    # state/gpio-options; TARS_MOTOR_BACKEND=uno brings the Uno bridge back.
+    backend = os.environ.get('TARS_MOTOR_BACKEND', 'gpio')
+    opts = STATE / 'gpio-options'
+    device = (opts.read_text().strip() if opts.is_file() else '') if backend == 'gpio' else str(STATE / 'uno-serial')
+    env = dict(os.environ, TARS_MOTOR_BACKEND=backend, TARS_MOTOR_DEVICE=device)
     proc = None
     misses = 0
     while True:

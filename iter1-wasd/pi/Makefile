@@ -18,7 +18,7 @@ PORT     ?= 5555
 
 BIN      := tars_motor
 SRCS     := src/main.c src/gesture.c src/motor_stub.c src/motor_uno_serial.c \
-            src/motor_pico_uart.c src/obstacle.c src/guard_gate.c
+            src/motor_pico_uart.c src/motor_gpio.c src/obstacle.c src/guard_gate.c
 CFLAGS   := -Wall -Wextra -O2 -std=gnu11
 
 QCC      := qcc -V gcc_ntoaarch64le

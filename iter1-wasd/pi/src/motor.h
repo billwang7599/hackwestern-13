@@ -77,5 +77,6 @@ typedef struct motor_backend {
 extern const motor_backend_t motor_stub;
 extern const motor_backend_t motor_pico_uart;
 extern const motor_backend_t motor_uno_serial;
+extern const motor_backend_t motor_gpio;
 
 #endif

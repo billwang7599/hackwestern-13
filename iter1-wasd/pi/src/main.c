@@ -95,7 +95,7 @@
  *             the watchdog / obstacle / tip / bump stops, slews the wheels,
  *             plays gesture keyframes and keeps a model of the arm angles.
  *
- * Usage: tars_motor [-b uno|stub|pico] [-d dev] [-p port] [-w watchdog_ms]
+ * Usage: tars_motor [-b uno|stub|pico|gpio] [-d dev] [-p port] [-w watchdog_ms]
  *                   [-r rt_priority] [-k bump_hold_ms] [-H stop_hold_ms]
  */
 #include <errno.h>
@@ -137,7 +137,7 @@
  * the trail it drove in on). Tip, bump, S, the watchdog and the deadman still stop it. */
 #define REVERSE_BLOCKED_MAX_SPEED 0.50f
 
-static const motor_backend_t *motor_backends[] = { &motor_uno_serial, &motor_stub, &motor_pico_uart };
+static const motor_backend_t *motor_backends[] = { &motor_uno_serial, &motor_stub, &motor_pico_uart, &motor_gpio };
 
 /* ---- config (from argv) ---- */
 static const char *cfg_backend = "uno";
@@ -561,7 +561,8 @@ static void *control_thread(void *arg)
         guard_permit = gate_ok; guard_age = guard_gate_age_ms(); guard_reason = guard_gate_reason();
         keyboard_obstacle = guard_gate_obstacle();
         int expired_key = keyboard_until && now >= keyboard_until;
-        int key_drive = keyboard_until > now && (gate_ok || keyboard_obstacle);
+        /* Shift+WASD (KD) overrides the guard outright: the operator is watching. */
+        int key_drive = keyboard_until > now;
         if (expired_key || (!gate_ok && !key_drive)) {
             target_l = target_r = 0;
             keyboard_until = 0;
@@ -766,7 +767,7 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         if (leased && epoch != guard_epoch) {
             target_l = target_r = 0.0f;
             snprintf(reply, rlen, "ERR guard epoch changed; new command required\n");
-        } else if ((why = motion_refused()) != NULL && !(link_up && keyboard && keyboard_obstacle && !tipped)) {
+        } else if ((why = motion_refused()) != NULL && !(link_up && keyboard && !tipped)) {
             target_l = target_r = 0.0f;
             snprintf(reply, rlen, "ERR %s\n", why);
         } else if (left > 0) {
@@ -1196,7 +1197,7 @@ static void on_signal(int sig) { (void)sig; running = 0; }
 static void usage(const char *argv0)
 {
     fprintf(stderr,
-        "usage: %s [-b uno|stub|pico] [-d serial_dev] [-p port] [-w watchdog_ms]\n"
+        "usage: %s [-b uno|stub|pico|gpio] [-d serial_dev] [-p port] [-w watchdog_ms]\n"
         "          [-r rt_prio] [-k bump_hold_ms] [-H stop_hold_ms] [-g guard_udp_port] [-l localhost_only]\n", argv0);
 }
 
