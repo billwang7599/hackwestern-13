@@ -76,14 +76,6 @@
         const up = () => lift(s.dataset.k);
         s.addEventListener('pointerup', up); s.addEventListener('pointercancel', up); s.addEventListener('lostpointercapture', up);
       });
-      // guard in plain words (status.guard.help from the robot plugin); '' = nothing to explain
-      const hint = $('.msg').textContent;
-      Bench.on('status', st => {
-        const g = st && st.guard, m = $('.msg');
-        if (!robotOk() || !g) return;
-        m.textContent = g.help || hint;
-        m.style.color = g.help ? 'var(--warn, #e6b450)' : '';
-      });
       const release = () => { shift = false; if (held.size) { held.clear(); paintKeys(); push(); } };
       window.addEventListener('blur', release);
       document.addEventListener('visibilitychange', () => { if (document.hidden) release(); });
@@ -101,6 +93,8 @@
         const why = String(f.why || '');
         const refused = held.size && /guard|tip|bump/.test(why);
         $('.msg').classList.toggle('bad', !!refused);
+        const g = st && st.guard;
+        if (g && g.help) { $('.msg').textContent = g.help; $('.msg').classList.add('bad'); return; }   // plain-words guard reason (robot plugin)
         if (refused) $('.msg').textContent = `⚠ tars_motor refuses to drive: ${why.replace(/_/g, ' ')}` +
           (/guard/.test(why) ? ' (something is in front; the Path light is red). Move the car or the obstacle in the sim.' : '');
         else if (robotOk() && $('.msg').innerHTML !== hint && !/^keys:/.test($('.msg').textContent)) $('.msg').innerHTML = hint;
