@@ -45,6 +45,8 @@ struct MotionUSBApp: App {
 
     @AppStorage("speakRobotActions") private var speakActions = true
     @State private var controls = false
+    @State private var lastTap = ""
+    @AppStorage("airpodsPTT") private var airpodsPTT = true
 
     private func feed(_ title: String, _ image: UIImage?, _ timestamp: Double) -> some View {
         Color.black
@@ -83,26 +85,6 @@ struct MotionUSBApp: App {
         .accessibilityHint("Values in X, Y, Z order")
     }
 
-    private var primaryControls: some View {
-        VStack(alignment: .trailing, spacing: 3) {
-          HStack(spacing: 4) {
-            Button(server.running ? "Stop sensors" : "Start") {
-                if server.running { server.stop(); camera.stop() }
-                else { server.start(); if server.running { camera.start() } }
-            }.buttonStyle(.borderedProminent)
-            Button("Calibrate") { camera.calibrate() }
-                .accessibilityHint("Robot on the floor with floor in view: measures the floor with LiDAR, then learns the heading from the next straight drive.")
-            Button { controls.toggle() } label: {
-                Image(systemName: controls ? "xmark" : "slider.horizontal.3")
-            }.accessibilityLabel(controls ? "Close controls" : "More controls")
-          }
-          HStack(spacing: 4) {
-            Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
-            Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
-          }
-        }.buttonStyle(.bordered).controlSize(.small).font(.caption).lineLimit(1).minimumScaleFactor(0.7)
-    }
-
     /// Top-left: live readings (the mount hides the bottom half of the screen).
     private var dataColumn: some View {
         ScrollView {
@@ -136,71 +118,89 @@ struct MotionUSBApp: App {
         }
     }
 
-    /// Top-right: controls. The slider button opens the full panel (voice card, manual drive).
-    private var controlColumn: some View {
-        ScrollView {
-            VStack(alignment: .trailing, spacing: 3) {
-                HStack(spacing: 4) {
-                    Button("STOP") { pi.command(["op": "halt"]) }
-                        .buttonStyle(.borderedProminent).tint(.red).disabled(!pi.connected)
-                    Toggle(isOn: Binding(get: { voice.airpodsArmed }, set: { voice.setAirPodsTrigger($0) })) {
-                        Label(voice.listening ? "Listening" : "AirPods talk", systemImage: voice.listening ? "mic.fill" : "airpodspro")
-                    }.toggleStyle(.button).tint(voice.listening ? .red : .accentColor).disabled(mic.enabled)
-                }.controlSize(.small).font(.caption)
-                primaryControls
-                if !voice.problem.isEmpty { Text(voice.problem).font(.caption2).foregroundStyle(.orange) }
-            }.frame(maxWidth: .infinity, alignment: .trailing)
-        }
+    /// AirPods stem push-to-talk is the default: armed whenever the app is up and Robot mic is off.
+    private func applyPTT() {
+        let want = airpodsPTT && !mic.enabled && !isInspectionFixture
+        if want != voice.airpodsArmed { voice.setAirPodsTrigger(want) }
     }
 
-    /// The expanded menu: one horizontal scroll of cards across the whole top half
-    /// (each card scrolls vertically on its own), so every setting is reachable above the mount.
+    private var pttBinding: Binding<Bool> {
+        Binding(get: { voice.airpodsArmed }, set: { airpodsPTT = $0; applyPTT() })
+    }
+
+    private func tag(_ text: String) -> some View {
+        Text(text).font(.caption2.bold()).foregroundStyle(.secondary).padding(.leading, 6)
+    }
+
+    /// Row 1, always visible: one horizontal scroll of the demo controls.
+    private var controlRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                Button("STOP") { pi.command(["op": "halt"]) }
+                    .buttonStyle(.borderedProminent).tint(.red).disabled(!pi.connected)
+                Toggle(isOn: pttBinding) {
+                    Label(voice.listening ? "Listening" : voice.airpodsArmed ? "AirPods: press stem" : "AirPods off",
+                          systemImage: voice.listening ? "mic.fill" : "airpodspro")
+                }.toggleStyle(.button).tint(voice.listening ? .red : .accentColor).disabled(mic.enabled)
+                Button(server.running ? "Stop sensors" : "Start") {
+                    if server.running { server.stop(); camera.stop() }
+                    else { server.start(); if server.running { camera.start() } }
+                }.buttonStyle(.borderedProminent)
+                Button("Calibrate") { camera.calibrate() }
+                    .accessibilityHint("Robot on the floor with floor in view: measures the floor with LiDAR, then learns the heading from the next straight drive.")
+                Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
+                Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
+                Button { controls.toggle() } label: {
+                    Image(systemName: controls ? "xmark" : "slider.horizontal.3")
+                }.accessibilityLabel(controls ? "Close controls" : "More controls")
+                if !voice.problem.isEmpty { Text(voice.problem).foregroundStyle(.orange) }
+            }.padding(.horizontal, 2)
+        }.buttonStyle(.bordered).controlSize(.small).font(.caption).lineLimit(1)
+    }
+
+    private var motorLine: String {
+        let out = motor["output"] as? [NSNumber] ?? []
+        let lr = out.count == 2 ? String(format: "L %+.2f R %+.2f", out[0].doubleValue, out[1].doubleValue) : "L — R —"
+        return lr + (motor["inhibited"] as? Bool == true ? " · stop: \(motor["reason"] as? String ?? "?")" : "")
+    }
+
+    /// Row 2 when the slider is open: everything else, one horizontal scroll, no stacked cards.
     private var expandedMenu: some View {
-        ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 6) {
-                menuCard(width: 330) { controlColumn }
-                menuCard(width: 300) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Audio & AirPods").font(.headline)
-                        Toggle("AirPods push-to-talk (stem press)", isOn: Binding(get: { voice.airpodsArmed },
-                                                                               set: { voice.setAirPodsTrigger($0) }))
-                            .disabled(mic.enabled)
-                        if mic.enabled { Text("Off while Robot mic is on (one mic user at a time).").foregroundStyle(.orange) }
-                        Toggle("Robot mic (AirPods, say \"TARS…\")", isOn: Binding(get: { mic.enabled },
-                                                                     set: { robotMic = $0; mic.setEnabled($0) }))
-                            .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. QNXplorer replies from the phone speaker.")
-                        Toggle("Speak actions", isOn: $speakActions)
-                        if mic.enabled || !mic.warning.isEmpty { MicStatusView(mic: mic) }
-                        if !voice.problem.isEmpty { Text(voice.problem).foregroundStyle(.orange) }
-                        Text("Push-to-talk: press the stem, speak, press again. Robot mic and push-to-talk can't both be on.")
-                            .foregroundStyle(.secondary)
-                    }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                tag("DRIVE")
+                HoldDriveButton(label: "W ↑", left: 0.25, right: 0.25, pi: pi, lastTap: $lastTap)
+                HoldDriveButton(label: "A ←", left: -0.25, right: 0.25, pi: pi, lastTap: $lastTap)
+                HoldDriveButton(label: "S ↓", left: -0.25, right: -0.25, pi: pi, lastTap: $lastTap)
+                HoldDriveButton(label: "D →", left: 0.25, right: -0.25, pi: pi, lastTap: $lastTap)
+                Text(motorLine).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                tag("VOICE")
+                HoldToTalkChip(pi: pi, voice: voice, micBusy: mic.enabled)
+                ForEach(VoiceCommandPanel.samples, id: \.self) { phrase in
+                    Button(phrase) { voice.sendText(phrase) }
+                        .tint(phrase == "stop" ? .red : .accentColor).disabled(!pi.connected)
                 }
-                menuCard(width: 360) { VoiceCommandPanel(pi: pi, voice: voice, micBusy: mic.enabled) }
-                menuCard(width: 360) { ManualDrivePanel(pi: pi) }
-                menuCard(width: 240) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Scan & Pi").font(.headline)
-                        if let rgb = pi.surroundings["camera_height_m"] as? NSNumber,
-                           let lidar = pi.surroundings["lidar_height_m"] as? NSNumber {
-                            let assumed = pi.surroundings["floor_assumed"] as? Bool == true
-                            Text(String(format: "%@ · RGB %.1f cm · LiDAR %.1f cm",
-                                        assumed ? "Mount estimate" : "Above floor", rgb.doubleValue * 100, lidar.doubleValue * 100))
-                        }
-                        Button("Reset scan") { camera.resetMap() }
-                        ForEach(["start","stop"], id: \.self) { op in
-                            Button("Pi " + op + " streams") { pi.command(["op":op]) }
-                        }
-                    }.buttonStyle(.bordered)
+                tag("AUDIO")
+                Toggle("AirPods push-to-talk", isOn: pttBinding).toggleStyle(.button).disabled(mic.enabled)
+                Toggle("Robot mic (say \"TARS…\")", isOn: Binding(get: { mic.enabled }, set: { on in
+                    robotMic = on
+                    if on { voice.setAirPodsTrigger(false) }
+                    mic.setEnabled(on)
+                    if !on { DispatchQueue.main.async { applyPTT() } }
+                })).toggleStyle(.button)
+                    .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. QNXplorer replies from the phone speaker.")
+                Toggle("Speak actions", isOn: $speakActions).toggleStyle(.button)
+                tag("MAP")
+                Button("Reset scan") { camera.resetMap() }
+                Button("Pi start streams") { pi.command(["op":"start"]) }
+                Button("Pi stop streams") { pi.command(["op":"stop"]) }
+                if let rgb = pi.surroundings["camera_height_m"] as? NSNumber,
+                   let lidar = pi.surroundings["lidar_height_m"] as? NSNumber {
+                    Text(String(format: "RGB %.1f cm · LiDAR %.1f cm", rgb.doubleValue * 100, lidar.doubleValue * 100))
+                        .foregroundStyle(.secondary)
                 }
-            }
-        }.font(.caption)
-    }
-
-    private func menuCard<Content: View>(width: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
-        ScrollView { content().frame(maxWidth: .infinity, alignment: .leading).padding(6) }
-            .frame(width: width)
-            .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            }.padding(.horizontal, 2)
+        }.buttonStyle(.bordered).controlSize(.small).font(.caption).lineLimit(1)
     }
 
     /// Between a third and half height: what the phone sees.
@@ -222,15 +222,12 @@ struct MotionUSBApp: App {
                 let full = g.size.height + g.safeAreaInsets.top + g.safeAreaInsets.bottom
                 let third = full / 3 - g.safeAreaInsets.top
                 VStack(spacing: 2) {
-                    if controls {
-                        expandedMenu.frame(height: max(90, third))
-                    } else {
-                        HStack(alignment: .top, spacing: 4) {
-                            dataColumn.frame(width: g.size.width * 0.24)
-                            visualStrip.frame(maxWidth: .infinity)
-                            controlColumn.frame(width: g.size.width * 0.30)
-                        }.frame(height: max(90, third))
-                    }
+                    controlRow
+                    if controls { expandedMenu }
+                    HStack(alignment: .top, spacing: 4) {
+                        dataColumn.frame(width: g.size.width * 0.26)
+                        visualStrip.frame(maxWidth: .infinity)
+                    }.frame(height: max(80, third - 34))
                     Spacer(minLength: 0)
                 }.padding(.horizontal, 4)
             }
@@ -252,12 +249,14 @@ struct MotionUSBApp: App {
             }.statusBarHidden().background { safetyBackground }
             .onAppear {
                 speech.mic = mic
+                voice.send = { pi.command($0) }
                 speech.start()
                 if robotMic && !isInspectionFixture { mic.setEnabled(true) }
                 #if DEBUG
                 if isInspectionFixture { camera.loadInspectionFixture(); pi.loadTelemetryFixture(); return }
                 #endif
                 pi.start()
+                applyPTT()
             }
             .onChange(of: speakActions) { _, _ in speech.resetNarration() }
             .onChange(of: pi.connected) { _, connected in if !connected { speech.resetNarration() } }
@@ -267,10 +266,10 @@ struct MotionUSBApp: App {
                 if let result = value["ai"] as? [String: Any], result["live"] as? Bool == true { if stereoMode { stereo.result(result) } else { camera.applyQNXResult(result) } }
                 if let result = value["depth"] as? [String: Any], result["live"] as? Bool == true { camera.applyQNXDepthResult(result) }
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in speech.start(); if !isInspectionFixture { pi.start(); mic.resume() } }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in speech.start(); if !isInspectionFixture { pi.start(); mic.resume(); applyPTT() } }
             .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in if !isInspectionFixture { pi.checkFreshness() } }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
-                server.stop(); camera.stop(); stereo.stop(); pi.stop(); speech.stop(); mic.suspend()
+                server.stop(); camera.stop(); stereo.stop(); pi.stop(); speech.stop(); mic.suspend(); voice.setAirPodsTrigger(false)
             }
         }
     }

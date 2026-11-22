@@ -159,6 +159,7 @@ final class VoiceCommander: ObservableObject {
     }
 
     private func arm() {
+        guard !airpodsArmed else { return }
         do {
             try startEngine()
             muteObserver = NotificationCenter.default.addObserver(
@@ -193,6 +194,26 @@ final class VoiceCommander: ObservableObject {
         task = nil
         request = nil
         listening = false
+    }
+}
+
+/// Hold-to-talk as one chip for the horizontal controls row.
+struct HoldToTalkChip: View {
+    @ObservedObject var pi: PiStatusServer
+    @ObservedObject var voice: VoiceCommander
+    let micBusy: Bool
+
+    var body: some View {
+        Label(voice.listening ? "Listening… release" : "Hold to talk", systemImage: "mic.fill")
+            .font(.caption.bold()).foregroundStyle(.white)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(voice.listening ? Color.red : Color.accentColor, in: RoundedRectangle(cornerRadius: 6))
+            .opacity(pi.connected && !micBusy ? 1 : 0.4)
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in if !voice.listening && pi.connected && !micBusy { voice.begin() } }
+                .onEnded { _ in voice.end() })
+            .accessibilityAddTraits(.isButton)
+            .onAppear { voice.send = { pi.command($0) } }
     }
 }
 
