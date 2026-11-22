@@ -469,7 +469,11 @@ class Stack:
             print(f"    [{name}] events: {' | '.join(self.goto.events)[:900]}")
             st = self.goto.status()
             print(f"    [{name}] guard_refusals={st.get('guard_refusals')} guard_aborts={st.get('guard_aborts')} "
-                  f"guard_stops_other={st.get('guard_stops_other')} backtracks={st.get('backtracks')} replans={st.get('replans')}")
+                  f"guard_stops_other={st.get('guard_stops_other')} backtracks={st.get('backtracks')} replans={st.get('replans')} "
+                  f"replans_here={st.get('replans_here')} elapsed={st.get('elapsed')}")
+            tr = list(self.sens.trace)
+            drove = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(tr, tr[1:]))
+            print(f"    [{name}] drove {drove:.2f} m (pose trace)")
             g = self.sens.guard_gaps
             if g:
                 print(f"    [{name}] fake guard: max gap {1000 * max(g):.0f} ms, {sum(x >= 0.1 for x in g)} gaps >= 100 ms (tars_motor TTL)")
