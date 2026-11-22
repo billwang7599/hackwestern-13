@@ -371,6 +371,7 @@ typedef struct {
     int search_hops, search_hop;      /* search relocations this GOTO; 1 = driving to one, spin on arrival */
     int optimistic;                   /* the current route goes through unknown floor */
     int opt_failed;                   /* the last goal plan failed even through unknown floor */
+    int unblock_tried;                /* this GOTO already cleared guard temp blocks once before calling it unreachable */
     int unreachable;                  /* ... for some instance this GOTO: fail reason unreachable */
     double travel_m, opt_len0, last_move_mm;
     int opt_replans, leg_cut;

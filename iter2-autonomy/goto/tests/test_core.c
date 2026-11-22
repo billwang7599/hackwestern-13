@@ -1352,6 +1352,54 @@ static void test_map_occluder_inside_footprint(void)
     CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "ARRIVED after the detour (%s)", S.result);
 }
 
+/* guard temp blocks (nav_block_s) must never make the goal "unreachable": a route through a gap, then
+ * the guard's temporary blocks seal the gap mid-leg. Before calling it unreachable goto forgets them
+ * once ("unblock") and plans again. A real wall in the gap is still unreachable after that one try. */
+static void seal_room(int real_gap)
+{
+    map_setup();
+    set_free_rect(-0.4, -0.4, 5.4, 5.4, NAV_OCC);       /* a walled room: no way round through unknown */
+    set_free_rect(0, 0, 5, 5, NAV_FREE);
+    set_free_rect(0, 2.0, 1.4, 2.2, NAV_OCC);          /* wall across z = 2 with a 1.2 m gap */
+    set_free_rect(2.6, 2.0, 5, 2.2, NAV_OCC);
+    if (real_gap) set_free_rect(1.35, 1.95, 2.65, 2.25, NAV_OCC);
+    put_robot(0.55, 0.55, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+}
+
+static void test_map_temp_blocks_not_unreachable(void)
+{
+    seal_room(0);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(had_event("route trash can #1", EV) && S.st == ST_FOLLOW_PATH, "route through the gap (%s, %.160s)",
+          goto_state_name(S.st), EV);
+    int k = 0;
+    while (k++ < 6 && !find(ACT_MOVE) && find(ACT_TURN)) run_legs_ev(1);
+    clear();
+    goto_sm_move_started(&S, T, 500, 1.0);
+    for (double x = 1.35; x <= 2.65; x += 0.05)          /* the guard's temp blocks seal the gap */
+        for (double z = 1.95; z <= 2.25; z += 0.05) nav_temp_block(N, (float)x, (float)z);
+    S.block_since = T;                                   /* as block_ahead() stamps them */
+    EV[0] = 0;
+    drive_until_idle(80);
+    grab_events();
+    CHECK(had_event("unblock trash can #1", EV), "temp blocks sealing the only gap -> unblock, plan again (%.240s)", EV);
+    CHECK(strcmp(S.result, "failed:unreachable") != 0, "temp blocks alone never make it unreachable (%s %s)",
+          goto_state_name(S.st), S.result);
+    goto_sm_cancel(&S, T, "stop");
+    advance(1.0);
+
+    seal_room(1);                                        /* a real wall in the gap: unreachable, no unblock */
+    EV[0] = 0;
+    start("trash can");
+    drive_until_idle(50);
+    grab_events();
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:unreachable") && !had_event("unblock", EV),
+          "a real wall in the gap -> unreachable (%s, %.200s)", S.result, EV);
+}
+
 static void test_map_no_route_fails(void)
 {
     /* optimistic planning (default): the corner is walled in by KNOWN obstacles, so there's no
@@ -2171,6 +2219,7 @@ int main(void)
     test_map_search_needs_line_of_sight();
     test_map_occluder_inside_footprint();
     test_map_no_route_fails();
+    test_map_temp_blocks_not_unreachable();
     test_map_reveal_measured();
     test_map_heading_closed_loop();
     test_map_guard_escape();

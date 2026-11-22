@@ -2074,6 +2074,18 @@ static void plan_failed(goto_sm *s, int n)
         snprintf(t, sizeof t, "plan_fail %s #%d %d%s", target_name(s), s->mem_id, n, s->vantage ? " vantage" : "");
         emit(s, ACT_EVENT, 0, 0, t);
     }
+    if (s->opt_failed && !s->vantage && !s->exploring && (n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH) &&
+        s->nav && nav_temp_count(s->nav) > 0 && !s->unblock_tried) {
+        /* the guard's temporary blocks (nav_block_s) are a guess, not walls: never let them make the
+         * goal "unreachable". Forget them and plan once more; if that also fails, it's the walls. */
+        char t[96];
+        snprintf(t, sizeof t, "unblock %s #%d %d", target_name(s), s->mem_id, nav_temp_count(s->nav));
+        emit(s, ACT_EVENT, 0, 0, t);
+        s->unblock_tried = 1;
+        nav_temp_clear(s->nav);
+        do_plan(s);
+        return;
+    }
     if (s->opt_failed && !s->vantage && !s->exploring && (n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH)) {
         /* no route even through unknown floor: known walls enclose it (or the footprint can't fit).
          * Spinning or exploring won't change that. */
@@ -2648,7 +2660,7 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->have_goal = s->los_standoffs = s->plan_depth = 0;
     s->search_hops = s->search_hop = 0;
     s->n_gone = 0;
-    s->optimistic = s->opt_failed = s->unreachable = s->opt_replans = s->leg_cut = 0;
+    s->optimistic = s->opt_failed = s->unreachable = s->opt_replans = s->leg_cut = s->unblock_tried = 0;
     s->travel_m = s->opt_len0 = s->last_move_mm = 0;
     if (s->nav) nav_temp_clear(s->nav);
     crumb_note(s, 1, 1);
