@@ -1,4 +1,5 @@
 """Bounded latest RGB frame broker. Neither AI consumer can block LiDAR."""
+import argparse
 import socket
 import struct
 import threading
@@ -27,7 +28,11 @@ def read_packet(sock):
     return packet
 
 
-def main():
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--phone-port', type=int, default=5563, help='phone RGB stream on 127.0.0.1 (default 5563)')
+    ap.add_argument('--port', type=int, default=5566, help='serve GET on 127.0.0.1 (default 5566)')
+    args = ap.parse_args(argv)
     lock = threading.Lock()
     latest = [None, 0.0]
     slots = threading.BoundedSemaphore(4)
@@ -35,7 +40,7 @@ def main():
     def capture():
         while True:
             try:
-                with socket.create_connection(('127.0.0.1', 5563), timeout=2) as phone:
+                with socket.create_connection(('127.0.0.1', args.phone_port), timeout=2) as phone:
                     phone.settimeout(3)
                     previous = -1
                     while True:
@@ -73,7 +78,7 @@ def main():
     threading.Thread(target=capture, daemon=True).start()
     with socket.socket() as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind(('127.0.0.1', 5566))
+        server.bind(('127.0.0.1', args.port))
         server.listen(4)
         while True:
             client, _ = server.accept()
