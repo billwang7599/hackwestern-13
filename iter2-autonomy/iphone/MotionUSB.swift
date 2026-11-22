@@ -145,30 +145,56 @@ struct MotionUSBApp: App {
                 }.controlSize(.small).font(.caption)
                 primaryControls
                 if !voice.problem.isEmpty { Text(voice.problem).font(.caption2).foregroundStyle(.orange) }
-                if controls {
-                    VStack(alignment: .leading, spacing: 3) {
+            }.frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    /// The expanded menu: one horizontal scroll of cards across the whole top half
+    /// (each card scrolls vertically on its own), so every setting is reachable above the mount.
+    private var expandedMenu: some View {
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: 6) {
+                menuCard(width: 300) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Audio & AirPods").font(.headline)
+                        Toggle("AirPods push-to-talk (stem press)", isOn: Binding(get: { voice.airpodsArmed },
+                                                                               set: { voice.setAirPodsTrigger($0) }))
+                            .disabled(!pi.connected || mic.enabled)
+                        Toggle("Robot mic (AirPods, say \"TARS…\")", isOn: Binding(get: { mic.enabled },
+                                                                     set: { robotMic = $0; mic.setEnabled($0) }))
+                            .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. QNXplorer replies from the phone speaker.")
+                        Toggle("Speak actions", isOn: $speakActions)
+                        if mic.enabled || !mic.warning.isEmpty { MicStatusView(mic: mic) }
+                        if !voice.problem.isEmpty { Text(voice.problem).foregroundStyle(.orange) }
+                        Text("Push-to-talk: press the stem, speak, press again. Robot mic and push-to-talk can't both be on.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                menuCard(width: 360) { VoiceCommandPanel(pi: pi, voice: voice, micBusy: mic.enabled) }
+                menuCard(width: 360) { ManualDrivePanel(pi: pi) }
+                menuCard(width: 240) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Scan & Pi").font(.headline)
                         if let rgb = pi.surroundings["camera_height_m"] as? NSNumber,
                            let lidar = pi.surroundings["lidar_height_m"] as? NSNumber {
                             let assumed = pi.surroundings["floor_assumed"] as? Bool == true
                             Text(String(format: "%@ · RGB %.1f cm · LiDAR %.1f cm",
                                         assumed ? "Mount estimate" : "Above floor", rgb.doubleValue * 100, lidar.doubleValue * 100))
                         }
-                        Toggle("Speak actions", isOn: $speakActions)
-                        Toggle("Robot mic (AirPods)", isOn: Binding(get: { mic.enabled },
-                                                                     set: { robotMic = $0; mic.setEnabled($0) }))
-                            .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. QNXplorer replies from the phone speaker.")
-                        VoiceCommandPanel(pi: pi, voice: voice, micBusy: mic.enabled)
-                        ManualDrivePanel(pi: pi)
-                        HStack {
-                            Button("Reset scan") { camera.resetMap() }
-                            ForEach(["start","stop"], id: \.self) { op in
-                                Button("Pi " + op + " streams") { pi.command(["op":op]) }
-                            }
-                        }.buttonStyle(.bordered).controlSize(.small)
-                    }.font(.caption2)
+                        Button("Reset scan") { camera.resetMap() }
+                        ForEach(["start","stop"], id: \.self) { op in
+                            Button("Pi " + op + " streams") { pi.command(["op":op]) }
+                        }
+                    }.buttonStyle(.bordered)
                 }
-            }.frame(maxWidth: .infinity, alignment: .trailing)
-        }
+            }
+        }.font(.caption)
+    }
+
+    private func menuCard<Content: View>(width: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView { content().frame(maxWidth: .infinity, alignment: .leading).padding(6) }
+            .frame(width: width)
+            .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// Between a third and half height: what the phone sees.
@@ -193,11 +219,16 @@ struct MotionUSBApp: App {
                 let third = full / 3 - g.safeAreaInsets.top
                 let half = full / 2 - g.safeAreaInsets.top
                 VStack(spacing: 2) {
-                    HStack(alignment: .top, spacing: 6) {
-                        dataColumn.frame(maxWidth: .infinity)
-                        controlColumn.frame(maxWidth: .infinity)
-                    }.frame(height: max(60, controls ? half : third))
-                    if !controls {
+                    if controls {
+                        VStack(spacing: 2) {
+                            controlColumn.frame(height: 64)
+                            expandedMenu
+                        }.frame(height: max(120, half))
+                    } else {
+                        HStack(alignment: .top, spacing: 6) {
+                            dataColumn.frame(maxWidth: .infinity)
+                            controlColumn.frame(maxWidth: .infinity)
+                        }.frame(height: max(60, third))
                         visualStrip.frame(height: max(40, half - third - 2))
                     }
                     Spacer(minLength: 0)
