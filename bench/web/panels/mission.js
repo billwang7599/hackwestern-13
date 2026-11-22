@@ -225,7 +225,15 @@
     mount(el) {
       el.innerHTML = `<div class="mc-row"><button class="zi">+</button><button class="zo">−</button><span class="src mc-note"></span></div>
         <canvas class="mc-map" width="560" height="560"></canvas>
-        <div class="mc-note">top-down, ARKit frame · grey free · orange occupied · purple inferred · blue = goto's route · ▲ robot · ● goto memory (filled), phone objects (ring)</div>`;
+        <div class="map-legend" role="note" aria-label="map key" title="Top-down, ARKit frame (what the robot believes, not the sim's truth)">
+          <span class="lg-item"><i class="lg-sw lg-cell" style="--c:#0b1013"></i>unknown</span>
+          <span class="lg-item"><i class="lg-sw lg-cell" style="--c:#3a4048"></i>free</span>
+          <span class="lg-item"><i class="lg-sw lg-cell" style="--c:#d2762a"></i>occupied (wall)</span>
+          <span class="lg-item"><i class="lg-sw lg-cell" style="--c:#8957e5"></i>inferred</span>
+          <span class="lg-item"><i class="lg-sw lg-line" style="--c:#58a6ff"></i>goto's route</span>
+          <span class="lg-item"><i class="lg-sw lg-tri" style="--c:#ffffff"></i>robot</span>
+          <span class="lg-item" title="goto memory: green fresh, amber stale, grey gone"><i class="lg-sw lg-dot" style="--c:#3fb950"></i>remembered</span>
+          <span class="lg-item"><i class="lg-sw lg-ring" style="--c:#79c0ff"></i>phone sees</span></div>`;
       const c = el.querySelector('canvas');
       let zoom = 60, cache = {key: null, g: null};
       el.querySelector('.zi').onclick = () => { zoom = Math.max(20, zoom / 1.5); draw(); };
@@ -254,6 +262,13 @@
         const sc = W / (zoom / 10), toX = wx => W / 2 + (wx - px) * sc, toY = wz => H / 2 + (wz - pz) * sc;
         el.querySelector('.src').textContent = `grid: ${g ? g.src : 'none'} · pose: ${psrc} · ${(W / sc).toFixed(1)} m wide`;
         stale(c, Math.min(S.grid_age ?? 99, S.phone_age ?? 99, S.nav_age ?? 99), 2.5);
+        if (!g) {   // empty state: say why instead of a black square
+          x.fillStyle = '#8a9aa6'; x.font = '14px system-ui, sans-serif'; x.textAlign = 'center';
+          x.fillText('No map yet', W / 2, H / 2 - 10);
+          x.font = '12px system-ui, sans-serif';
+          x.fillText('goto builds it from the phone’s LiDAR as the car drives (needs goto connected)', W / 2, H / 2 + 12);
+          x.textAlign = 'start';
+        }
         if (g) {
           const colors = [null, '#3a4048', '#d2762a', '#8957e5'];
           for (let r = 0; r < g.h; r++) for (let q = 0; q < g.w; q++) {

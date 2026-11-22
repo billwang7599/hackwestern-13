@@ -60,7 +60,7 @@
       // editing lives on the Room page: this button just goes there (or back to Drive)
       const editBtn = h('button', {title: 'Edit the room: add, move and delete boxes, walls, people and objects (the Room page)',
         onclick: () => (B.openPage ? B.openPage(editing ? 'drive' : 'room') : setEdit(!editing))}, '✏ Edit room');
-      const legendBtn = h('button', {class: 'ghost', title: 'What the shapes on the map mean', onclick: () => { legend.hidden = !legend.hidden; }}, 'Legend');
+      const legendBtn = h('button', {class: 'ghost', title: 'Show or hide the key under the map (what the shapes mean)', onclick: () => setLegend(legend.hidden)}, 'Legend');
       const bar = h('div', {}, h('span', {class: 'dim'}, 'Room'), roomSel,
         h('button', {onclick: () => act('load', {name: roomSel.value}), title: 'Load the picked room (car back to its start, goto restarted)'}, 'Load'),
         carStartBtn(), resetMapBtn(),
@@ -94,17 +94,33 @@
       const seeing = h('div', {class: 'mono'});
       css(seeing, {position: 'absolute', bottom: '8px', right: '8px', background: 'rgba(11,16,19,.85)', padding: '4px 8px',
         borderRadius: '6px', fontSize: '12px', pointerEvents: 'none', maxWidth: '60%'});
-      const legend = h('div', {class: 'dim', hidden: ''},
-        h('div', {}, h('b', {}, 'white car'), ' = where the car really is · ', h('b', {style: {color: '#e6b450'}}, '◇'), ' = where the phone thinks it is (what goto is told) · ',
-          h('b', {style: {color: '#a77ad6'}}, '○'), ' = wheel-count estimate (tars_motor)'),
-        h('div', {}, h('b', {style: {color: '#5aa9e6'}}, 'blue line'), ' = planned route · faint line = path driven · light-blue cone = camera view · ',
-          h('b', {style: {color: '#4cc38a'}}, 'green line'), ' = the camera sees that object · thin rays = the LiDAR obstacle check (red = blocked) · ',
-          h('b', {style: {color: '#ffffff'}}, 'pulsing ring'), ' = the go-to target'));
-      css(legend, {position: 'absolute', left: '8px', bottom: '28px', right: '8px', background: 'rgba(11,16,19,.92)', padding: '6px 8px',
-        borderRadius: '6px', fontSize: '12px', border: '1px solid var(--line)'});
-      const wrap = h('div', {}, canvas, seeing, legend);
+      // the key: one always-there row of swatches under the map (hide it with Legend; remembered)
+      const sw = (kind, col, text, tip) => {
+        const i = h('i', {class: 'lg-sw lg-' + kind}); i.style.setProperty('--c', col);   // a custom property needs setProperty
+        return h('span', {class: 'lg-item', title: tip || text}, i, text);
+      };
+      const legend = h('div', {class: 'map-legend', role: 'note', 'aria-label': 'map key'},
+        sw('car', '#dbe4ea', 'car (real pose)', 'White car = where the car really is (sim truth). Red tick = its heading.'),
+        sw('diamond', '#e6b450', 'phone pose', 'Amber outline = where the phone thinks the car is: what goto is told (red = tracking lost)'),
+        sw('ring', '#a77ad6', 'wheel estimate', 'Purple circle = tars_motor’s dead-reckoned pose from wheel counts'),
+        sw('wall', '#c8d3db', 'wall'),
+        sw('line', '#5aa9e6', 'planned route', 'Blue line = goto’s route; the white dot is the leg it is driving now'),
+        sw('line', 'rgba(219,228,234,.45)', 'driven', 'Faint line = the path the car actually drove'),
+        sw('target', '#ffffff', 'go-to target', 'Pulsing white ring = what goto is going to'),
+        sw('dash', '#4cc38a', 'remembered', 'Dashed ring = where goto remembers a thing (green fresh, amber stale, grey gone)'),
+        sw('line', '#4cc38a', 'camera sees it', 'Green line from the car = YOLO sees that object now (red dashed = a false detection)'),
+        sw('fan', 'rgba(239,95,95,.8)', 'LiDAR check', 'Thin rays + dashed box ahead of the car = the obstacle guard (red = BLOCKED, green = clear)'),
+        sw('cone', 'rgba(90,169,230,.35)', 'camera view'),
+        sw('unknown', '#0b1013', 'unknown / empty floor', 'Dark = nothing there or not seen yet (goto’s own map is on the Robot’s map view)'));
+      function setLegend(on) {
+        legend.hidden = !on; legendBtn.classList.toggle('on', on);
+        try { localStorage.setItem('bench.w2d.legend', on ? 'on' : 'off'); } catch (e) { /* private mode */ }
+        window.dispatchEvent(new Event('resize'));
+      }
+      const wrap = h('div', {}, canvas, seeing);
       css(wrap, {position: 'relative', flex: '1 1 0', minHeight: '200px'});
-      el.append(bar, toolBar, wrap);
+      el.append(bar, toolBar, wrap, legend);
+      { let v = null; try { v = localStorage.getItem('bench.w2d.legend'); } catch (e) { /* private mode */ } setLegend(v !== 'off'); }
 
       // Sim tab: goto/guard line, sensor readout, faults, sensor noise
       const side = h('div');
