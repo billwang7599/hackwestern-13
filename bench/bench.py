@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""TARS digital test bench: a laptop-only browser app (http://127.0.0.1:8770).
+"""TARS digital test bench: a browser app (http://127.0.0.1:8770).
+
+Normally on the laptop against the sim. `--target robot` runs it ON the Pi itself against the real stack,
+and the 2D room view then shows the real robot (plugins/live.py); open it from a laptop with
+`--bind 0.0.0.0` (a token is required then: --token or BENCH_TOKEN, open http://<pi-ip>:8770/?token=...).
 
 The robot never needs this. It is a dev tool for driving, debugging and
 experimenting with the robot stack against a simulated car/room or the real
@@ -14,6 +18,7 @@ one plugin file and one panel file, no shared file edits.
 from __future__ import annotations
 
 import argparse
+import hmac
 import importlib.util
 import json
 import os
@@ -32,6 +37,9 @@ REPO = os.path.dirname(HERE)
 # Panels that only mean something with the simulated car/room. Hidden on the real targets
 # (usb = real Uno + motors on this Mac, pi = the real robot) unless --all-panels.
 SIM_ONLY_PANELS = {"car.js", "world2d.js", "gotomem.js"}
+# On the real targets the live plugin feeds world2d with the real robot, so it stays.
+LIVE_PANELS = {"world2d.js"}
+REAL_TARGETS = ("usb", "pi", "robot")
 
 CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
           ".css": "text/css; charset=utf-8", ".json": "application/json",
@@ -46,6 +54,7 @@ class Bench:
         self.repo = REPO
         # Where the robot stack is. sim: host builds on this Mac (bench/run_sim.py).
         # usb: real Uno on this Mac's USB, host tars_motor. pi: the real Pi via mission_relay.
+        # robot: this bench runs ON the Pi, direct TCP to the local stack (like sim/usb).
         self.target = {"name": args.target, "motor": args.motor, "goto": args.goto,
                        "voice": args.voice, "relay": args.relay}
         self.plugins: dict[str, object] = {}
@@ -135,6 +144,20 @@ def make_handler(bench: Bench):
         def log_message(self, *_):
             pass
 
+        def _authorised(self, query: dict) -> bool:
+            """--token set: the page, the API and /events need it, once as ?token= (then a cookie)."""
+            token = getattr(bench.args, "token", "")
+            if not token:
+                return True
+            if hmac.compare_digest(query.get("token", ""), token):
+                self._set_cookie = f"bench_token={token}; Path=/; HttpOnly; SameSite=Strict"
+                return True
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == "bench_token" and hmac.compare_digest(v, token):
+                    return True
+            return False
+
         def _send(self, status: int, payload, ctype: str | None = None) -> None:
             if isinstance(payload, tuple):
                 payload, ctype = payload
@@ -148,6 +171,8 @@ def make_handler(bench: Bench):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            if getattr(self, "_set_cookie", ""):
+                self.send_header("Set-Cookie", self._set_cookie)
             self.end_headers()
             self.wfile.write(body)
 
@@ -155,6 +180,10 @@ def make_handler(bench: Bench):
             u = urllib.parse.urlparse(self.path)
             path = u.path
             query = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query).items()}
+            self._set_cookie = ""
+            if not self._authorised(query):
+                return self._send(401, "TARS bench: add ?token=<the bench token> to the address "
+                                       "(bench.py --token / BENCH_TOKEN on the robot)")
             if method == "GET" and path == "/events":
                 return self._events()
             if method == "GET" and path == "/panels.json":
@@ -162,10 +191,13 @@ def make_handler(bench: Bench):
                 names = sorted(f for f in os.listdir(pdir) if f.endswith(".js")) if os.path.isdir(pdir) else []
                 hidden = []
                 if bench.target["name"] != "sim" and not getattr(bench.args, "all_panels", False):
-                    hidden = [n for n in names if n in SIM_ONLY_PANELS]
-                    names = [n for n in names if n not in SIM_ONLY_PANELS]
+                    live = "live" in bench.plugins
+                    drop = {n for n in SIM_ONLY_PANELS if not (live and n in LIVE_PANELS)}
+                    hidden = [n for n in names if n in drop]
+                    names = [n for n in names if n not in drop]
                 return self._send(200, {"panels": names, "hidden": hidden, "plugins": sorted(bench.plugins),
-                                        "target": bench.target, "real": bench.target["name"] != "sim"})
+                                        "target": bench.target, "real": bench.target["name"] != "sim",
+                                        "live": "live" in bench.plugins})
             fn = bench._routes.get((method, path))
             if fn:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -220,10 +252,14 @@ def make_handler(bench: Bench):
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="TARS digital test bench (laptop only)")
+    ap = argparse.ArgumentParser(description="TARS digital test bench (laptop, or --target robot on the Pi)")
     ap.add_argument("--port", type=int, default=8770, help="browser port (default 8770)")
-    ap.add_argument("--bind", default="127.0.0.1", help="listen address (default localhost only)")
-    ap.add_argument("--target", choices=["sim", "usb", "pi"], default="sim")
+    ap.add_argument("--bind", default="127.0.0.1", help="listen address (default localhost only; "
+                    "anything else needs --token)")
+    ap.add_argument("--target", choices=["sim", "usb", "pi", "robot"], default="sim",
+                    help="robot = this bench runs ON the Pi, next to the real stack")
+    ap.add_argument("--token", default=os.environ.get("BENCH_TOKEN", ""),
+                    help="required to open the page when --bind is not localhost (env BENCH_TOKEN)")
     ap.add_argument("--motor", default="127.0.0.1:5555", help="tars_motor host:port (sim/usb)")
     ap.add_argument("--goto", default="127.0.0.1:5570", help="goto host:port (sim/usb)")
     ap.add_argument("--voice", default="127.0.0.1:5574", help="tars_voice laptop port (sim/usb)")
@@ -247,6 +283,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         if a.laptop_stt:
             # the laptop only sends and receives: speech-to-text runs on the Pi (tars_voice AUDIO)
             ap.error("--laptop-stt is not allowed with --target pi: the Pi transcribes the raw AUDIO itself")
+    if a.bind not in ("127.0.0.1", "localhost", "::1") and len(a.token) < 12:
+        # the page can drive the robot: never open it to the network without a key
+        ap.error(f"--bind {a.bind} needs --token <at least 12 characters> (or BENCH_TOKEN)")
+    if a.target == "robot" and a.laptop_stt:
+        ap.error("--laptop-stt makes no sense with --target robot: tars_voice transcribes on the Pi")
     if a.laptop_stt and not (os.path.exists(a.stt_cli) and os.path.exists(a.model)):
         ap.error(f"--laptop-stt needs {a.stt_cli} (make -C iter2-autonomy/voice host) and {a.model}")
     return a
@@ -258,7 +299,8 @@ def main(argv=None) -> int:
     load_plugins(bench, [p for p in args.plugins.split(",") if p] or None)
     srv = ThreadingHTTPServer((args.bind, args.port), make_handler(bench))
     srv.daemon_threads = True
-    print(f"bench: http://{args.bind}:{args.port}/  target={args.target}", file=sys.stderr)
+    print(f"bench: http://{args.bind}:{args.port}/{'?token=<token>' if args.token else ''}  target={args.target}",
+          file=sys.stderr)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

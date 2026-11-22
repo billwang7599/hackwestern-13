@@ -554,7 +554,9 @@ def robot_send_text(text: str) -> dict:
 def relay_only() -> bool:
     """The real robot (--target pi): the laptop only sends and receives. No whisper, no
     classifier, no shadow tars_voice here; the Pi's tars_voice decides and we show its reply."""
-    return bool(_bench) and (_bench.target or {}).get("name") == "pi"
+    # pi: the laptop relays to the Pi. robot: the bench runs on the Pi, and tars_voice there already
+    # does the transcribing, so the bench never runs a second whisper next to it.
+    return bool(_bench) and (_bench.target or {}).get("name") in ("pi", "robot")
 
 
 def parse_heard(reply: str) -> dict:

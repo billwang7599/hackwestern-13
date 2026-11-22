@@ -135,6 +135,16 @@ def serve():
                              '(iter2-autonomy/voice/get_model.sh)')
         commands['voice'] = [str(binary), '-c', 'voice.conf']
         cwds['voice'] = str(voice_dir)
+    # The bench's live view ON the robot: the sim's 2D room page drawn from the real robot (bench/plugins/live.py),
+    # opened from a laptop at http://<pi-ip>:8770/?token=<TARS_BENCH_TOKEN>. The page can drive, hence the token.
+    bench = HERE.parents[1] / 'bench/bench.py'
+    if env.get('TARS_BENCH_TOKEN'):
+        if len(env['TARS_BENCH_TOKEN']) < 12:
+            raise ValueError('TARS_BENCH_TOKEN must be at least 12 characters')
+        if not bench.is_file():
+            raise ValueError(f'TARS_BENCH_TOKEN set but no {bench}')
+        commands['bench'] = [sys.executable, str(bench), '--target', 'robot', '--bind', '0.0.0.0',
+                             '--port', env.get('TARS_BENCH_PORT', '8770')]
     relay = HERE.parent / 'mission/build/mission_relay'
     if env.get('MISSION_KEY'):
         if not relay.is_file():
@@ -145,6 +155,8 @@ def serve():
         child_env = env
         if name in ('motor', 'headless'):
             child_env = dict(env, TARS_KEYBOARD_AUTH=keyboard_auth)
+        elif name == 'bench':
+            child_env = dict(env, BENCH_TOKEN=env['TARS_BENCH_TOKEN'])   # via env, not argv (ps shows argv)
         elif name == 'goto':
             preload = str(nav / 'build/loopback_bind.so')
             if not os.path.isfile(preload):
@@ -168,7 +180,8 @@ def serve():
         admin.listen(4)
         # Refuse to compete with an independently running proxy.
         for port in (5555, *phone_ports, *((5570, 5571, 5572) if 'goto' in commands else ()),
-                     *((5574,) if 'voice' in commands else ()), *((5575,) if 'relay' in commands else ())):
+                     *((5574,) if 'voice' in commands else ()), *((5575,) if 'relay' in commands else ()),
+                     *((int(env.get('TARS_BENCH_PORT', '8770')),) if 'bench' in commands else ())):
             with socket.socket() as probe:
                 if probe.connect_ex(('127.0.0.1', port)) == 0:
                     raise RuntimeError(f'Port {port} already in use; stop the existing proxy first')

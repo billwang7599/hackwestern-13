@@ -17,6 +17,38 @@ Every part runs either **simulated** or **real**, and you can mix them:
 `bench.py --target sim|usb|pi` says where the robot stack is. `bench/run_sim.py` starts
 the whole simulated stack and then the bench.
 
+## Live view: the sim's page on the Pi, with the real robot in it
+
+The same bench runs **on the Pi** next to the real stack (`--target robot`: direct TCP to `tars_motor` /
+`goto` / `tars_voice`, like sim/usb). `plugins/live.py` then feeds the 2D room view (`world2d`) from
+the real robot instead of the world sim, and you open it from a laptop:
+
+```sh
+# on the Pi, with the rest of the stack (service.py starts it when TARS_BENCH_TOKEN is set):
+TARS_BENCH_TOKEN=<12+ chars> TARS_ENABLE_GOTO=1 ... python3 iter2-autonomy/dashboard/service.py start
+# or by hand:
+BENCH_TOKEN=<12+ chars> python3 bench/bench.py --target robot --bind 0.0.0.0
+# on the laptop's browser (same Wi-Fi):
+http://<pi-ip>:8770/?token=<token>
+```
+
+| On the view | Comes from (real robot) |
+|---|---|
+| the car | `goto NAV`: the phone's ARKit pose on goto's map (red outline = dead reckoning / stale) |
+| orange / teal cells | `goto NAV GRID`: obstacles / free floor from the iPhone LiDAR (maps plugin layer) |
+| blue line | `goto NAV ROUTE` |
+| dashed rings | `goto MEMORY`: objects it remembers (fresh / stale / gone colours); right-click → GOTO |
+| banner | goto STATUS, the guard from tars_motor STATUS |
+
+No world sim, room editor, faults or car physics on this target. The frame is goto's map with the room
+origin at the map origin (world x = map z, y = map x, as in the sim). **The page can drive the robot**, so
+`--bind` anything but localhost refuses to start without a token (`--token` / `BENCH_TOKEN`, ≥ 12
+characters). The first `?token=` sets an HttpOnly cookie, and everything (page, API, `/events`) needs one
+or the other. The laptop only shows it: no processing runs on the laptop.
+Test: `python3 bench/tests/test_live.py` (sim stack as the stand-in robot. The live pose matches the sim
+truth to 1 cm and 0° standing and after a GOTO, and the median is 1 cm / 0° while driving. Token gate.)
+**Not run on the Pi yet.**
+
 ## Contract (read before adding a part)
 
 **Plugins** (server side): `bench/plugins/<name>.py` with `setup(bench)` (and optional
