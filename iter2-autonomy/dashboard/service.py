@@ -245,6 +245,8 @@ def serve():
         print(f'Started {name}: {children[name].pid}', flush=True)
     def terminate(proc):
         if proc.poll() is None:
+            try: os.kill(proc.pid, signal.SIGCONT)   # a paused detect must wake to handle SIGTERM
+            except OSError: pass
             proc.terminate()
             try:
                 proc.wait(timeout=5)
@@ -252,6 +254,7 @@ def serve():
                 proc.kill()
                 proc.wait(timeout=2)
 
+    detect_gate = DetectGate()
     with socket.socket() as admin:
         admin.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         admin.bind(ADDRESS)
@@ -286,6 +289,7 @@ def serve():
                             client.sendall(json.dumps({k: {'pid': v.pid, 'running': v.poll() is None} for k, v in children.items()}).encode() + b'\n')
                         except OSError:
                             pass
+                detect_gate.tick(children)
                 for name, proc in list(children.items()):
                     if running and proc.poll() is not None:
                         if name == 'headless' and commands[name][-1].endswith('/dashboard.py'):
@@ -310,6 +314,55 @@ def serve():
             for name in reversed(commands):
                 if name in children:
                     terminate(children[name])
+
+
+class DetectGate:
+    """CPU budget: YOLO (detect, the heaviest child) runs only while goto needs it.
+
+    goto idle for IDLE_S -> SIGSTOP detect; goto leaves idle (GOTO / SCAN / RECALL) -> SIGCONT at
+    once. goto unreachable -> detect keeps running (fail open). TARS_DETECT_ALWAYS=1 turns this off.
+    Speech (tars_voice) is never paused: a spoken stop must always be heard.
+    """
+    IDLE_S = 3.0
+
+    def __init__(self):
+        self.paused = False
+        self.idle_since = None
+
+    @staticmethod
+    def goto_state():
+        try:
+            with socket.create_connection(('127.0.0.1', 5570), timeout=0.2) as sock:
+                sock.settimeout(0.3)
+                sock.sendall(b'STATUS\n')
+                line = sock.makefile('rb').readline(4096).decode('ascii', 'replace')
+        except OSError:
+            return None
+        for part in line.split():
+            if part.startswith('state='):
+                return part[6:]
+        return None
+
+    def tick(self, children):
+        proc = children.get('detect')
+        if proc is None or proc.poll() is not None or os.environ.get('TARS_DETECT_ALWAYS') == '1':
+            self.paused, self.idle_since = False, None
+            return
+        state = self.goto_state()
+        now = time.monotonic()
+        if state != 'idle':                       # busy, or goto unreachable: YOLO on
+            self.idle_since = None
+            if self.paused:
+                os.kill(proc.pid, signal.SIGCONT)
+                self.paused = False
+                print(f'detect resumed (goto {state or "unreachable"})', flush=True)
+            return
+        if self.idle_since is None:
+            self.idle_since = now
+        if not self.paused and now - self.idle_since >= self.IDLE_S:
+            os.kill(proc.pid, signal.SIGSTOP)
+            self.paused = True
+            print('detect paused (goto idle)', flush=True)
 
 
 def gui_mode():
