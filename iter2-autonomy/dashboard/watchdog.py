@@ -26,6 +26,15 @@ def main():
     voice = STATE / 'voice-dir'
     if voice.is_file() and 'TARS_ENABLE_VOICE' not in os.environ:
         env.update(TARS_ENABLE_VOICE='1', TARS_VOICE_DIR=voice.read_text().strip())
+    # Bench live view (http://<pi-ip>:8770/?token=...): on when state/bench-token holds the token.
+    token = STATE / 'bench-token'
+    if token.is_file() and 'TARS_BENCH_TOKEN' not in os.environ:
+        env['TARS_BENCH_TOKEN'] = token.read_text().strip()
+    # Autonomy: state/goto-mode = 0 | map | 1 (1 = GOTO drives, detect on); state/nav-dir = goto build to use.
+    for name, key in (('goto-mode', 'TARS_ENABLE_GOTO'), ('nav-dir', 'TARS_NAV_DIR')):
+        f = STATE / name
+        if f.is_file() and key not in os.environ:
+            env[key] = f.read_text().strip()
     proc = None
     misses = 0
     while True:
