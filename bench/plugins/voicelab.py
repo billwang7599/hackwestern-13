@@ -551,14 +551,49 @@ def robot_send_text(text: str) -> dict:
         return {"line": "HEAR " + text, "error": f"{type(e).__name__}: {e}"}
 
 
+def relay_only() -> bool:
+    """The real robot (--target pi): the laptop only sends and receives. No whisper, no
+    classifier, no shadow tars_voice here; the Pi's tars_voice decides and we show its reply."""
+    # pi: the laptop relays to the Pi. robot: the bench runs on the Pi, and tars_voice there already
+    # does the transcribing, so the bench never runs a second whisper next to it.
+    return bool(_bench) and (_bench.target or {}).get("name") in ("pi", "robot")
+
+
+def parse_heard(reply: str) -> dict:
+    """tars_voice's 'OK heard <action> <intent> <prob> [<text>]' -> the result fields."""
+    p = (reply or "").split(" ", 5)
+    if len(p) >= 5 and p[0] == "OK" and p[1] == "heard":
+        try:
+            prob = float(p[4])
+        except ValueError:
+            prob = 0.0
+        return {"action": p[2], "intent": p[3], "prob": prob, "heard": p[5] if len(p) > 5 else ""}
+    return {}
+
+
+def relay_result(text: str, src: str, robot: dict) -> dict:
+    """A result built only from what the robot sent back (relay_only mode)."""
+    h = parse_heard(robot.get("reply", "")) if not robot.get("error") else {}
+    if not h and not robot.get("error"):
+        robot = dict(robot, error=f"unexpected reply: {robot.get('reply')!r}")
+    shown = h.get("heard") or text
+    return {"text": shown, "src": src, "where": "pi",
+            "decision": {"action": h.get("action", "reject" if robot.get("error") else "-"),
+                         "intent": h.get("intent", "-"), "prob": h.get("prob", 0.0)},
+            "sent": [], "robot": robot,
+            "notes": ["decided on the Pi (tars_voice); the laptop only relayed it"]}
+
+
 def robot_send_audio(data: bytes, transcript: str) -> dict:
     rb = _robot()
     if not rb:
         return {"error": "robot plugin not loaded: nothing sent"}
     line = f"AUDIO {len(data)}"
     try:
-        return {"line": line, "reply": rb.send("voice", line, data=data)}
+        return {"line": line, "reply": rb.send("voice", line, data=data, timeout=20)}
     except TypeError:
+        if relay_only():
+            return {"line": line, "error": "robot link can't send audio; not transcribing on the laptop"}
         # robot.send has no binary payload: do what mission --laptop-stt does
         r = robot_send_text(transcript)
         r["note"] = "robot.send(dest, line, data=) not available: sent the LAPTOP transcript as HEAR"
@@ -744,6 +779,12 @@ def _r_text(q, body):
     if not text:
         return 400, {"error": "empty text"}
     mode = b.get("mode", "ptt")
+    if relay_only():
+        if not _state["send"]:
+            return 409, {"error": "dry run is off on the real robot (the Pi decides): turn Send on"}
+        r = relay_result(text, "text", robot_send_text(text))
+        _publish_result(r)
+        return 200, r
     r = analyse(text, mode)
     r["src"] = "text"
     if _state["send"]:
@@ -754,6 +795,15 @@ def _r_text(q, body):
 
 def _r_audio(q, body):
     mode = q.get("mode", "ptt")
+    if relay_only():
+        if not _state["send"]:
+            return 409, {"error": "dry run is off on the real robot (the Pi decides): turn Send on"}
+        if len(body) < 44 or len(body) > 15 * SR * 2 + 4096:
+            return 400, {"error": "audio must be a 0.1-15 s 16 kHz mono WAV"}
+        # the browser already sends 16 kHz mono WAV; pass the bytes through untouched
+        r = relay_result("(audio)", "audio", robot_send_audio(body, ""))
+        _publish_result(r)
+        return 200, r
     try:
         r = analyse_audio(body, mode)
     except ValueError as e:
@@ -778,6 +828,8 @@ def _r_send(q, body):
 
 def _r_batch(q, body):
     opts = _json(body)
+    if relay_only():
+        return 409, {"error": "batch runs whisper + the classifier on the laptop: use it on the sim target"}
     t = _batch["thread"]
     if t and t.is_alive():
         return 409, {"error": "a batch is already running"}

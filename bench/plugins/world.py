@@ -375,6 +375,20 @@ def _memory_op(m: dict) -> tuple[int, dict]:
 def setup(bench) -> None:
     global _bench
     _bench = bench
+    if bench.target["name"] != "sim":
+        # real robot: there is no world sim; plugins/live.py publishes topic `world` from the robot.
+        # Only GOTO from the view is kept (it goes through the robot plugin like everything else).
+        def r_goto_real(q, b):
+            label = " ".join(str(_body(b).get("label", "")).split())
+            r = _robot()
+            if r is None or not label:
+                return 400, {"ok": False, "error": "no robot link or no label"}
+            rep = r.send("goto", f"GOTO {label}", src="world2d")
+            bench.log("world", f"GOTO {label} -> {rep}")
+            return 200, {"ok": rep.startswith("OK"), "reply": rep}
+        bench.route("POST", "/api/world/goto", r_goto_real)
+        bench.route("GET", "/api/world/rooms", lambda q, b: (200, {"rooms": []}))
+        return
 
     def r_room(q, b):
         with _lock:

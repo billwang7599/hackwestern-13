@@ -192,6 +192,45 @@ go through the same backtrack and re-plan path as above.
 printf 'GOTO trash can\n' | nc 127.0.0.1 5570                             # or the voice app
 ```
 
+### The demo, one command (everything real or nothing)
+
+```sh
+TARS_DEMO=1 TARS_MOTOR_BACKEND=uno TARS_MOTOR_DEVICE=/dev/<uno> TARS_BENCH_TOKEN=<12+ chars> \
+  python3 iter2-autonomy/dashboard/service.py start
+# laptop browser: http://<pi-ip>:8770/?token=<token>   (the live view)
+```
+
+`TARS_DEMO=1` turns on autonomy (`TARS_ENABLE_GOTO=1`), YOLO on the phone camera, voice and the live view.
+It **refuses to start** if the motors would be the stub, or if `detect`, the YOLO model, `tars_voice` or the
+token is missing, and lists what to fix. It also starts `goto` with no remembered objects: an old
+`memory.txt` from testing is moved to `memory.txt.before-demo-<time>`, not deleted. Test:
+`python3 iter2-autonomy/dashboard/test_demo_preflight.py`.
+
+### Real robot mode: what replaces each sim part
+
+`bench/run_sim.py` fakes the car, the phone and YOLO. On the Pi, `service.py` runs the real ones:
+
+| Sim (laptop) | Robot (Pi, `TARS_ENABLE_GOTO=1 python3 iter2-autonomy/dashboard/service.py start`) |
+|---|---|
+| virtual SM11 (`bench/car/vuno`) | the Uno: `TARS_MOTOR_BACKEND=uno TARS_MOTOR_DEVICE=/dev/...` |
+| `worldsim.py` guard verdicts → `tars_motor` 5568 | `lidar_guard` on the phone's LiDAR (5562) |
+| `worldsim.py` LDR1 pose + depth → `goto` 5572 | `lidar_guard --nav-port 5572` tees the phone's packets |
+| `worldsim.py` YOLO JSON → `goto` 5571 | **`detect --camera broker:5566`**: YOLO-World on the iPhone camera, via Andrew's `rgb_broker.py` (the YOLOX worker is turned off, per the CPU table in `docs/ARCHITECTURE.md`; `TARS_KEEP_YOLOX=1` keeps it) |
+| `tars_voice_host`, text box | `tars_voice` from `TARS_VOICE_DIR` with `TARS_ENABLE_VOICE=1` (AirPods via the phone, 5577) |
+| bench `--target sim` | `mission_relay` (started when `MISSION_KEY` is set), laptop: `bench.py --target pi --relay <pi-ip>` |
+
+The phone sends its camera in **sensor orientation** (landscape, ~640 px wide, ~5 fps). `detect` turns each
+frame upright with `--rotate` (`TARS_DETECT_ROTATE`, default 270 = a quarter turn counter-clockwise, matching
+the app's own `.left` preview). **Check it once on the Pi** before the first GOTO:
+
+```sh
+build/detect --camera broker --nomodel --frames 1 --rotate 270 --save-frame /tmp/up.ppm --no-udp
+```
+
+Open `/tmp/up.ppm` and make sure the room is the right way up. If it isn't, try 90. Also set `hfov_deg` in the
+**Pi's** `goto.conf` (the repo copy keeps the C270's 60 for the tests) to the upright frame's horizontal field
+of view. That isn't measured yet. Put an object at a known bearing and compare it with `goto STATUS`.
+
 ## Build
 
 ```sh
@@ -202,6 +241,11 @@ make -C iter2-autonomy/goto deploy PI_HOST=qnxuser@<pi-ip>
 ```
 
 `goto` uses only libc, BSD sockets (`-lsocket`) and `-lm`. `detect` also needs `-lonnxruntime` and `-lcamapi`.
+
+**On the Pi itself** (Andrew's route, no SDP): `sh iter2-autonomy/edge-ai/setup-qnx.sh` once (QNX's ONNX
+Runtime 1.24.4 + libjpeg-turbo packages), then `sh iter2-autonomy/goto/build-native.sh` builds `goto`,
+`loopback_bind.so` and `detect` (`-DHAVE_ORT -DHAVE_JPEG`: the iPhone broker source, no camapi). Copy
+`models/yolo_world.onnx` + `models/labels.txt` from the laptop (`get_model.sh`) into `iter2-autonomy/goto/models/`.
 
 ### Model (laptop)
 

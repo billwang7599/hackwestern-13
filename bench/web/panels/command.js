@@ -49,7 +49,7 @@
         <div class="cmd-hist"><div class="cmd-empty">Nothing yet. Click a suggestion above to try it.</div></div>`;
       const $ = s => el.querySelector(s);
       const sw = $('.cmd-send'), input = $('.txt-in'), micBtn = $('.cmd-mic'), hist = $('.cmd-hist');
-      const target = (Bench.info.target || {}).name, real = target === 'pi' || target === 'usb';
+      const target = (Bench.info.target || {}).name, real = target === 'pi' || target === 'usb' || target === 'robot';
       let info = {}, available = Bench.info.plugins.includes('voicelab');
 
       function paintSwitch() {
@@ -58,6 +58,8 @@
         sw.setAttribute('aria-checked', on);
         $('.sw-title').textContent = on ? (real ? 'Sending to the REAL robot' : 'Send to robot: ON') : 'Dry run: nothing moves';
         $('.sw-note').textContent = !available ? 'voice lab plugin not loaded' : !info.robot_plugin ? 'robot link not loaded: dry run only'
+          : target === 'pi' || target === 'robot' ? (on ? 'Sent as-is; the Pi transcribes and decides. Click to stop sending.'
+                                  : 'Off: nothing is sent (no dry run here, the Pi decides). Click to send.')
           : on ? 'The robot hears it and acts. Click to switch to dry run.' : 'Only shows what it would do. Click to send for real.';
       }
       async function refresh() {

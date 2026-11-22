@@ -21,8 +21,8 @@ gearmotors + a caster, no balancing). The outer two are arms swung by
 tips over or bumps into something. **Build guide: [docs/tars_build.md](docs/tars_build.md).**
 
 ```
-[Mac laptop]  voice.py: listen() → Claude (humor/honesty %) → speak()  iter1-wasd/laptop/
-              teleop.py (keys) · switch_teleop.py (Switch controller)
+[Mac laptop]  teleop.py (keys) · switch_teleop.py (Switch controller)  iter1-wasd/laptop/
+              (sender/receiver only; voice runs on the Pi: iter2-autonomy/voice/)
      │  TCP :5555, line protocol over Wi-Fi
      ▼
 [Pi 5 · QNX 8.0]  tars_motor: SCHED_RR control thread @50 Hz,          iter1-wasd/pi/
@@ -58,7 +58,7 @@ Paths moved on 2026-11-21; [docs/MOVED.md](docs/MOVED.md) has the old → new ta
 iter1-wasd/
   pi/              tars_motor: C motor server for QNX (Makefile: make / deploy / run / host / test)
   uno/             Arduino Uno firmware (uno/tars/tars.ino) + host unit tests (uno/test)
-  laptop/          tars_client.py (lib), teleop.py, switch_teleop.py, wheel_cal.py, voice.py (LLM brain)
+  laptop/          tars_client.py (lib), teleop.py, switch_teleop.py, wheel_cal.py
 iter2-autonomy/
   voice/           offline speech -> intent classifier (whisper.cpp, C)
   goto/            go-to controller + YOLO-World detector + object memory + nav.c A* (C/C++)
@@ -164,8 +164,6 @@ python iter1-wasd/laptop/tars_client.py tars.local     # ping + status
 python iter1-wasd/laptop/teleop.py tars.local          # window: HOLD WASD to drive, release = stop (--terminal: old mode)
 python iter1-wasd/laptop/wheel_cal.py move 1000         # exact moves / calibration (see docs/PI_TEST.md §5)
 python iter1-wasd/laptop/switch_teleop.py tars.local   # Switch controller (--show to map buttons)
-python iter1-wasd/laptop/voice.py --no-robot           # brain only
-python iter1-wasd/laptop/voice.py --host tars.local    # the whole thing
 ```
 
 **No Pi yet?** Run `make -C iter1-wasd/pi host && iter1-wasd/pi/build/tars_motor_host -b stub`, then
@@ -266,8 +264,7 @@ The old Pi↔Pico UART + TB6612 wiring still works with `-b pico` (see `archive/
 - [ ] Chassis: middle slabs on the wheeled base + caster, arms pivot at mid-height,
       clear of the floor
 - [ ] Arms straight before power-up (that's 0°); TARS standing when the Uno boots
-- [ ] `voice.py` end-to-end; Bluetooth speaker on the robot paired to the laptop
-- [ ] Real STT in `listen()` (or push-to-talk)
+- [ ] Voice on the Pi end to end (`make -C iter2-autonomy/voice native`, phone mic via AirPods)
 - [ ] Obstacle sensor wired into `obstacle.c` (or read by the Uno and sent as a line)
 - [ ] Demo script: "set humor to 0%" / "100%", "come here", "wave"
 - [ ] **Batteries charged**, spare SD card with the working image, phone hotspot on

@@ -357,8 +357,9 @@ const Bench = (() => {
     const t = info.target || {};
     // SIM vs REAL ROBOT: always visible, so nobody mistakes the sim for the car (or the reverse)
     const badge = document.getElementById('badge');
-    const real = t.name === 'pi' || t.name === 'usb';
-    badgeBase = t.name === 'pi' ? 'REAL ROBOT (Pi)' : t.name === 'usb' ? 'REAL ROBOT (Uno on USB)' : 'SIM';
+    const real = t.name === 'pi' || t.name === 'usb' || t.name === 'robot';
+    badgeBase = t.name === 'pi' ? 'REAL ROBOT (Pi)' : t.name === 'robot' ? 'REAL ROBOT (bench on the Pi)'
+      : t.name === 'usb' ? 'REAL ROBOT (Uno on USB)' : 'SIM';
     badge.textContent = badgeBase;
     badge.className = 'badge ' + (real ? 'real' : 'sim');
     badge.title += `\ntarget: ${t.name}` + (t.name === 'pi' ? ` (relay ${t.relay})` : ` (motor ${t.motor})`) +

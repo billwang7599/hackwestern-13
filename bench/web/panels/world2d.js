@@ -1,4 +1,6 @@
 // world2d: top-down view of the SIMULATED room, and a course editor.
+// LIVE (Bench.info.live, bench --target robot|pi): the same view drawn from the REAL robot (plugins/live.py:
+// goto's pose, route and memory; the maps layer paints goto's LiDAR map). No editing, no sim controls.
 // Every edit goes through the world sim's control port (POST /api/world/ctl), which
 // re-casts the guard rays, detections, the phone's map feed and the car's collision walls.
 'use strict';
@@ -35,8 +37,17 @@
     id: 'world2d', title: 'Sim world (2D)', view: '🗺 Room (sim)', order: 5, wide: true, area: 'view',
     help: 'Top-down view of the simulated room: the car, its route, what the camera sees and the go-to target.',
     mount(el, B) {
+      const LIVE = !!(B.info && B.info.live);
       // the SIM badge is the shell's header badge (always visible); this adds the car kind to it
-      const badge = {set textContent(t) { B.setBadgeDetail(t.replace(/^SIM · /, '')); }};
+      const badge = {set textContent(t) { B.setBadgeDetail(t.replace(/^(SIM|LIVE) · /, '')); }};
+      let gridBox = null;    // LIVE: goto's known-map bounds in world metres, from topic navgrid
+      B.on('navgrid', g => {
+        const b = g && g.box && g.box !== '-' ? String(g.box).split(',').map(Number) : null;
+        if (!b || b.length < 4) { gridBox = null; return; }
+        const res = g.res || 0.1, o = g.origin || [-10, -10];     // cell (ix, iz) -> world (x = map z, y = map x)
+        gridBox = [o[1] + b[1] * res, o[0] + b[0] * res, o[1] + (b[1] + b[3]) * res, o[0] + (b[0] + b[2]) * res];
+        dirty = true;
+      });
 
       let W = null;          // latest world event
       let motorPose = null;  // tars_motor dead-reckoned pose (world frame)
@@ -66,6 +77,9 @@
         carStartBtn(), resetMapBtn(),
         editBtn, h('span', {style: {flex: 1}}), legendBtn);
       css(bar, {display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px'});
+      if (LIVE) bar.replaceChildren(h('span', {class: 'ok', style: {fontWeight: 600}}, 'LIVE: the real robot'),
+        h('span', {class: 'dim', style: {fontSize: '12px'}}, 'goto\'s LiDAR map, its pose, route and memory. Nothing here is simulated.'),
+        h('span', {style: {flex: 1}}), legendBtn);
       const toolBar = h('div');
       css(toolBar, {display: 'none', gap: '4px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px',
         padding: '4px 6px', border: '1px dashed var(--accent)', borderRadius: '6px'});
@@ -88,7 +102,7 @@
         if (!on) { setTool('select'); sel = null; }
         dirty = true; window.dispatchEvent(new Event('resize'));
       }
-      B.on('page', p => { if ((p === 'room') !== editing) setEdit(p === 'room'); });
+      B.on('page', p => { if (!LIVE && (p === 'room') !== editing) setEdit(p === 'room'); });
       const canvas = h('canvas', {tabindex: 0, title: 'Click here, then hold W A S D to drive'});
       css(canvas, {position: 'absolute', inset: 0, height: '100%', cursor: 'default', outline: 'none'});
       const seeing = h('div', {class: 'mono'});
@@ -99,11 +113,19 @@
         const i = h('i', {class: 'lg-sw lg-' + kind}); i.style.setProperty('--c', col);   // a custom property needs setProperty
         return h('span', {class: 'lg-item', title: tip || text}, i, text);
       };
-      const legend = h('div', {class: 'map-legend', role: 'note', 'aria-label': 'map key'},
+      // LIVE (real robot): no sim truth, no drawn walls; the car is goto's pose and the map is goto's LiDAR grid
+      const poseKeys = LIVE ? [
+        sw('car', '#dbe4ea', 'robot (goto pose)', 'White car = the robot where goto thinks it is: the phone’s ARKit pose (red outline = dead reckoning or stale)'),
+        sw('cell', 'rgba(239,140,60,.8)', 'obstacle (LiDAR)', 'Orange cells = obstacles on goto’s LiDAR map'),
+        sw('cell', 'rgba(76,195,170,.35)', 'free floor', 'Teal cells = floor goto has seen and knows is free'),
+      ] : [
         sw('car', '#dbe4ea', 'car (real pose)', 'White car = where the car really is (sim truth). Red tick = its heading.'),
         sw('diamond', '#e6b450', 'phone pose', 'Amber outline = where the phone thinks the car is: what goto is told (red = tracking lost)'),
         sw('ring', '#a77ad6', 'wheel estimate', 'Purple circle = tars_motor’s dead-reckoned pose from wheel counts'),
         sw('wall', '#c8d3db', 'wall'),
+      ];
+      const legend = h('div', {class: 'map-legend', role: 'note', 'aria-label': 'map key'},
+        ...poseKeys,
         sw('line', '#5aa9e6', 'planned route', 'Blue line = goto’s route; the white dot is the leg it is driving now'),
         sw('line', 'rgba(219,228,234,.45)', 'driven', 'Faint line = the path the car actually drove'),
         sw('target', '#ffffff', 'go-to target', 'Pulsing white ring = what goto is going to'),
@@ -129,7 +151,7 @@
       side.append(faultBox, sliderBox);
       const sensors = h('div', {class: 'mono'});
       css(sensors, {fontSize: '12px', marginTop: '6px', whiteSpace: 'pre-wrap'});
-      B.register({id: 'world-tools', title: 'Faults and sensor noise (sim)', short: '⚠ Faults & noise', order: 10, area: 'room',
+      if (!LIVE) B.register({id: 'world-tools', title: 'Faults and sensor noise (sim)', short: '⚠ Faults & noise', order: 10, area: 'room',
         help: 'Break things on purpose to see how the robot copes. Faults toggle on click; sliders change the sim sensors live.',
         mount(el2) { el2.append(banner, sensors, side); }});
       // Room page: every object and wall as a table, with delete buttons and undo
@@ -139,7 +161,7 @@
       const wallsBox = h('details', {}, h('summary', {class: 'dim', style: {cursor: 'pointer', fontSize: '12px', margin: '8px 0 4px'}}, 'Walls'),
         h('div', {class: 'tbl-scroll', style: {maxHeight: '200px'}}, h('table', {class: 'dt', 'data-k': 'walls'},
           h('thead', {}, h('tr', {}, h('th', {}, 'Wall'), h('th', {}, 'From (x, y)'), h('th', {}, 'To (x, y)'), h('th', {}, 'Length'), h('th', {}, ''))), wallTbody)));
-      B.register({id: 'room-objects', title: 'Things in the room', short: '📦 Things', order: 1, area: 'room',
+      if (!LIVE) B.register({id: 'room-objects', title: 'Things in the room', short: '📦 Things', order: 1, area: 'room',
         help: 'Every object in the sim room. Click a row to select it on the map; 🗑 deletes it (Undo brings it back). You can also right-click it on the map → Delete.',
         mount(el2) {
           el2.append(h('div', {class: 'toolbar'}, delSelBtn,
@@ -216,7 +238,11 @@
         const [x, y] = ev2w(ev);
         const o = hitObj(x, y), hw = o ? null : hitWall(x, y);
         const items = [];
-        if (o) {
+        if (LIVE) {
+          if (o && o.label) items.push(h('div', {class: 'dim'}, `${o.label} (${o.state || 'remembered'})`),
+            h('button', {onclick: () => { closeMenu(); sendGoto(o.label); }}, `➜ GOTO ${o.label}`));
+          else items.push(h('div', {class: 'dim'}, 'right-click a remembered object to send the robot there'));
+        } else if (o) {
           sel = {kind: 'obj', id: o.id};
           items.push(h('div', {class: 'dim'}, `${o.id} (${kindOf(o)})`),
             h('button', {class: 'danger', 'data-menu': 'delete', onclick: () => { closeMenu(); removeId(o.id); }}, `🗑 Delete ${o.id}`));
@@ -226,7 +252,7 @@
           items.push(h('div', {class: 'dim'}, `wall w${hw.i}`),
             h('button', {class: 'danger', 'data-menu': 'delete', onclick: () => { closeMenu(); removeId('w' + hw.i); }}, `🗑 Delete wall w${hw.i}`));
         } else items.push(h('div', {class: 'dim'}, 'nothing here: right-click an object or wall'));
-        if (!editing && B.openPage) items.push(h('button', {onclick: () => { closeMenu(); B.openPage('room'); }}, '✏ Edit room…'));
+        if (!LIVE && !editing && B.openPage) items.push(h('button', {onclick: () => { closeMenu(); B.openPage('room'); }}, '✏ Edit room…'));
         dirty = true;
         menu = h('div', {class: 'ctxmenu', role: 'menu'}, ...items);
         menu.style.left = Math.min(ev.clientX, innerWidth - 200) + 'px'; menu.style.top = Math.min(ev.clientY, innerHeight - 120) + 'px';
@@ -302,7 +328,7 @@
           if (cur && r.rooms.includes(cur)) roomSel.value = cur;
         } catch (e) { /* bench without world plugin */ }
       }
-      refreshRooms();
+      if (!LIVE) refreshRooms();
 
       function setTool(t) {
         tool = t;
@@ -320,6 +346,13 @@
         if (!r) return;
         let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
         for (const w of r.walls) { x0 = Math.min(x0, w[0], w[2]); x1 = Math.max(x1, w[0], w[2]); y0 = Math.min(y0, w[1], w[3]); y1 = Math.max(y1, w[1], w[3]); }
+        if (LIVE) {
+          const pts = [...trail, ...(W.route || []), ...r.objects.map(o => [o.x, o.y]), ...(W.truth ? [[W.truth.x, W.truth.y]] : [])];
+          if (gridBox) pts.push([gridBox[0], gridBox[1]], [gridBox[2], gridBox[3]]);
+          for (const [px, py] of pts) { x0 = Math.min(x0, px); x1 = Math.max(x1, px); y0 = Math.min(y0, py); y1 = Math.max(y1, py); }
+          if (x0 > x1) { x0 = -2; x1 = 2; y0 = -2; y1 = 2; }
+          x0 = Math.min(x0, -1.5); x1 = Math.max(x1, 1.5); y0 = Math.min(y0, -1.5); y1 = Math.max(y1, 1.5);
+        }
         if (x0 > x1) { x0 = -2; x1 = 2; y0 = -2; y1 = 2; }
         const pad = 0.4;
         const s = Math.min(cw / (x1 - x0 + 2 * pad), ch / (y1 - y0 + 2 * pad));
@@ -356,7 +389,7 @@
         const f = d && d.fields;
         let p = f && f.pose;
         if (typeof p === 'string') p = p.split(',').map(Number);
-        if (Array.isArray(p) && p.length >= 3 && W && W.room) {
+        if (!LIVE && Array.isArray(p) && p.length >= 3 && W && W.room) {
           const st = W.room.start, f0 = p[0] / 1000, l0 = -p[1] / 1000, th = -p[2] * Math.PI / 180;
           const c = Math.cos(st.th), s = Math.sin(st.th);
           motorPose = [st.x + c * f0 - s * l0, st.y + s * f0 + c * l0, st.th + th];
@@ -367,7 +400,10 @@
 
       // ---------- banner + sensor text
       function updateText() {
-        if (!W) { banner.textContent = 'waiting for the world sim… (start it with bench/run_sim.py)'; seeing.textContent = 'waiting for the sim room…'; return; }
+        if (!W) {
+          banner.textContent = LIVE ? 'waiting for the robot (goto NAV)…' : 'waiting for the world sim… (start it with bench/run_sim.py)';
+          seeing.textContent = LIVE ? 'waiting for the robot…' : 'waiting for the sim room…'; return;
+        }
         const dets = (W.dets || []);
         seeing.replaceChildren(h('span', {class: 'dim'}, 'Camera sees: '),
           dets.length ? h('span', {class: dets.some(d => d.fp) ? 'warn' : 'ok'}, dets.map(d => `${d.fp ? 'FALSE ' : ''}${d.label} ${d.conf ?? ''}`).join(', '))
@@ -375,8 +411,14 @@
         const g = W.goto;
         const parts = [];
         const car = W.car_kind === 'virtual' ? 'virtual SM11' : (W.truth && W.truth.stub ? 'STUB CAR (no physics)' : (W.car_kind || 'no car'));
-        badge.textContent = `SIM · ${car}`;
-        if (!W.alive) parts.push(h('span', {class: 'bad'}, 'world sim not responding'));
+        if (LIVE) {
+          const src = W.truth ? W.truth.src : 'no pose';
+          badge.textContent = `LIVE · real robot · pose ${src}`;
+          if (!W.alive) parts.push(h('span', {class: 'bad'}, 'goto not answering'));
+          else if (!W.truth) parts.push(h('span', {class: 'warn'}, 'no pose yet: is the phone feeding goto (MotionUSB started)?'));
+          else if (W.truth.src !== 'arkit') parts.push(h('span', {class: 'warn'}, `pose ${W.truth.src} (phone tracking lost?)`));
+        } else badge.textContent = `SIM · ${car}`;
+        if (!LIVE && !W.alive) parts.push(h('span', {class: 'bad'}, 'world sim not responding'));
         if (g && g.state && g.state !== 'idle') {
           parts.push(h('span', {}, `GOTO ${g.target || '?'}`), h('span', {class: 'warn'}, `→ ${String(g.state).toUpperCase()}`));
           if (g.path && g.path !== '0/0') parts.push(h('span', {class: 'dim'}, `leg ${g.path}`));
@@ -393,6 +435,10 @@
         banner.replaceChildren(...parts);
         const t = W.truth, p = W.phone;
         const fl = Object.keys(W.faults || {});
+        if (LIVE) {
+          seeing.replaceChildren(h('span', {class: 'dim'}, t ? `robot ${t.x.toFixed(2)}, ${t.y.toFixed(2)} m  ${(t.th * 180 / Math.PI).toFixed(0)}°  (${t.src})` : 'no pose'),
+            h('span', {class: 'dim'}, `  ·  remembers ${W.room.objects.length}`));
+        }
         sensors.textContent =
           `room ${W.room ? W.room.name : '?'}  ·  car ${t ? `${t.x.toFixed(2)}, ${t.y.toFixed(2)} m  ${(t.th * 180 / Math.PI).toFixed(0)}°  v ${(+t.v || 0).toFixed(2)} m/s${t.contact ? '  CONTACT' : ''}` : 'no truth'}` +
           `  ·  phone ${p ? (p.tracking ? 'tracking' : 'LIMITED') + ` ${p.points} pts` : 'silent'}` +
@@ -483,7 +529,7 @@
         // objects
         for (const o of r.objects) {
           const isSel = sel && sel.kind === 'obj' && sel.id === o.id;
-          const col = COLORS[o.label] || COLORS[''];
+          const col = o.remembered ? (MEMCOL[o.state] || MEMCOL.fresh) : (COLORS[o.label] || COLORS['']);
           ctx.fillStyle = col + (o.solid === false ? '22' : '66'); ctx.strokeStyle = isSel ? '#ffffff' : col; ctx.lineWidth = isSel ? 2.5 : 1.5;
           if (o.solid === false) ctx.setLineDash([4, 3]);
           ctx.beginPath();
@@ -491,7 +537,8 @@
           else corners(o).forEach((p, k) => (k ? ctx.lineTo(...S(...p)) : ctx.moveTo(...S(...p))));
           ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
           const [px, py] = S(o.x, o.y);
-          label(ctx, px, py - (o.r !== undefined ? o.r : Math.max(o.w, o.d) / 2) * s - 5, o.label || o.id, '#dbe4ea', 12);
+          label(ctx, px, py - (o.r !== undefined ? o.r : Math.max(o.w, o.d) / 2) * s - 5,
+                o.remembered ? `${o.label} (remembered${o.state && o.state !== 'fresh' ? ', ' + o.state : ''})` : (o.label || o.id), '#dbe4ea', 12);
         }
         // the go-to target: a pulsing ring on every object with that label
         const gt = W.goto && W.goto.state && W.goto.state !== 'idle' && W.goto.target ? String(W.goto.target).replace(/_/g, ' ') : '';
@@ -541,7 +588,7 @@
           ctx.strokeStyle = p.tracking ? '#e6b450' : '#ef5f5f'; ctx.lineWidth = 1.5;
           car(ctx, p.x, p.y, p.th, false);
         }
-        if (t) { ctx.fillStyle = t.contact ? '#ef5f5f' : '#dbe4ea'; ctx.strokeStyle = '#0f1418'; car(ctx, t.x, t.y, t.th, true); }
+        if (t) { ctx.fillStyle = t.contact ? '#ef5f5f' : '#dbe4ea'; ctx.strokeStyle = LIVE && t.src !== 'arkit' ? '#ef5f5f' : '#0f1418'; car(ctx, t.x, t.y, t.th, true); }
         // shape being drawn
         if (ghost) {
           ctx.strokeStyle = '#5aa9e6'; ctx.setLineDash([5, 4]); ctx.lineWidth = 2; ctx.beginPath();
