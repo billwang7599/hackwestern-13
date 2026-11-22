@@ -196,11 +196,8 @@ class GateTests(GateHarness):
             self.assertTrue(self.command(command).startswith('ERR'), command)
 
 
-class PivotLimitTests(GateHarness):
-    """Option B: an in-place TURN under a fresh, valid guard_blocked is limited to
-    speed <= 0.40 (clamped) and |deg| <= 180 (refused above). CLEAR is unchanged."""
-    CAP = 0.40
-
+class FeedHarness(GateHarness):
+    """GateHarness plus a thread that keeps the guard fresh in a chosen state."""
     def setUp(self):
         super().setUp()
         self.mode = None               # None = send nothing, 1 = clear, 0 = blocked, 'bad' = invalid
@@ -229,15 +226,21 @@ class PivotLimitTests(GateHarness):
             time.sleep(.01)
         self.fail(f'guard never read {reason}: {self.status()}')
 
-    def turn(self, deg, speed=None):
-        return self.command(f'TURN {deg}' + (f' {speed}' if speed is not None else ''))
-
     def est_ms(self, reply):
         self.assertTrue(reply.startswith('OK'), reply)
         return int(reply.split()[2])
 
     def wheels(self):
         return [float(x) for x in self.command('STATUS').split()[1:3]]
+
+
+class PivotLimitTests(FeedHarness):
+    """Option B: an in-place TURN under a fresh, valid guard_blocked is limited to
+    speed <= 0.40 (clamped) and |deg| <= 180 (refused above). CLEAR is unchanged."""
+    CAP = 0.40
+
+    def turn(self, deg, speed=None):
+        return self.command(f'TURN {deg}' + (f' {speed}' if speed is not None else ''))
 
     def test_blocked_turn_clamped_to_cap(self):
         self.gate(1, 'clear')
@@ -316,7 +319,6 @@ class PivotLimitTests(GateHarness):
         epoch = self.status()['guard_epoch']
         self.assertTrue(self.command(f'DL {epoch} .2 .2').startswith('ERR'))
         self.assertTrue(self.command('MOVE 100 .3').startswith('ERR guard_blocked'))
-        self.assertTrue(self.command('MOVE -100 .3').startswith('ERR guard_blocked'))
         self.assertEqual(self.wheels(), [0, 0])
 
     def test_stop_ends_blocked_pivot(self):
@@ -332,6 +334,103 @@ class PivotLimitTests(GateHarness):
         self.assertEqual(self.command('SIM T 40'), 'OK')
         time.sleep(.04)
         self.assertTrue(self.turn(90, .3).startswith('ERR tipped'))
+
+
+class ReverseLimitTests(FeedHarness):
+    """A reverse MOVE (mm < 0) under a fresh, valid guard_blocked runs, speed clamped to
+    0.50, so goto can back out along its trail. Forward MOVE and D stay refused."""
+    CAP = 0.50
+
+    def move(self, mm, speed=None):
+        return self.command(f'MOVE {mm}' + (f' {speed}' if speed is not None else ''))
+
+    def test_reverse_allowed_and_clamped_under_blocked(self):
+        self.gate(1, 'clear')
+        ref = self.est_ms(self.move(-400, self.CAP))     # same MOVE at the cap while CLEAR
+        self.command('S')
+        self.gate(0, 'guard_blocked')
+        r = self.move(-400, 1.0)
+        self.assertEqual(self.est_ms(r), ref, 'speed 1.0 under BLOCKED must run as 0.50')
+        st = self.status()
+        self.assertEqual((st['move'], st['move_kind']), ('running', 'MOVE'))
+        time.sleep(.1)
+        self.assertEqual(self.status()['move'], 'running')
+
+    def test_forward_move_still_refused_under_blocked(self):
+        self.gate(0, 'guard_blocked')
+        before = self.status()
+        self.assertTrue(self.move(100, .3).startswith('ERR guard_blocked'))
+        self.assertTrue(self.move(100).startswith('ERR guard_blocked'))
+        self.assertTrue(self.command('D -.2 -.2').startswith('ERR guard_blocked'))
+        st = self.status()
+        self.assertEqual((st['move'], st['move_id']), (before['move'], before['move_id']))
+        self.assertEqual(self.wheels(), [0, 0])
+
+    def test_reverse_refused_when_stale_missing_invalid(self):
+        self.assertTrue(self.move(-200, .3).startswith('ERR guard_missing'))
+        self.gate(0, 'guard_blocked')
+        self.gate(None, 'guard_stale')
+        self.assertTrue(self.move(-200, .3).startswith('ERR guard_stale'))
+        self.gate('bad', 'guard_invalid')
+        self.assertTrue(self.move(-200, .3).startswith('ERR guard_invalid'))
+
+    def test_running_reverse_aborts_when_guard_goes_stale(self):
+        self.gate(0, 'guard_blocked')
+        self.assertTrue(self.move(-600, .4).startswith('OK'))
+        time.sleep(.05)
+        self.assertEqual(self.status()['move'], 'running')
+        self.gate(None, 'guard_stale')
+        time.sleep(.04)
+        st = self.status()
+        self.assertEqual((st['move'], st['move_why']), ('aborted', 'lidar_guard'))
+
+    def test_running_fast_reverse_aborts_when_blocked(self):
+        self.gate(1, 'clear')
+        self.assertTrue(self.move(-600, 1.0).startswith('OK'))
+        self.gate(0, 'guard_blocked')
+        time.sleep(.04)
+        st = self.status()
+        self.assertEqual((st['move'], st['move_why']), ('aborted', 'lidar_guard'))
+
+    def test_running_slow_reverse_continues_when_blocked(self):
+        self.gate(1, 'clear')
+        self.assertTrue(self.move(-600, .4).startswith('OK'))
+        self.gate(0, 'guard_blocked')
+        time.sleep(.1)
+        self.assertEqual(self.status()['move'], 'running')
+
+    def test_running_forward_move_aborts_when_blocked(self):
+        self.gate(1, 'clear')
+        self.assertTrue(self.move(600, .4).startswith('OK'))
+        self.gate(0, 'guard_blocked')
+        time.sleep(.04)
+        st = self.status()
+        self.assertEqual((st['move'], st['move_why']), ('aborted', 'lidar_guard'))
+
+    def test_stop_ends_blocked_reverse(self):
+        self.gate(0, 'guard_blocked')
+        self.assertTrue(self.move(-600, 1.0).startswith('OK'))
+        time.sleep(.05)
+        self.assertEqual(self.status()['move'], 'running')
+        self.assertEqual(self.command('S'), 'OK')
+        time.sleep(.04)
+        st = self.status()
+        self.assertEqual((st['move'], st['move_why']), ('aborted', 'stop'))
+        self.assertEqual(self.wheels(), [0, 0])
+
+    def test_tipped_refuses_blocked_reverse(self):
+        self.gate(0, 'guard_blocked')
+        self.assertEqual(self.command('SIM T 40'), 'OK')
+        time.sleep(.04)
+        self.assertTrue(self.move(-200, .3).startswith('ERR tipped'))
+
+    def test_tip_aborts_running_reverse(self):
+        self.gate(0, 'guard_blocked')
+        self.assertTrue(self.move(-600, .4).startswith('OK'))
+        time.sleep(.05)
+        self.assertEqual(self.command('SIM T 40'), 'OK')
+        time.sleep(.06)
+        self.assertEqual(self.status()['move'], 'aborted')
 
 
 if __name__ == '__main__':
