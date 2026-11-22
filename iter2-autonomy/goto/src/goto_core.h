@@ -80,6 +80,8 @@ typedef struct {
     int    car_derived;       /* 1 = robot_radius_m / nav_guard_half_w came from car_* */
     double nav_guard_plan;    /* 1 = A* only plans legs the guard's box allows (nav_set_guard_box) */
     double nav_backtrack;     /* 1 = when stuck, retrace the breadcrumb trail, then re-plan */
+    double nav_replan_here;   /* 1 = a guard stop of a path leg re-plans in place first (cost-to-go field); backtrack only if that fails */
+    double nav_here_turn_cost;/* metres of route a 90 deg pivot costs when ranking in-place legs */
     double nav_block_s;       /* cells a guard refusal marked blocked are forgotten after this */
     /* optimistic planning: no route over observed floor -> plan through UNKNOWN (penalised) */
     double nav_optimistic;    /* 1 = on */
@@ -350,6 +352,11 @@ typedef struct {
     int relaxed;                      /* the last plan_from_robot fell back to ignoring the guard box */
     int route_guard_ok;               /* the route passed the guard-box check when planned (map-change re-check) */
     int bt_tries;                     /* reverse attempts at the current backtrack point */
+    int here_tries;                   /* in-place re-plans since the last finished path MOVE (<= 3) */
+    double here_base;                 /* cells left on the route the guard first refused at this spot */
+    double here_ref[4];               /* headings (rad) refused at this spot */
+    int here_nref;
+    int replans_here;                 /* in-place re-plans this GOTO (capped; STATUS replans_here=) */
     int have_goal;                    /* goal_x/z is a remembered spot of this GOTO (map frame) */
     int los_standoffs;                /* searches moved to a cell that can see the spot, this GOTO */
     int plan_depth;                   /* do_plan nesting guard */

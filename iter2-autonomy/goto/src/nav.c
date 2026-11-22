@@ -69,6 +69,9 @@ struct nav {
     int32_t heap[N_CELLS];
     int32_t pos[N_CELLS];       /* index in heap, -1 = not in heap */
     int32_t route[N_CELLS];
+    /* cost-to-go field (nav_field_build): goto's in-place recovery after a guard stop */
+    double  fcost[N_CELLS];
+    int     field_ok;
 };
 
 /* ---- basics ------------------------------------------------------------ */
@@ -603,28 +606,10 @@ static int is_clear(const nav_t *n, int x, int z)
 static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, double ring_min, double ring_max,
                            nav_pt_t *out, int max_out);
 
-int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, int max_out)
+/* n->clear[]: 1 = the robot's (2r+1)^2 footprint square is all observed FREE, 2 = (optimistic
+ * mode) no known obstacle in it but some unknown, 0 = blocked */
+static void build_clear(nav_t *n)
 {
-    return nav_plan_ring_d(n, sx, sz, tx, tz, NAV_RING_MIN, NAV_RING_MAX, out, max_out);
-}
-
-int nav_plan_ring(nav_t *n, float sx, float sz, float tx, float tz, float ring_min, float ring_max,
-                  nav_pt_t *out, int max_out)
-{
-    return nav_plan_ring_d(n, sx, sz, tx, tz, ring_min, ring_max, out, max_out);
-}
-
-static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, double ring_min, double ring_max,
-                           nav_pt_t *out, int max_out)
-{
-    if (!n || (max_out > 0 && !out) || max_out < 0) return NAV_ERR_ARG;
-    if (!isfinite(sx) || !isfinite(sz) || !isfinite(tx) || !isfinite(tz)) return NAV_ERR_ARG;
-    if (!isfinite(ring_min) || !isfinite(ring_max) || ring_min < 0 || ring_max < ring_min || ring_max > NAV_RING_MAX + 1e-5)
-        return NAV_ERR_ARG;
-    /* mapping.py's fixed [-9, 9] window for the default ring (parity); tighter for smaller rings */
-    int span = ring_max >= NAV_RING_MAX - 1e-5 ? RING_SPAN : (int)ceil(ring_max / NAV_RES) + 1;
-    if (nav_count(n, NAV_FREE) == 0) return NAV_ERR_NO_MAP;
-
     /* footprint inflation: the (2r+1)^2 square must be all observed FREE */
     int radius = (int)ceil(n->robot_radius / NAV_RES);
     memset(n->clear, 0, sizeof n->clear);
@@ -662,6 +647,33 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
             }
         }
     }
+}
+
+
+int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, int max_out)
+{
+    return nav_plan_ring_d(n, sx, sz, tx, tz, NAV_RING_MIN, NAV_RING_MAX, out, max_out);
+}
+
+int nav_plan_ring(nav_t *n, float sx, float sz, float tx, float tz, float ring_min, float ring_max,
+                  nav_pt_t *out, int max_out)
+{
+    return nav_plan_ring_d(n, sx, sz, tx, tz, ring_min, ring_max, out, max_out);
+}
+
+static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, double ring_min, double ring_max,
+                           nav_pt_t *out, int max_out)
+{
+    if (!n || (max_out > 0 && !out) || max_out < 0) return NAV_ERR_ARG;
+    if (!isfinite(sx) || !isfinite(sz) || !isfinite(tx) || !isfinite(tz)) return NAV_ERR_ARG;
+    if (!isfinite(ring_min) || !isfinite(ring_max) || ring_min < 0 || ring_max < ring_min || ring_max > NAV_RING_MAX + 1e-5)
+        return NAV_ERR_ARG;
+    /* mapping.py's fixed [-9, 9] window for the default ring (parity); tighter for smaller rings */
+    int span = ring_max >= NAV_RING_MAX - 1e-5 ? RING_SPAN : (int)ceil(ring_max / NAV_RES) + 1;
+    if (nav_count(n, NAV_FREE) == 0) return NAV_ERR_NO_MAP;
+
+    n->field_ok = 0;                            /* clear[] / gmemo are about to change */
+    build_clear(n);
 
     int s_x, s_z, t_x, t_z;
     if (!nav_world_to_cell(sx, sz, &s_x, &s_z) || !is_clear(n, s_x, s_z)) return NAV_ERR_START_BLOCKED;
@@ -746,6 +758,133 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
             n_out++;
         }
         if (pass == 0 && (corners > NAV_MAX_PATH || n_out > max_out)) return NAV_ERR_TOO_LONG;
+    }
+    return n_out;
+}
+
+/* ---- cost-to-go field (Dijkstra from the goal) -------------------------- */
+
+static const int FDX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
+static const int FDZ[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+
+/* the step from (x, z) in direction k, exactly as A* allows it; its cost, or -1 */
+static double field_step(nav_t *n, int x, int z, int k, int guard)
+{
+    int nx = x + FDX[k], nz = z + FDZ[k];
+    if (!is_clear(n, x, z) || !is_clear(n, nx, nz)) return -1;
+    if (FDX[k] && FDZ[k] && (!is_clear(n, x + FDX[k], z) || !is_clear(n, x, z + FDZ[k]))) return -1;
+    if (guard && !guard_step_ok(n, x, z, k)) return -1;
+    return (FDX[k] && FDZ[k] ? sqrt(2.0) : 1.0) * (n->clear[nz * NAV_SIZE + nx] == 2 ? 1.0 + n->opt_penalty : 1.0);
+}
+
+int nav_field_build(nav_t *n, float tx, float tz, float ring_min, float ring_max)
+{
+    if (!n || !isfinite(tx) || !isfinite(tz) || !isfinite(ring_min) || !isfinite(ring_max) || ring_min < 0 ||
+        ring_max < ring_min || ring_max > NAV_RING_MAX + 1e-5)
+        return NAV_ERR_ARG;
+    n->field_ok = 0;
+    if (nav_count(n, NAV_FREE) == 0) return NAV_ERR_NO_MAP;
+    int span = ring_max >= NAV_RING_MAX - 1e-5 ? RING_SPAN : (int)ceil(ring_max / NAV_RES) + 1;
+    build_clear(n);
+    int t_x, t_z;
+    if (!nav_world_to_cell(tx, tz, &t_x, &t_z)) return NAV_ERR_TARGET_OUTSIDE;
+    int guard = n->guard_on && n->guard_stop > 0;
+    if (guard) {
+        memset(n->gmemo, 0, sizeof n->gmemo);
+        n->ign_on = ring_min >= 0.3;
+        n->ign_x = tx; n->ign_z = tz; n->ign_r = NAV_GUARD_IGNORE_R;
+    }
+    for (int i = 0; i < N_CELLS; i++) { n->fcost[i] = INFINITY; n->g[i] = INFINITY; n->pos[i] = -1; }
+    int size = 0, n_goals = 0;
+    for (int dx = -span; dx <= span; dx++)
+        for (int dz = -span; dz <= span; dz++) {
+            int cx = t_x + dx, cz = t_z + dz;
+            double d = hypot(centre_x(cx) - (double)tx, centre_z(cz) - (double)tz);
+            if (d < ring_min || d > ring_max || !is_clear(n, cx, cz)) continue;
+            int c = cz * NAV_SIZE + cx;
+            n->g[c] = n->f[c] = 0.0;
+            n->heap[size] = c; n->pos[c] = size; size++;
+            sift_up(n, size - 1);
+            n_goals++;
+        }
+    if (!n_goals) return NAV_ERR_NO_GOAL;
+    int reached = 0;
+    while (size > 0) {
+        int cur = n->heap[0];
+        n->pos[cur] = -1;
+        if (--size > 0) { n->heap[0] = n->heap[size]; n->pos[n->heap[0]] = 0; sift_down(n, 0, size); }
+        n->fcost[cur] = n->g[cur];
+        reached++;
+        int x = cur % NAV_SIZE, z = cur / NAV_SIZE;
+        for (int k = 0; k < 8; k++) {                /* predecessors: p steps in direction k onto cur */
+            int px = x - FDX[k], pz = z - FDZ[k];
+            if (px < 0 || pz < 0 || px >= NAV_SIZE || pz >= NAV_SIZE) continue;
+            int p = pz * NAV_SIZE + px;
+            if (isfinite(n->fcost[p])) continue;     /* settled */
+            double c = field_step(n, px, pz, k, guard);
+            if (c < 0) continue;
+            double ng = n->g[cur] + c;
+            if (ng < n->g[p]) {
+                n->g[p] = n->f[p] = ng;
+                if (n->pos[p] < 0) { n->heap[size] = p; n->pos[p] = size; size++; }
+                sift_up(n, n->pos[p]);
+            }
+        }
+    }
+    n->field_ok = 1;
+    return reached;
+}
+
+double nav_field_cost(const nav_t *n, float x, float z)
+{
+    int cx, cz;
+    if (!n || !n->field_ok || !nav_world_to_cell(x, z, &cx, &cz)) return INFINITY;
+    return n->fcost[cz * NAV_SIZE + cx];
+}
+
+int nav_field_clear(const nav_t *n, float x, float z)
+{
+    int cx, cz;
+    if (!n || !n->field_ok || !nav_world_to_cell(x, z, &cx, &cz)) return 0;
+    return n->clear[cz * NAV_SIZE + cx];
+}
+
+int nav_field_path(nav_t *n, float sx, float sz, nav_pt_t *out, int max_out, int *unknown)
+{
+    int cx, cz;
+    if (unknown) *unknown = 0;
+    if (!n || !n->field_ok || (max_out > 0 && !out) || max_out < 0) return NAV_ERR_ARG;
+    if (!nav_world_to_cell(sx, sz, &cx, &cz)) return NAV_ERR_START_BLOCKED;
+    int cur = cz * NAV_SIZE + cx;
+    if (!isfinite(n->fcost[cur])) return NAV_ERR_NO_PATH;
+    int guard = n->guard_on && n->guard_stop > 0, len = 0;
+    n->route[len++] = cur;
+    while (n->fcost[cur] > 1e-9 && len < N_CELLS) {        /* steepest descent: an optimal route */
+        int x = cur % NAV_SIZE, z = cur / NAV_SIZE, best = -1;
+        double bv = n->fcost[cur] + 1e-6;
+        for (int k = 0; k < 8; k++) {
+            double c = field_step(n, x, z, k, guard);
+            if (c < 0) continue;
+            int nb = (z + FDZ[k]) * NAV_SIZE + x + FDX[k];
+            if (c + n->fcost[nb] <= bv) { bv = c + n->fcost[nb]; best = nb; }
+        }
+        if (best < 0) return NAV_ERR_NO_PATH;
+        if (unknown && n->clear[best] == 2) *unknown = 1;
+        n->route[len++] = cur = best;
+    }
+    int n_out = 0;
+    for (int i = 1; i < len; i++) {
+        int keep = i == len - 1;
+        if (!keep) {
+            int a = n->route[i - 1], b = n->route[i], c = n->route[i + 1];
+            keep = b % NAV_SIZE - a % NAV_SIZE != c % NAV_SIZE - b % NAV_SIZE ||
+                   b / NAV_SIZE - a / NAV_SIZE != c / NAV_SIZE - b / NAV_SIZE;
+        }
+        if (!keep) continue;
+        if (n_out >= max_out) return NAV_ERR_TOO_LONG;
+        out[n_out].x = (float)centre_x(n->route[i] % NAV_SIZE);
+        out[n_out].z = (float)centre_z(n->route[i] / NAV_SIZE);
+        n_out++;
     }
     return n_out;
 }
