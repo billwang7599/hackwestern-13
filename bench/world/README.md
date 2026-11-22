@@ -76,6 +76,8 @@ the car restarted.
 | `{"op": "remove", "id"}` (object or `w<i>`) | `{"ok", "rev"}` |
 | `{"op": "load", "name"}` or `{"op": "load", "room": {...}}` | `{"ok", "rev", "goto_memory"}` (car teleported to start, faults cleared) |
 | `{"op": "reset"}` | reload the room as loaded/saved: same reply as load |
+| `{"op": "reset_map"}` | reload the room as loaded/saved, car NOT moved: `{"ok", "rev", "car", "goto_memory"}` (memory text has a `pose` line with the car's pose) |
+| `{"op": "car_to_start"}` | only the car jumps to the room's start: `{"ok", "start"}` (room, faults untouched) |
 | `{"op": "save", "name", "overwrite"?, "about"?}` | `{"ok", "path"}` or `{"ok": false, "exists": true}` |
 | `{"op": "set", "params": {...}}` (shorthand `{"set": {...}}`) | `{"ok", "params"}` |
 | `{"op": "fault", "name", "on"?: true, "s"?: seconds}` (shorthand `{"fault": name}`) | `{"ok"}` |

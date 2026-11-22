@@ -223,16 +223,28 @@ def world_to_motor(start: dict, x, y, th=0.0):
     return f * 1000.0, -l * 1000.0, -math.degrees(dth)
 
 
-def goto_memory_text(room: dict, now: float | None = None) -> str | None:
+# goto re-bases its memory frame whenever tars_motor's pose_epoch differs from the one in the file
+# ("assume the robot is still where we last knew it"). An epoch tars_motor never uses makes the
+# first STATUS goto reads re-base onto the 'pose' line below, i.e. onto where the car really is.
+SEED_EPOCH = 4294967295
+
+
+def goto_memory_text(room: dict, now: float | None = None, car=None) -> str | None:
     """room["memory"] -> goto memory.txt (format of test_fullstack.mem_file): 'inst' in motor mm,
     'navw' in the ark frame. An entry {"id": obj} remembers that object where it is now;
-    {"id", "x", "y"} remembers it somewhere else (the moved-bin demo). None = no memory."""
-    if not room.get("memory"):
+    {"id", "x", "y"} remembers it somewhere else (the moved-bin demo).
+    car = (x, y, th) world pose of the car right now: adds goto's 'pose' line so its memory frame
+    (motor mm from the room start) agrees with where the car is, even away from the start.
+    None = no memory and no car pose."""
+    if not room.get("memory") and car is None:
         return None
     now = time.time() if now is None else now
     objs = {o["id"]: o for o in room["objects"]}
     out, k = ["v 2"], 0
-    for m in room["memory"]:
+    if car is not None:
+        cx, cy, ch = world_to_motor(room["start"], car[0], car[1], car[2])
+        out.append(f"pose {SEED_EPOCH} {cx:.1f} {cy:.1f} {ch:.2f} 0.0 0.0 0.000 {now:.1f}")
+    for m in room.get("memory") or []:
         o = objs.get(m.get("id"))
         label = m.get("label") or (o and o["label"])
         if not label:
@@ -244,7 +256,7 @@ def goto_memory_text(room: dict, now: float | None = None) -> str | None:
         xa, za, _ = world_to_ark(room["start"], x, y)
         out.append(f"inst {k} fresh {mx:.1f} {my:.1f} 0.00 1000 0.800 3 {now:.1f} {label}")
         out.append(f"navw {k} {xa:.3f} {za:.3f} {label}")
-    return "\n".join(out) + "\n" if k else None
+    return "\n".join(out) + "\n" if k or car is not None else None
 
 
 # ------------------------------------------------------------------ goto config

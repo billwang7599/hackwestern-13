@@ -60,7 +60,7 @@
       const legendBtn = h('button', {class: 'ghost', title: 'What the shapes on the map mean', onclick: () => { legend.hidden = !legend.hidden; }}, 'Legend');
       const bar = h('div', {}, h('span', {class: 'dim'}, 'Room'), roomSel,
         h('button', {onclick: () => act('load', {name: roomSel.value}), title: 'Load the picked room (car back to its start, goto restarted)'}, 'Load'),
-        h('button', {onclick: () => act('reset', {}), title: 'Reload this room as loaded/saved, car to start, goto restarted'}, '↺ Reset'),
+        carStartBtn(), resetMapBtn(),
         editBtn, h('span', {style: {flex: 1}}), legendBtn);
       css(bar, {display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px'});
       const toolBar = h('div');
@@ -124,7 +124,7 @@
         help: 'Every object in the sim room. Click a row to select it on the map; 🗑 deletes it (Undo brings it back). You can also right-click it on the map → Delete.',
         mount(el2) {
           el2.append(h('div', {class: 'toolbar'}, delSelBtn,
-              h('button', {title: 'Put the room back as it was loaded or saved (car to start, goto restarted)', onclick: () => act('reset', {})}, '↺ Reset room'),
+              carStartBtn(), resetMapBtn(),
               h('span', {class: 'dim', style: {fontSize: '12px'}}, 'Add things with the tools above the map.')),
             undoBar,
             h('div', {class: 'tbl-scroll'}, h('table', {class: 'dt nowrap', 'data-k': 'objects'},
@@ -247,6 +247,16 @@
           return r;
         } catch (e) { B.log('world', 'world control failed: ' + e.message); return {ok: false}; }
       }
+      // two separate resets: the car's position, and the room + goto's map
+      const carStartBtn = () => h('button', {onclick: () => act('car_to_start', {}),
+        title: 'Stop, then put the car back at the room\'s start. Keeps everything else: things and walls you added, ' +
+               'and goto\'s map and memory (goto is not restarted).'}, '🚗 Car to start');
+      const resetMapBtn = () => h('button', {class: 'danger', onclick: () => {
+          if (confirm('Reset map?\n\nThe room goes back to how it was loaded or saved: walls and things you added are removed. ' +
+                      'goto restarts with an empty map and the room\'s memory. The car stays where it is.')) act('reset_map', {});
+        },
+        title: 'Put the room back as loaded/saved (removes walls and things you added) and clear goto\'s map and memory ' +
+               '(goto restarts). The car stays where it is.'}, '🗺 Reset map');
       async function act(what, body) {
         try {
           const r = await B.api('world/' + what, body);

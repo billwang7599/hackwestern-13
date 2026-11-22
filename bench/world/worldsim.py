@@ -229,10 +229,19 @@ class World:
                 except (OSError, ValueError, KeyError, TypeError) as e:
                     return {"ok": False, "error": f"load: {e}"}
                 self.load(room)
-                return {"ok": True, "rev": self.rev, "goto_memory": C.goto_memory_text(self.room)}
+                return {"ok": True, "rev": self.rev, "goto_memory": C.goto_memory_text(self.room, car=self._start())}
             if op == "reset":
                 self.load(C.normalise_room(self.original))
-                return {"ok": True, "rev": self.rev, "goto_memory": C.goto_memory_text(self.room)}
+                return {"ok": True, "rev": self.rev, "goto_memory": C.goto_memory_text(self.room, car=self._start())}
+            if op == "reset_map":     # room back as loaded/saved; the car stays where it is
+                car = self.pose_now()
+                self.load(C.normalise_room(self.original), teleport=False)
+                return {"ok": True, "rev": self.rev, "car": car and [round(v, 3) for v in car],
+                        "goto_memory": C.goto_memory_text(self.room, car=car)}
+            if op == "car_to_start":  # only the car moves: room, drawn walls, faults and goto untouched
+                s = self.room["start"]
+                self.car_ctl({"pose": {"x": s["x"], "y": s["y"], "th": s["th"]}})
+                return {"ok": True, "start": s}
             if op == "save":
                 name = str(msg.get("name", ""))
                 if not C.NAME_RE.match(name):
@@ -259,6 +268,10 @@ class World:
                 self.car_ctl(msg.get("msg", {}))
                 return {"ok": True}
         return {"ok": False, "error": f"unknown op {op!r}"}
+
+    def _start(self):
+        s = self.room["start"]
+        return s["x"], s["y"], s["th"]
 
     def _new_id(self, label: str) -> str:
         base = "".join(ch for ch in label.replace(" ", "_") if ch.isalnum() or ch == "_") or "obj"

@@ -127,10 +127,14 @@
         const d = document.createElement('div');
         d.className = 'cmd-item ' + (r.action || '');
         const intent = r.action === 'command' || r.action === 'stop' ? `${NICE[r.intent] || r.intent}${r.prob ? ` <span class="dim">(${(+r.prob).toFixed(2)})</span>` : ''}`
-          : r.action === 'reject' ? '<span class="warn">not sure, did nothing</span>' : r.action === 'ignore' ? '<span class="warn">ignored</span>' : esc(r.action || '');
+          : r.action === 'reject' ? `<span class="warn">not sure</span>${r.intent && r.intent !== '-' ? ` <span class="dim">(${esc(NICE[r.intent] || r.intent)}? ${r.prob ? (+r.prob).toFixed(2) : ''})</span>` : ''}`
+          : r.action === 'ignore' ? '<span class="warn">ignored</span>' : esc(r.action || '');
         const lines = (r.sent || []).map(s => s.line).filter(l => !/^SAY /.test(l));
         let out;
-        if (r.robot && r.robot.error) out = `<span class="bad">${esc(r.robot.error)}</span>`;
+        // reject/ignore: the classifier chose to do nothing (at most an LED/beep), so never say "sent to robot"
+        if (r.action === 'reject') out = '<span class="warn">robot did nothing (not sure)</span>';
+        else if (r.action === 'ignore') out = '<span class="dim">robot did nothing (ignored)</span>';
+        else if (r.robot && r.robot.error) out = `<span class="bad">${esc(r.robot.error)}</span>`;
         else if (r.robot) out = `<span class="ok">sent to robot</span>`;
         else out = lines.length ? `<span class="warn">dry run</span>, would send <span class="mono">${esc(lines.join(' · '))}</span>` : '<span class="dim">nothing to send</span>';
         d.innerHTML = `<div class="heard">${r.src === 'audio' ? '🎤 ' : ''}“${esc(r.text)}”</div>

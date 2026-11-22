@@ -51,7 +51,7 @@ const Bench = (() => {
     room: ['Build the simulated room the car drives in. Sim only: nothing here touches a real robot.',
       'Add boxes, walls, people and objects with the tools above the map. <b>Things in the room</b> lists them all, with 🗑 to delete (or right-click on the map).',
       '<b>Faults</b> breaks sensors on purpose; <b>Map demos</b> runs explore-from-nothing and saved-map (prescan) demos.',
-      'Tip: ↺ Reset puts the room back as it was loaded and restarts goto.'],
+      'Tip: <b>🚗 Car to start</b> moves only the car back (your walls and goto’s map stay). <b>🗺 Reset map</b> puts the room back as loaded and clears goto’s map; the car stays put.'],
     memory: ['What the robot remembers seeing, and where. “Go to the trash can” drives back to these spots.',
       '<b>What the robot remembers</b>: Forget one object or all of them. Anything the camera still sees is learned again at once.',
       '<b>Go-to controller</b>: goto’s state now, direct GOTO / RECALL / SCAN / CANCEL, and its event log.',

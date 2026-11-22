@@ -10,6 +10,9 @@ Starts bench/run_sim.py --free-ports (stub car unless bench/car/launch.py exists
   dropbox    room demo_detour loaded through the bench (/api/world/load -> goto restarted with
              memory); a box is placed on the route mid-GOTO (/api/world/ctl): the car never
              enters it, and goto ends arrived or failed (not stuck)
+  resets     🚗 car_to_start keeps a placed box, a drawn wall and goto (same connection, map pose at the
+             start); 🗺 reset_map restores the room, restarts goto, keeps the car where it is and goto's
+             map and memory poses agree with it
   silent     guard goes silent: tars_motor reports guard_stale and doesn't drive
   person     a person steps in front: world guard BLOCKED and tars_motor guard_blocked
 and finally Ctrl-C (SIGINT) to run_sim: every child gone.
@@ -289,6 +292,108 @@ def sc_guard(sim):
     sim.wctl({"op": "fault", "name": "clear"})
 
 
+def _nav_pose(g: Line):
+    """goto NAV -> (source, x_ark, z_ark)"""
+    r = g.cmd("NAV")
+    src, x, z, _ = kv(r).get("pose", "none,0,0,0").split(",")
+    return src, float(x), float(z)
+
+
+def _mem_pose(g: Line):
+    """goto MEMORY -> its memory-frame pose (motor mm, mm, deg)"""
+    r = g.cmd("MEMORY")
+    v = r.split("pose=", 1)[1].split(";")[0].split()[0].split(",")
+    return float(v[0]), float(v[1]), float(v[2])
+
+
+def _wait_truth(sim, x, y, timeout=4.0):
+    end = time.monotonic() + timeout
+    t = None
+    while time.monotonic() < end:
+        t = sim.state().get("truth")
+        if t and math.hypot(t["x"] - x, t["y"] - y) < 0.05:
+            return t
+        time.sleep(0.1)
+    return t
+
+
+def _wait_nav(g: Line, xa, za, timeout=6.0):
+    end = time.monotonic() + timeout
+    p = None
+    while time.monotonic() < end:
+        try:
+            p = _nav_pose(g)
+        except (OSError, ValueError, IndexError):
+            p = None
+        if p and p[0] == "arkit" and math.hypot(p[1] - xa, p[2] - za) < 0.1:
+            return p
+        time.sleep(0.2)
+    return p
+
+
+def sc_resets(sim):
+    print("world: 🚗 Car to start keeps the room and goto; 🗺 Reset map restores the room, car stays put")
+    code, r = sim.http("POST", "/api/world/load", {"name": "empty"})
+    check(code == 200 and r.get("ok"), f"empty room loaded ({code})")
+    time.sleep(1.5)
+    room0 = sim.wctl({"op": "get_room"})["room"]
+    start = room0["start"]
+    code, a = sim.http("POST", "/api/world/ctl", {"op": "add", "obj": {"type": "box", "x": -1.5, "y": 1.5}})
+    code2, w = sim.http("POST", "/api/world/ctl", {"op": "add_wall", "seg": [-2.0, -1.5, -1.0, -1.5]})
+    check(a.get("ok") and w.get("ok"), f"placed a box ({a.get('id')}) and drew a wall ({w.get('id')})")
+    sim.wctl({"op": "teleport", "x": 1.0, "y": -0.5, "th": 0.6})
+    t = _wait_truth(sim, 1.0, -0.5)
+    check(t and math.hypot(t["x"] - 1.0, t["y"] + 0.5) < 0.05, "car moved away from the start (1.0, -0.5)")
+    g = Line(sim.ports["goto"])           # stays open across car-to-start: a goto restart would drop it
+    _wait_nav(g, -0.5, 1.0)
+
+    # ---- 🚗 Car to start
+    stops0 = int(kv(Line(sim.ports["motor"]).cmd("STATUS")).get("stops", "0") or 0)
+    code, r = sim.http("POST", "/api/world/car_to_start", {})
+    check(code == 200 and r.get("ok"), f"car_to_start accepted ({code}, {str(r)[:80]})")
+    check((r.get("stopped") or {}).get("S") and (r.get("stopped") or {}).get("CANCEL"), f"S + CANCEL sent first ({r.get('stopped')})")
+    t = _wait_truth(sim, start["x"], start["y"])
+    check(t and math.hypot(t["x"] - start["x"], t["y"] - start["y"]) < 0.05,
+          f"car back at the start ({t and round(t['x'], 2)}, {t and round(t['y'], 2)})")
+    room = sim.wctl({"op": "get_room"})["room"]
+    check(any(o["id"] == a.get("id") for o in room["objects"]), "the placed box is still there")
+    check([-2.0, -1.5, -1.0, -1.5] in room["walls"], "the drawn wall is still there")
+    stops1 = int(kv(Line(sim.ports["motor"]).cmd("STATUS")).get("stops", "0") or 0)
+    check(stops1 > stops0, f"tars_motor got the S (stops {stops0} -> {stops1})")
+    xa, za, _ = C.world_to_ark(start, start["x"], start["y"])
+    p = _wait_nav(g, xa, za)
+    check(p and p[0] == "arkit" and math.hypot(p[1] - xa, p[2] - za) < 0.1,
+          f"goto NOT restarted (same connection) and its map pose is at the start ({p})")
+    try:
+        mp = _mem_pose(g)
+        print(f"  info goto memory-frame pose after car-to-start: {mp} (dead reckoning; doesn't see the jump)")
+    except (OSError, ValueError, IndexError) as e:
+        print(f"  info goto MEMORY: {e}")
+
+    # ---- 🗺 Reset map
+    sim.wctl({"op": "teleport", "x": 1.2, "y": 0.8, "th": -0.4})
+    t = _wait_truth(sim, 1.2, 0.8)
+    code, r = sim.http("POST", "/api/world/reset_map", {})
+    check(code == 200 and r.get("ok") and (r.get("goto_restart") or {}).get("ok"),
+          f"reset_map accepted, goto restarted ({code}, {str(r.get('goto_restart'))[:80]})")
+    room = sim.wctl({"op": "get_room"})["room"]
+    check(room["objects"] == room0["objects"] and room["walls"] == room0["walls"],
+          f"room back as loaded ({len(room['objects'])} objects, {len(room['walls'])} walls)")
+    time.sleep(1.0)
+    t = sim.state().get("truth")
+    check(t and math.hypot(t["x"] - 1.2, t["y"] - 0.8) < 0.05, f"car stayed where it was ({t and round(t['x'], 2)}, {t and round(t['y'], 2)})")
+    g2 = Line(sim.ports["goto"])
+    xa, za, _ = C.world_to_ark(start, 1.2, 0.8)
+    p = _wait_nav(g2, xa, za)
+    check(p and p[0] == "arkit" and math.hypot(p[1] - xa, p[2] - za) < 0.1, f"new goto's map pose is at the car ({p}, want {xa:.2f},{za:.2f})")
+    mx, my, mh = C.world_to_motor(start, 1.2, 0.8, -0.4)
+    mp = _mem_pose(g2)
+    check(math.hypot(mp[0] - mx, mp[1] - my) < 60 and abs(((mp[2] - mh) + 180) % 360 - 180) < 5,
+          f"new goto's memory frame agrees with the car ({mp} vs {mx:.0f},{my:.0f},{mh:.1f})")
+    grid = g2.cmd("NAV")
+    print(f"  info NAV after reset_map: {grid[:120]}")
+
+
 def main():
     only = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv else None
     want = lambda n: only is None or n in only  # noqa: E731
@@ -307,6 +412,8 @@ def main():
             sc_moved(sim, g)
         if want("dropbox"):
             sc_dropbox(sim)
+        if want("resets"):
+            sc_resets(sim)
         if want("silent") or want("person"):
             sc_guard(sim)
     except Exception:

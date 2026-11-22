@@ -15,7 +15,11 @@ Routes (all world edits go through world control, env BENCH_WORLD_CTL, default 5
   GET  /api/world/rooms         room files
   POST /api/world/ctl  {...}    any world-control message (bench/world/README.md), reply as JSON
   POST /api/world/load {name}   load a room; with run_sim, goto restarts with the room's memory
-  POST /api/world/reset         reload the current room from where it was loaded/saved
+  POST /api/world/reset         reload the current room from where it was loaded/saved (car to start too)
+  POST /api/world/car_to_start  S + CANCEL, then only the car jumps back to the room start: room,
+                                drawn walls, goto's map and memory are kept (goto is NOT restarted)
+  POST /api/world/reset_map     room back as loaded/saved + goto restarted (empty map, the room's
+                                memory); the car stays where it is
   POST /api/world/save {name, overwrite?}
   POST /api/world/goto {label}  GOTO <label> through the robot plugin (if loaded)
 """
@@ -217,6 +221,24 @@ def _after_room_change(rep: dict, why: str) -> dict:
     return rep
 
 
+def _car_to_start():
+    """only the car goes back to the start. S + CANCEL first so nothing is driving when it jumps.
+    goto keeps running: its nav pose is the phone's ARKit pose, whose frame is fixed to the room,
+    so the next LDR1 packet puts goto at the start on its own map (dead reckoning re-anchors to it)."""
+    r = _robot()
+    stopped = r.stop("car to start") if r is not None else None
+    if stopped is not None:
+        time.sleep(0.2)          # let S land before the car jumps
+    _route.update({"route": None, "i": 0})
+    rep = ctl({"op": "car_to_start"})
+    if rep.get("ok"):
+        rep["stopped"] = stopped
+        if r is None:
+            rep["note"] = "robot plugin not loaded: no S/CANCEL sent"
+        _bench.log("world", "car to start (room, map and memory kept)")
+    return (200 if rep.get("ok") else 400), rep
+
+
 def setup(bench) -> None:
     global _bench
     _bench = bench
@@ -234,8 +256,10 @@ def setup(bench) -> None:
 
     def r_ctl(q, b):
         msg = _body(b)
+        if msg.get("op") == "car_to_start":
+            return _car_to_start()
         rep = ctl(msg)
-        if msg.get("op") in ("load", "reset"):
+        if msg.get("op") in ("load", "reset", "reset_map"):
             rep = _after_room_change(rep, msg["op"])
         return (200 if rep.get("ok") else 400), rep
 
@@ -245,6 +269,12 @@ def setup(bench) -> None:
 
     def r_reset(q, b):
         return r_ctl(q, b'{"op":"reset"}')
+
+    def r_car_to_start(q, b):
+        return r_ctl(q, b'{"op":"car_to_start"}')
+
+    def r_reset_map(q, b):
+        return r_ctl(q, b'{"op":"reset_map"}')
 
     def r_save(q, b):
         m = _body(b)
@@ -267,6 +297,8 @@ def setup(bench) -> None:
     bench.route("POST", "/api/world/ctl", r_ctl)
     bench.route("POST", "/api/world/load", r_load)
     bench.route("POST", "/api/world/reset", r_reset)
+    bench.route("POST", "/api/world/car_to_start", r_car_to_start)
+    bench.route("POST", "/api/world/reset_map", r_reset_map)
     bench.route("POST", "/api/world/save", r_save)
     bench.route("POST", "/api/world/goto", r_goto)
     threading.Thread(target=_rx_loop, daemon=True).start()

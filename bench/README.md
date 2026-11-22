@@ -94,7 +94,22 @@ first-run help (screenshots). The last log line is in the footer (click: the Log
   selected** (click a row or the object on the map first), **Del** on the map, or **right-click → Delete**
   on the map (on any map page). All send `world/ctl {op: remove, id}`. **↶ Undo** (or ⌘Z on the Room page)
   re-adds the last one as it was (`{op: add, obj}` / `{op: add_wall, seg}`; a re-added wall gets the next
-  wall id). ↺ Reset room puts the loaded/saved room back.
+  wall id).
+- *Resets* (map toolbar and Room page, two buttons):
+  - **🚗 Car to start** (`POST /api/world/car_to_start`, world op `car_to_start`): S + CANCEL first, then only
+    the car jumps to the room's start. Placed things, drawn walls, faults and goto's map and memory are
+    kept, and goto is **not** restarted. goto's nav pose is the phone's ARKit pose, whose frame is fixed
+    to the room, so the next LDR1 packet puts goto at the start on its own map. tars_motor's dead-reckoned
+    pose doesn't see the jump, like carrying the real robot. goto's map pose re-anchors to ARKit, but
+    memory sightings use that dead-reckoned frame until the next goto restart (map-mode GOTOs use each
+    memory's ARKit `map=` position).
+  - **🗺 Reset map** (`POST /api/world/reset_map`, world op `reset_map`, asks to confirm): the room goes
+    back to how it was loaded or saved (removes things and walls you added, clears faults), and goto
+    restarts with an empty map and the room's memory. The car stays where it is: goto's seeded memory
+    file gets a `pose` line with the car's real pose and an epoch tars_motor never uses, so goto's memory
+    frame re-bases onto it.
+  - `POST /api/world/reset` (world op `reset`) is the old combined reset (room + car to start + goto
+    restart). It's still there for scripts but has no button.
 - *goto's memory* (Memory page): **Forget** on a row sends `FORGET <label>#<id>` and **🗑 Forget all…**
   (asks first) sends `FORGET all`, both through `POST /api/mission/goto` (mission plugin → robot link → goto).
   goto answers `OK forgot n`. Anything the camera still sees is remembered again at once, as a new sighting.
