@@ -5,6 +5,7 @@ Line: <UTC time> up=<s since this boot> <tars_motor STATUS reply, or 'motor=down
 On start it appends a BOOT line naming the previous run's last line to state/power-events.log
 (`cat state/power-events.log` = one line per unexpected restart). Read-only on 5555 (STATUS only).
 """
+import fcntl
 import os
 import socket
 import time
@@ -39,6 +40,11 @@ def append(path, line):
 
 def main():
     STATE.mkdir(exist_ok=True)
+    lock = open(STATE / 'powerlog.lock', 'w')
+    try:
+        fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)   # one logger only
+    except OSError:
+        return
     append(EVENTS, f'{stamp()} BOOT; previous run last alive: {last_line(LOG) or "(no log)"}')
     start, sock = time.monotonic(), None
     while True:

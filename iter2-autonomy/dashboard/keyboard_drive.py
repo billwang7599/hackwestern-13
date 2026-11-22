@@ -27,7 +27,7 @@ class KeyboardDrive:
                 self.stop()
             elif key in (ord('w'), ord('a'), ord('s'), ord('d')):
                 self.shifted = bool(modifiers & 3) and not bool(modifiers & 0xfc0)
-                self.expires = time.monotonic() + 2
+                self.expires = time.monotonic() + 5
                 self.key = key
                 self.claimed = True
                 self.generation += 1
@@ -37,5 +37,5 @@ class KeyboardDrive:
             self.stop()
         if self.key is None:
             return 0.0, 0.0
-        return {ord('w'): (.25, .25), ord('s'): (-.25, -.25),
-                ord('a'): (-.25, .25), ord('d'): (.25, -.25)}[self.key]
+        return {ord('w'): (1.0, 1.0), ord('s'): (-1.0, -1.0),
+                ord('a'): (-1.0, 1.0), ord('d'): (1.0, -1.0)}[self.key]

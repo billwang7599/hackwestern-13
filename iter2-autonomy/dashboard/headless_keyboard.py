@@ -89,7 +89,7 @@ class HeadlessKeyboard:
                 if direction != self.previous & ~SHIFT:
                     self.started = now
             # A wireless receiver may keep reporting a lost radio key: bound each hold.
-            if not (permitted or (mask & SHIFT and obstacle_override)) or (self.started and now-self.started >= 2):
+            if not (permitted or (mask & SHIFT and obstacle_override)) or (self.started and now-self.started >= 5):
                 self.drive.stop(); self.armed = False
         else:
             self.drive.stop(); self.armed = False
@@ -115,7 +115,7 @@ class HeadlessKeyboard:
                     obstacle_override=bool(fresh and self.override_key), event_count=self.events, last_event_age_ms=round((now-self.last_event)*1000) if self.last_event else None,
                     owner='keyboard' if self.drive.claimed else 'phone',
                     active=chr(self.drive.key).upper() if self.drive.key else None,
-                    error=self.error, max_hold_s=2)
+                    error=self.error, max_hold_s=5)
 
     def close(self):
         if self.proc and self.proc.poll() is None:
