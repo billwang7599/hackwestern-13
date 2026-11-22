@@ -192,6 +192,20 @@ go through the same backtrack and re-plan path as above.
 printf 'GOTO trash can\n' | nc 127.0.0.1 5570                             # or the voice app
 ```
 
+### The demo, one command (everything real or nothing)
+
+```sh
+TARS_DEMO=1 TARS_MOTOR_BACKEND=uno TARS_MOTOR_DEVICE=/dev/<uno> TARS_BENCH_TOKEN=<12+ chars> \
+  python3 iter2-autonomy/dashboard/service.py start
+# laptop browser: http://<pi-ip>:8770/?token=<token>   (the live view)
+```
+
+`TARS_DEMO=1` turns on autonomy (`TARS_ENABLE_GOTO=1`), YOLO on the phone camera, voice and the live view.
+It **refuses to start** if the motors would be the stub, or if `detect`, the YOLO model, `tars_voice` or the
+token is missing, and lists what to fix. It also starts `goto` with no remembered objects: an old
+`memory.txt` from testing is moved to `memory.txt.before-demo-<time>`, not deleted. Test:
+`python3 iter2-autonomy/dashboard/test_demo_preflight.py`.
+
 ### Real robot mode: what replaces each sim part
 
 `bench/run_sim.py` fakes the car, the phone and YOLO. On the Pi, `service.py` runs the real ones:

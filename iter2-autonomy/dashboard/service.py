@@ -24,6 +24,61 @@ def request(command):
         return sock.recv(8192).decode().strip()
 
 
+def _nav_dir():
+    nav = HERE.parent / 'goto'
+    return nav if nav.is_dir() else HERE.parents[1] / 'iter2-autonomy/goto'
+
+
+def demo_preflight():
+    """TARS_DEMO=1: everything real or nothing. Sets the demo defaults in os.environ and returns the list of
+    problems (empty = go). No stub motors, autonomy on, YOLO on the phone camera, voice, the live view."""
+    for key, want in (('TARS_ENABLE_GOTO', '1'), ('TARS_ENABLE_VOICE', '1')):
+        if os.environ.get(key, want) != want:
+            return [f'TARS_DEMO=1 needs {key}={want} (it is {os.environ[key]})']
+        os.environ[key] = want
+    problems = []
+    if os.environ.get('TARS_MOTOR_BACKEND', 'stub') == 'stub':
+        problems.append('motors would be the stub (no wheels): set TARS_MOTOR_BACKEND=uno TARS_MOTOR_DEVICE=/dev/...')
+    if not os.environ.get('TARS_MOTOR_DEVICE'):
+        problems.append('no TARS_MOTOR_DEVICE=/dev/... (the Uno\'s serial device)')
+    nav = _nav_dir()
+    for f, how in (('build/goto', 'sh iter2-autonomy/goto/build-native.sh'),
+                   ('build/detect', 'sh iter2-autonomy/goto/build-native.sh (needs edge-ai/setup-qnx.sh first)'),
+                   ('models/yolo_world.onnx', 'iter2-autonomy/goto/get_model.sh on the laptop, copy models/ over'),
+                   ('models/labels.txt', 'comes with yolo_world.onnx')):
+        if not (nav / f).is_file():
+            problems.append(f'no {nav / f}: {how}')
+    voice = [Path(os.environ['TARS_VOICE_DIR']) / 'tars_voice', Path(os.environ['TARS_VOICE_DIR']) / 'build/native/tars_voice'] \
+        if os.environ.get('TARS_VOICE_DIR') else \
+        [HERE.parent / 'voice/build/native/tars_voice', Path('/data/home/qnxuser/voice/tars_voice')]
+    if not any(p.is_file() for p in voice):
+        problems.append('no tars_voice: make -C iter2-autonomy/voice native')
+    if len(os.environ.get('TARS_BENCH_TOKEN', '')) < 12:
+        problems.append('no live view: set TARS_BENCH_TOKEN=<12+ characters> (open http://<pi-ip>:8770/?token=...)')
+    return problems
+
+
+def demo_clear_memory():
+    """Start the demo with no remembered objects: goto's memory file from earlier tests is moved aside
+    (memory.txt -> memory.txt.before-demo-<time>), never deleted, so it can be put back."""
+    nav = _nav_dir()
+    path = 'memory.txt'
+    try:
+        for line in (nav / 'goto.conf').read_text().splitlines():
+            k, _, v = line.split('#', 1)[0].partition('=')
+            if k.strip() == 'memory_path' and v.strip():
+                path = v.strip()
+    except OSError:
+        pass
+    if path == '-':
+        return
+    mem = Path(path) if Path(path).is_absolute() else nav / path
+    if mem.is_file():
+        aside = mem.with_name(mem.name + time.strftime('.before-demo-%Y%m%d-%H%M%S'))
+        mem.rename(aside)
+        print(f'Demo: goto starts with no memory ({mem} moved to {aside.name})', flush=True)
+
+
 def serve():
     running = True
     def stop(*_):
@@ -31,6 +86,12 @@ def serve():
         running = False
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    if os.environ.get('TARS_DEMO') == '1':
+        problems = demo_preflight()
+        if problems:
+            raise ValueError('TARS_DEMO=1 refused:\n  ' + '\n  '.join(problems))
+        demo_clear_memory()
+        print('DEMO: real motors, autonomy, YOLO on the phone camera, voice, live view', flush=True)
     env = dict(os.environ, LD_LIBRARY_PATH=str(USB / 'install/lib'))
     children = {}
     backend = os.environ.get('TARS_MOTOR_BACKEND', 'stub')
@@ -248,6 +309,10 @@ def main():
             return
         except OSError:
             pass
+        if os.environ.get('TARS_DEMO') == '1':
+            problems = demo_preflight()
+            if problems:
+                raise SystemExit('TARS_DEMO=1 refused (nothing started):\n  ' + '\n  '.join(problems))
         STATE.mkdir(parents=True, exist_ok=True)
         with (STATE / 'headless-service.log').open('ab') as log:
             proc = subprocess.Popen([sys.executable, __file__, 'run'], stdin=subprocess.DEVNULL,
