@@ -9,6 +9,10 @@
  *    the stale copies have a larger key and are skipped there, so the pop order
  *    of live entries is the same.
  */
+/* clock_gettime/CLOCK_MONOTONIC under strict -std=c99 on glibc (macOS and QNX expose them anyway) */
+#if defined(__linux__) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "nav.h"
 
 #include <math.h>
