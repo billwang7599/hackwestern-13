@@ -1199,11 +1199,24 @@ static void crumb_note(goto_sm *s, int force, int corner);
  * 1 = a corrective TURN was started. */
 static int heading_fix(goto_sm *s, double err, int leg)
 {
-    if (s->cfg.nav_heading_retries <= 0 || fabs(err) <= s->cfg.nav_heading_tol_deg) {
+    char t[96];
+    if (s->cfg.nav_heading_retries <= 0) return 0;
+    /* only a MEASURED heading is worth correcting: the iPhone's ARKit pose, taken after this
+     * TURN ended (leg_settle saw 2 new pose seqs). A DR yaw is the commanded TURN integrated,
+     * always "on target"; a stale ARKit yaw (settle timed out) would re-turn on old data. */
+    if (nav_pose(s, NULL, NULL, NULL) != NAV_POSE_ARKIT || !s->settle_fresh) {
+        if (!s->heading_unchecked++) {           /* once per GOTO: STATUS heading_unchecked= counts */
+            snprintf(t, sizeof t, "heading_unchecked %s #%d %s", target_name(s), s->mem_id,
+                     nav_pose(s, NULL, NULL, NULL) == NAV_POSE_ARKIT ? "stale" : "dr");
+            emit(s, ACT_EVENT, 0, 0, t);
+        }
         s->heading_tries = 0;
         return 0;
     }
-    char t[96];
+    if (fabs(err) <= s->cfg.nav_heading_tol_deg) {
+        s->heading_tries = 0;
+        return 0;
+    }
     if (s->heading_tries >= (int)s->cfg.nav_heading_retries) {
         snprintf(t, sizeof t, "heading_off %s #%d %.0f", target_name(s), s->mem_id, err);
         emit(s, ACT_EVENT, 0, 0, t);
@@ -2621,7 +2634,7 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->revealed_deg = 0;                       /* each GOTO may look around once more */
     s->reveal_have_yaw = 0;
     s->escapes = 0;
-    s->heading_tries = s->heading_fixes = 0;
+    s->heading_tries = s->heading_fixes = s->heading_unchecked = 0;
     s->mem_fallback = s->fallback_noroute = 0;
     s->guard_refusals = s->guard_aborts = s->guard_other_stops = 0;
     s->crumb_head = s->crumb_n = 0;
@@ -3007,6 +3020,8 @@ void goto_sm_tick(goto_sm *s, double now)
         if (s->st == ST_FOLLOW_PATH && s->leg_settle) {   /* leg done: a post-move pose yet? */
             if (nav_pose_seq(s->nav) - s->settle_seq >= 2 || nav_pose(s, NULL, NULL, NULL) != NAV_POSE_ARKIT ||
                 now - s->settle_since >= s->cfg.nav_pose_fresh_s) {
+                s->settle_fresh = nav_pose_seq(s->nav) - s->settle_seq >= 2 &&
+                                  nav_pose(s, NULL, NULL, NULL) == NAV_POSE_ARKIT;
                 s->leg_settle = 0;
                 leg_done(s);
             }
@@ -3093,6 +3108,7 @@ void goto_sm_move_status(goto_sm *s, double now, int move_id, const char *move, 
          * move ended (and nav prefers ARKit while it's < nav_pose_fresh_s old): planning
          * from it turns by a stale heading. Wait for 2 newer poses (the first may have been
          * in flight); goto_sm_tick() finishes the leg. */
+        s->settle_fresh = 0;                    /* set by goto_sm_tick() only on 2 post-move poses */
         if (nav_pose(s, NULL, NULL, NULL) == NAV_POSE_ARKIT) {
             s->leg_settle = 1;
             s->settle_seq = nav_pose_seq(s->nav);
@@ -3130,7 +3146,7 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
     snprintf(out, len,
              "state=%s target=%s result=%s seen=%d bearing=%.1f h=%.2f searched=%.0f fps=%.1f "
              "elapsed=%.1f frames=%d hits=%d l=%.2f r=%.2f mode=%s mem=%s map=%s path=%d/%d replans=%d "
-             "guard=%s guard_refusals=%d guard_aborts=%d guard_stops_other=%d backtracks=%d replans_here=%d heading_fixes=%d",
+             "guard=%s guard_refusals=%d guard_aborts=%d guard_stops_other=%d backtracks=%d replans_here=%d heading_fixes=%d heading_unchecked=%d",
              goto_state_name(s->st), tn, s->result,
              s->st == ST_APPROACH && s->now - s->last_seen < 0.5, s->last_bearing,
              s->have_track ? s->ema_h : 0.0, s->searched_deg, s->fps_ema,
@@ -3141,5 +3157,5 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
              !s->nav ? "off" : s->map_mode ? (s->vantage ? "detour" : "route") : "ready",
              s->path_i, s->path_n, s->replans,
              !s->guard_known ? "-" : s->guard_ok ? "clear" : "denied",
-             s->guard_refusals, s->guard_aborts, s->guard_other_stops, s->backtracks, s->replans_here, s->heading_fixes);
+             s->guard_refusals, s->guard_aborts, s->guard_other_stops, s->backtracks, s->replans_here, s->heading_fixes, s->heading_unchecked);
 }

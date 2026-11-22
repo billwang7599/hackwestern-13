@@ -350,6 +350,8 @@ typedef struct {
     double ref_sx, ref_sz, ref_wx, ref_wz;
     double block_since;               /* nav_temp_block cells set at this time (decay nav_block_s) */
     int turn_stops;                   /* consecutive TURNs stopped by the guard */
+    int settle_fresh;                 /* the last leg's settle ended on 2 new ARKit poses (not the timeout) */
+    int heading_unchecked;            /* legs whose heading could not be checked (DR / stale pose) this GOTO */
     int heading_tries;                /* corrective TURNs since this leg's TURN (nav_heading_retries) */
     double esc_yaw;                   /* escape leg 4: the nav yaw (rad) the pivot is aiming for */
     int heading_fixes;                /* corrective TURNs this GOTO (STATUS heading_fixes=) */
