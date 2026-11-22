@@ -355,6 +355,29 @@ run_sim hands the bench these environment variables: `BENCH_WORLD_CTL` (5592), `
 goto + `POSE RESET` when a room loads), `BENCH_CAR_CTL` (5591), `BENCH_CAR_TRUTH` (a copy of the truth
 stream, for the car plugin with the stub car), `BENCH_CAR_KIND` (`virtual` | `stub`).
 
+### Demo sim speed (`--speed N`, top-bar selector)
+
+`run_sim.py --speed 4` (or the **1× / 2× / 4× speed** selector in the top bar, sim only) makes a go-to
+play N times faster, for demos. Bench only: the robot always runs at 1×, and 1× is the default.
+- **What speeds up:** the virtual car (firmware `millis()`, physics, truth rate, boot, unplug and
+  button timers: `vuno --speed`), the world sim (phone, LiDAR and camera rates and latencies, and
+  fault durations in sim time: `worldsim.py --speed`) and goto (`-T N`, its existing time scale; its
+  map clear-span timers follow it).
+- **What stays real time:** `tars_motor` (unchanged; its 50 Hz D keepalive and 100 ms guard TTL are
+  wall clock, so the world's GAT1 stays at 100 wall Hz), voice and the bench.
+- **Host stalls:** because tars_motor is real time, a 125 ms laptop stall would look like 500 ms to the
+  firmware at 4× and trip its mid-move link guard. So the car's clock runs at N× only while
+  tars_motor's bytes are fresh (< 40 ms of wall time) and falls back to 1× during a stall. Car control
+  `{"get":1}` reports `speed` and `slow_ms`, the wall time spent at 1× for this reason.
+- **Live switch:** the top bar or `POST /api/world/speed {"speed": N}` sends S, sets the world and
+  car clocks, then restarts goto with `-T N`. goto's memory is kept; its map starts empty.
+- **Limits:** the virtual car only; the stub car's moves are timed by tars_motor, so it refuses. WASD
+  driving is N× faster too, and tars_motor's dead-reckoned pose for plain `D` drives is N× short;
+  MOVE and TURN use the firmware's own numbers, so they're right. Up to 8× matched 1× in
+  `tests/test_speed.py`. Above about 8×, tars_motor's 20 ms D tick exceeds the firmware's 200 ms
+  drive watchdog in sim time.
+- **Tests:** `python3 bench/tests/test_speed.py [--speeds 1,4,8] [--only open_bin,pocket_mouth,live]`.
+
 The 2D panel (`world2d`) is a course editor: place boxes, walls, people and goto objects, drag,
 rotate (`[` `]`), delete, save/load layouts (edit mode is on while the **Room** page is shown; **✏ Edit room** on the Drive page goes there; outside it a
 click only focuses the map for WASD). Faults, sensor noise and the sensor readout are the `world-tools` panel on

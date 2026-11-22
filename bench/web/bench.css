@@ -185,3 +185,7 @@ abbr[title] { text-decoration: underline dotted; cursor: help; }
   .cmd-item:nth-child(n+3) { display: none; }
   .drv-keys span { padding: 4px 0 !important; }
 }
+
+/* sim demo speed selector (top bar, sim target only) */
+.simspeed { margin-left: .5em; font-size: .85em; }
+.simspeed.fast { background: #5a3d00; color: #ffd27a; border-color: #b07a00; }

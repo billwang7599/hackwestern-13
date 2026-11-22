@@ -48,7 +48,7 @@
  * memory says the object is, then looks; if it's not there, normal search.
  *
  * Usage: goto [-m host:port] [-p ctl_port] [-u det_port] [-i] [-c goto.conf]
- *             [-o objects.txt] [-M memory.txt|-] [-r rt_prio] [-v] [-T time_scale (tests only)]
+ *             [-o objects.txt] [-M memory.txt|-] [-r rt_prio] [-v] [-T time_scale (tests, bench run_sim --speed)]
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -694,7 +694,10 @@ static navconn navc[2];
 static void nav_packet(const unsigned char *b, size_t len)
 {
     size_t off = len >= 8 && !memcmp(b + 4, "LDR1", 4) ? 4 : 0;   /* optional length prefix */
-    int r = nav_ingest_ldr1(nav, b, len);
+    /* -T (bench --speed): the map's clear-span timers run on goto's scaled clock too; at 1
+     * (the robot) this is exactly nav_ingest_ldr1() */
+    int r = time_scale == 1.0 ? nav_ingest_ldr1(nav, b, len)
+                              : nav_ingest_ldr1_at(nav, b, len, (uint64_t)(now_s() * 1e6));
     nav_pkts++;
     if (r < 0) { nav_bad++; return; }
     if (r == NAV_LDR1_OLD) return;

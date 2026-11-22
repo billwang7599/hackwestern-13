@@ -35,6 +35,9 @@ Routes (all world edits go through world control, env BENCH_WORLD_CTL, default 5
                                 it); write: true also saves the room file under its current name
    add/update/set: S + CANCEL first (stop always wins), then goto is restarted with the edited memory
    (its nav map is lost; the car stays where it is). The reply carries the new live "entries".
+  GET  /api/world/speed         {"speed": N} the demo sim speed (run_sim --speed)
+  POST /api/world/speed {speed} change it live (0.25..16): S, the car + world clock, then goto is
+                                restarted with -T N (memory kept, map cleared). Needs run_sim.
 """
 from __future__ import annotations
 
@@ -384,10 +387,23 @@ def setup(bench) -> None:
     def r_rooms(q, b):
         return 200, {"rooms": C.list_rooms()}
 
+    def r_speed(q, b):
+        msg = _body(b) if b else {}
+        if "speed" not in msg:
+            rep = ctl({"op": "speed"})
+            return (200 if rep.get("ok") else 502), rep
+        if not SUP:     # world + car alone would leave goto's clock behind: refuse
+            return 409, {"ok": False, "error": "speed needs bench/run_sim.py (it restarts goto with the new -T)"}
+        rep = supervisor({"op": "speed", "speed": msg["speed"]}, timeout=20) or {"ok": False, "error": "no supervisor"}
+        bench.log("world", f"speed -> {rep}")
+        return (200 if rep.get("ok") else 400), rep
+
     def r_ctl(q, b):
         msg = _body(b)
         if msg.get("op") == "car_to_start":
             return _car_to_start()
+        if msg.get("op") == "speed":
+            return r_speed(q, json.dumps({k: v for k, v in msg.items() if k != "op"}).encode())
         rep = ctl(msg)
         if msg.get("op") in ("load", "reset", "reset_map"):
             rep = _after_room_change(rep, msg["op"])
@@ -440,6 +456,8 @@ def setup(bench) -> None:
     bench.route("POST", "/api/world/reset_map", r_reset_map)
     bench.route("POST", "/api/world/save", r_save)
     bench.route("POST", "/api/world/goto", r_goto)
+    bench.route("GET", "/api/world/speed", r_speed)
+    bench.route("POST", "/api/world/speed", r_speed)
     threading.Thread(target=_rx_loop, daemon=True).start()
     threading.Thread(target=_route_loop, daemon=True).start()
 

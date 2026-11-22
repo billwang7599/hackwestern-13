@@ -79,10 +79,43 @@ static uint64_t real_us() {
   return (uint64_t)t.tv_sec * 1000000ull + (uint64_t)t.tv_nsec / 1000;
 }
 
+// Bench demo speed (--speed N, default 1): the car's whole world (firmware millis/micros,
+// physics, truth rate, boot/unplug/button timers) runs N times faster than the wall clock,
+// so a timed MOVE 1000 still lands at 1000 mm. Without --speed, sim_us() IS real_us().
+// Only the host-facing timers stay on the wall clock: loop-stall detection and the
+// {"sub"} expiry (subscribers renew in wall time).
+//
+// tars_motor is NOT sped up: it still sends its D keepalive every 20 ms of wall time. A
+// laptop hiccup of 125 ms would be 500 ms in firmware time at 4x and trip the firmware's
+// mid-move link guard (MOVE_LINK_MS) or drive watchdog, which a real-time car shrugs off.
+// So sim time only runs at N x while the host is fresh (a byte in the last 40 ms of wall time,
+// or nobody has the port open); during a host or vuno stall it falls back to 1x. That keeps
+// --speed N exactly as tolerant of laptop stalls as --speed 1.
+static double opt_speed = 1.0;
+static bool speed_on = false;              // --speed / {"speed"} ever given
+static uint64_t sim_now = 0, sim_wall_last = 0, host_rx_wall = 0;
+static uint64_t sim_slow_us = 0;            // wall us spent at 1x because the host was quiet
+static const uint64_t HOST_FRESH_US = 40000;
+static void sim_advance() {                 // once per main-loop pass
+  if (!speed_on) return;
+  uint64_t r = real_us();
+  uint64_t dt = r - sim_wall_last;
+  sim_wall_last = r;
+  extern bool host_open;
+  bool fresh = !host_open || r - host_rx_wall < HOST_FRESH_US;
+  if (fresh && dt < HOST_FRESH_US) sim_now += (uint64_t)((double)dt * opt_speed);
+  else { sim_now += dt; if (opt_speed != 1.0) sim_slow_us += dt; }
+}
+static uint64_t sim_us() { return speed_on ? sim_now : real_us(); }
+static void set_speed(double v) {          // live change keeps the sim clock continuous
+  if (!speed_on) { sim_now = sim_wall_last = real_us(); speed_on = true; }
+  opt_speed = v;
+}
+
 // ------------------------------------------------------------------ pty
 static int pty_m = -1;
 static std::string pty_path;
-static bool host_open = false;      // someone (tars_motor) has the slave open
+bool host_open = false;      // someone (tars_motor) has the slave open
 static std::string txq;             // firmware -> host bytes not yet written
 
 static bool pty_create() {
@@ -154,7 +187,7 @@ static void pins_reset() {
 static void fw_hold_reset(uint64_t boot_after_us) {
   fw_running = false;
   pins_reset();
-  fw_boot_at_us = real_us() + boot_after_us;
+  fw_boot_at_us = sim_us() + boot_after_us;
 }
 
 // What the firmware test harness does in boot() (test_tars.cpp), minus the EEPROM:
@@ -186,8 +219,8 @@ static void fw_boot() {
 }
 
 static void fw_clock() {
-  static uint64_t t0 = real_us();
-  uint64_t target = real_us() - t0 + 1000000ull;
+  static uint64_t t0 = sim_us();
+  uint64_t target = sim_us() - t0 + 1000000ull;
   if (target > mock_now_us) mock_now_us = target;   // delay() may run ahead; never go back
 }
 
@@ -233,7 +266,7 @@ static void unplug(uint64_t ms) {
   pty_destroy();
   unplugged = true;
   link_update();
-  unplug_until_us = ms ? real_us() + ms * 1000 : UINT64_MAX;
+  unplug_until_us = ms ? sim_us() + ms * 1000 : UINT64_MAX;
   fprintf(stderr, "[vuno] USB unplugged (%s)\n", ms ? "timed" : "until clear");
 }
 
@@ -369,7 +402,7 @@ static std::string handle_ctl(const std::string &msg, const sockaddr_in &from) {
       else if (b == "up") mock_pin_input[PIN_BUTTON] = HIGH;
       else if (b == "tap" || b == "hold") {
         mock_pin_input[PIN_BUTTON] = LOW;
-        btn_release_us = real_us() + (b == "tap" ? 150000 : 2500000);
+        btn_release_us = sim_us() + (b == "tap" ? 150000 : 2500000);
       } else err = "button: down|up|tap|hold";
     } else if (k == "sub") {
       int port = (int)v.num(0);
@@ -380,6 +413,9 @@ static std::string handle_ctl(const std::string &msg, const sockaddr_in &from) {
       for (auto &s : subs)
         if (s.a.sin_port == a.sin_port && s.a.sin_addr.s_addr == a.sin_addr.s_addr) { s.until_us = real_us() + 5000000; found = true; }
       if (!found) subs.push_back({a, real_us() + 5000000});
+    } else if (k == "speed") {
+      if (!v.isNum() || v.n < 0.25 || v.n > 16) { err = "speed wants 0.25..16"; continue; }
+      set_speed(v.n);
     } else if (k == "reset") {
       fw_hold_reset(200000);   // the RESET button: short, no host open involved
     } else if (k == "stats_reset") {
@@ -387,6 +423,9 @@ static std::string handle_ctl(const std::string &msg, const sockaddr_in &from) {
     } else if (k == "get") {
       extra += ",\"profile\":" + profile_json() + ",\"truth\":" + truth_json();
       extra += ",\"link\":\"" + jesc(opt_link) + "\"";
+      char sp[80];
+      snprintf(sp, sizeof sp, ",\"speed\":%g,\"slow_ms\":%llu", opt_speed, (unsigned long long)(sim_slow_us / 1000));
+      extra += sp;
     } else if (k == "ms" || k == "v" || k == "vx" || k == "vy" || k == "g") {
       // fault arguments
     } else {
@@ -432,7 +471,8 @@ static bool load_profile(const std::string &path) {
 static void usage() {
   fprintf(stderr,
           "usage: vuno [--profile FILE] [--truth PORT (0=off)] [--truth-host IP] [--ctl PORT]\n"
-          "            [--seed N] [--link PATH] [--hz N] [--no-reset-on-open] [--trace]\n");
+          "            [--seed N] [--link PATH] [--hz N] [--no-reset-on-open] [--trace]\n"
+          "            [--speed N (bench demo: sim time runs N x the wall clock, 0.25..16)]\n");
 }
 
 int main(int argc, char **argv) {
@@ -448,6 +488,7 @@ int main(int argc, char **argv) {
     else if (a == "--hz") opt_hz = atoi(next().c_str());
     else if (a == "--no-reset-on-open") opt_reset_on_open = false;
     else if (a == "--trace") opt_trace = true;
+    else if (a == "--speed") { double v = atof(next().c_str()); if (v < 0.25 || v > 16) { usage(); return 2; } set_speed(v); }
     else { usage(); return a == "-h" || a == "--help" ? 0 : 2; }
   }
   if (opt_hz < 1 || opt_hz > 500) opt_hz = 50;
@@ -479,20 +520,24 @@ int main(int argc, char **argv) {
           opt_truth_host.c_str(), opt_truth, opt_ctl, opt_seed);
 
   const double dt = 0.001;
-  uint64_t sim_us = real_us();
-  uint64_t next_truth = sim_us;
+  uint64_t phys_us = sim_us();
+  uint64_t next_truth = phys_us;
+  // truth period in SIM time: at --speed N the truth goes out N x as often on the wall clock,
+  // so the world sim's pose history keeps its 20 ms sim-time spacing
   const uint64_t truth_period = 1000000ull / (uint64_t)opt_hz;
 
   uint64_t last_iter = real_us();
   while (!g_quit) {
-    uint64_t now = real_us();
-    if (now - last_iter > 50000) {   // the firmware didn't run for this long: laptop busy
+    uint64_t wall = real_us();
+    if (wall - last_iter > 50000) {   // the firmware didn't run for this long: laptop busy
       stall_n++;
-      uint64_t ms = (now - last_iter) / 1000;
+      uint64_t ms = (wall - last_iter) / 1000;
       if (ms > stall_max_ms) stall_max_ms = ms;
       if (opt_trace || ms > 150) fprintf(stderr, "[vuno] loop stalled %llu ms (laptop busy?)\n", (unsigned long long)ms);
     }
-    last_iter = now;
+    last_iter = wall;
+    sim_advance();
+    uint64_t now = sim_us();          // == wall without --speed
     fw_clock();
 
     // USB link: plugged? host open/close (DTR)?
@@ -514,6 +559,7 @@ int main(int argc, char **argv) {
       if (host_open && (pf.revents & POLLIN)) {
         char b[512];
         ssize_t n = read(pty_m, b, sizeof b);
+        if (n > 0) host_rx_wall = wall;
         if (n > 0) trace(trace_rx, fw_running ? "<-" : "<- (lost: in reset)", b, (size_t)n);
         if (n > 0 && fw_running) Serial.feed(std::string(b, (size_t)n));
       }
@@ -545,16 +591,17 @@ int main(int argc, char **argv) {
       if (w > 0) txq.erase(0, (size_t)w);
     }
 
-    // physics, 1 ms steps up to real time
+    // physics, 1 ms steps up to (sim) time
     DriveIn in[2];
     read_drive(in);
     int steps = 0;
-    while (sim_us + 1000 <= now && steps < 100) {
+    const int max_steps = (int)(100 * (opt_speed > 1 ? opt_speed : 1));
+    while (phys_us + 1000 <= now && steps < max_steps) {
       car->step(dt, in);
-      sim_us += 1000;
+      phys_us += 1000;
       steps++;
     }
-    if (steps == 100) sim_us = now;   // fell behind (laptop busy): don't spiral
+    if (steps == max_steps) phys_us = now;   // fell behind (laptop busy): don't spiral
     if (steps) imu_to_mock();
 
     poll_ctl();
