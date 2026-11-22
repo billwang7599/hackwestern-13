@@ -130,6 +130,7 @@ def summarise(sim, st, wall, t0, t1, bin_, log, speed):
         "unreachable": log.count("unreachable"), "timeout": "failed:timeout" in log,
         "routes": log.count("event: route "), "route_kept": log.count("route_kept"),
         "route_repair": log.count("route_repair"), "route_switch": log.count("route_switch"),
+        "guard_stops": log.count("blocked:lidar_guard") + log.count("blocked:guard"), "run_dir": sim.run_dir,
         "sticky": "nav_sticky = 1" in open(os.path.join(sim.run_dir, "goto.conf")).read(),
     }
 
