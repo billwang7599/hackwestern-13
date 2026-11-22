@@ -58,6 +58,8 @@ typedef struct {
     /* map-guided GOTO (nav.h grid from the phone, feed on UDP/TCP 5572) */
     double nav_pose_fresh_s;  /* no LDR1 pose this long -> ARKit tracking treated as lost (DR takes over) */
     double nav_turn_min_deg;  /* path leg: turn first only if the heading is off by more than this */
+    double nav_heading_tol_deg; /* after a path TURN: still off by more (fresh pose) -> corrective TURN first */
+    double nav_heading_retries; /* ... at most this many corrective TURNs, then MOVE anyway (0 = off) */
     double nav_leg_min_mm;    /* path legs shorter than this are skipped */
     double nav_max_replans;   /* re-plans (guard denial, map change) per GOTO, then FAILED blocked */
     double nav_guard_wait_s;  /* after a guard-aborted leg: wait this long (and for CLEAR) before re-planning */
@@ -348,6 +350,9 @@ typedef struct {
     double ref_sx, ref_sz, ref_wx, ref_wz;
     double block_since;               /* nav_temp_block cells set at this time (decay nav_block_s) */
     int turn_stops;                   /* consecutive TURNs stopped by the guard */
+    int heading_tries;                /* corrective TURNs since this leg's TURN (nav_heading_retries) */
+    double esc_yaw;                   /* escape leg 4: the nav yaw (rad) the pivot is aiming for */
+    int heading_fixes;                /* corrective TURNs this GOTO (STATUS heading_fixes=) */
     double plan_sx, plan_sz;          /* where the current route starts (its first leg's start corner) */
     int relaxed;                      /* the last plan_from_robot fell back to ignoring the guard box */
     int route_guard_ok;               /* the route passed the guard-box check when planned (map-change re-check) */
