@@ -77,6 +77,22 @@ make -C iter2-autonomy/voice test                # classifier tests + end-to-end
 python3 iter2-autonomy/voice/intent/try.py       # type sentences, see intent / confidence / command
 ```
 For the Pi, follow **docs/PI_TEST.md → Step 7: voice**. Run **`mic_test` first**: if the mic doesn't work under QNX, nothing else here matters.
+
+**On the Pi itself (no SDP, no Docker, no cmake):** the robot builds its own `tars_voice` with its clang.
+whisper.cpp/ggml is compiled straight from the pinned sources (CPU backend only, static, Armv8.2-A +
+dotprod + fp16):
+```sh
+iter2-autonomy/voice/fetch_whisper.sh && iter2-autonomy/voice/get_model.sh   # or copy third_party/ + models/ from the laptop
+make -C iter2-autonomy/voice native -j4          # -> build/native/tars_voice, build/native/mic_test (a few minutes)
+cd iter2-autonomy/voice && ./build/native/tars_voice -c voice.conf --dry     # prints what it hears, sends nothing
+TARS_ENABLE_VOICE=1 TARS_ENABLE_GOTO=1 python3 iter2-autonomy/dashboard/service.py start   # the real thing
+```
+`service.py` picks up `build/native/tars_voice` and runs it from `iter2-autonomy/voice/`, so `voice.conf`
+and `models/` are used in place. The default input is the phone (AirPods, or the phone's own mic when none
+are connected) on 5577. The laptop (bench `--target pi`) only relays text or a recorded clip to 5574 via
+`mission_relay`.
+
+Cross-build from a laptop with the SDP (the older route):
 ```sh
 make -C iter2-autonomy/voice mic_test            # QNX build in docker/run.sh (needs ~/qnx800), small: no whisper
 make -C iter2-autonomy/voice                     # QNX: build/qnx/tars_voice (+ mic_test)

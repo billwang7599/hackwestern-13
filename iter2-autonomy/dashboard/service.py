@@ -114,10 +114,26 @@ def serve():
         else:
             print(f'No {detect} or {model}: GOTO will stop with "no camera frames"', flush=True)
     if os.environ.get('TARS_ENABLE_VOICE') == '1':
-        voice_dir = Path(os.environ.get('TARS_VOICE_DIR', '/data/home/qnxuser/voice'))
-        if not (voice_dir / 'tars_voice').is_file():
-            raise ValueError(f'TARS_ENABLE_VOICE=1 but no {voice_dir}/tars_voice (set TARS_VOICE_DIR)')
-        commands['voice'] = [str(voice_dir / 'tars_voice'), '-c', 'voice.conf']
+        # 1. native build in the repo (make -C iter2-autonomy/voice native): run from voice/, where
+        #    voice.conf and models/ are; 2. the SDP deploy folder (make deploy); TARS_VOICE_DIR overrides.
+        repo_voice = HERE.parent / 'voice'
+        if os.environ.get('TARS_VOICE_DIR'):
+            voice_dir = Path(os.environ['TARS_VOICE_DIR'])
+            binary = voice_dir / 'tars_voice'
+            if not binary.is_file():
+                binary = voice_dir / 'build/native/tars_voice'
+        elif (repo_voice / 'build/native/tars_voice').is_file():
+            voice_dir, binary = repo_voice, repo_voice / 'build/native/tars_voice'
+        else:
+            voice_dir = Path('/data/home/qnxuser/voice')
+            binary = voice_dir / 'tars_voice'
+        if not binary.is_file():
+            raise ValueError('TARS_ENABLE_VOICE=1 but no tars_voice: run make -C iter2-autonomy/voice native '
+                             '(or set TARS_VOICE_DIR)')
+        if not (voice_dir / 'models/ggml-tiny.en-q5_1.bin').is_file():
+            raise ValueError(f'TARS_ENABLE_VOICE=1 but no {voice_dir}/models/ggml-tiny.en-q5_1.bin '
+                             '(iter2-autonomy/voice/get_model.sh)')
+        commands['voice'] = [str(binary), '-c', 'voice.conf']
         cwds['voice'] = str(voice_dir)
     relay = HERE.parent / 'mission/build/mission_relay'
     if env.get('MISSION_KEY'):

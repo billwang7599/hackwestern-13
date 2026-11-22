@@ -35,7 +35,7 @@ ifeq ($(UNAME),Darwin)
 HOST_LIBS := -framework Accelerate -framework Foundation
 endif
 
-.PHONY: all host test test-intent test-stt test-net test-phone test-goto-link e2e qnx mic_test deploy clean fetch model
+.PHONY: all host test test-intent test-stt test-net test-phone test-goto-link e2e qnx mic_test native native-mic deploy clean fetch model
 
 all: qnx
 
@@ -132,6 +132,70 @@ qnx mic_test:
 	@echo ">> qcc not found, building inside the QNX container"
 	$(REPO)/docker/run.sh make -C $(CURDIR) $@
 endif
+
+# ---------------------------------------------------------------- native (ON the Pi, its clang)
+# Andrew's route: no SDP, no Docker, no cmake. whisper.cpp/ggml CPU backend compiled directly with the
+# same switches the cmake build uses (CPU only, no OpenMP/BLAS, static, Armv8.2-A + dotprod + fp16).
+#   make -C iter2-autonomy/voice native -j4     -> build/native/tars_voice, build/native/mic_test
+# Needs third_party/whisper.cpp (fetch_whisper.sh; copy it over with the repo if the Pi has no git/internet)
+# and models/ggml-tiny.en-q5_1.bin (get_model.sh).
+NCC   ?= clang
+NCXX  ?= clang++
+ND    := build/native
+GG    := $(WSRC)/ggml/src
+NARCH ?= -march=armv8.2-a+dotprod+fp16
+NDEFS := -D_QNX_SOURCE -D_XOPEN_SOURCE=600 -DNDEBUG -DGGML_USE_CPU -DGGML_USE_CPU_REPACK
+NINC  := -I$(WSRC)/include -I$(WSRC)/ggml/include -I$(GG) -I$(ND)/gen
+NOPT  := -O3 -fno-strict-aliasing
+W_C   := $(GG)/ggml.c $(GG)/ggml-alloc.c $(GG)/ggml-quants.c
+W_CXX := $(GG)/ggml.cpp $(GG)/ggml-backend.cpp $(GG)/ggml-backend-meta.cpp $(GG)/ggml-opt.cpp \
+         $(GG)/ggml-threading.cpp $(GG)/gguf.cpp $(GG)/ggml-backend-dl.cpp $(GG)/ggml-backend-reg.cpp \
+         $(WSRC)/src/whisper.cpp $(WSRC)/src/aneforge/whisper-aneforge.cpp
+CPU_C   := $(GG)/ggml-cpu/ggml-cpu.c $(GG)/ggml-cpu/quants.c $(GG)/ggml-cpu/arch/arm/quants.c
+CPU_CXX := $(addprefix $(GG)/ggml-cpu/,ggml-cpu.cpp repack.cpp hbm.cpp traits.cpp amx/amx.cpp amx/mmq.cpp \
+           tiled/tiled.cpp tiled/tiled-kernel.cpp binary-ops.cpp unary-ops.cpp vec.cpp ops.cpp arch/arm/repack.cpp)
+NOBJ  := $(patsubst $(WSRC)/%,$(ND)/w/%.o,$(W_C) $(W_CXX) $(CPU_C) $(CPU_CXX))
+
+$(ND)/gen/ggml-version.h:
+	@test -d $(GG) || { echo "no $(WSRC): run ./fetch_whisper.sh (or copy third_party/ from the laptop)"; exit 1; }
+	@mkdir -p $(@D)
+	printf '#pragma once\n#define GGML_VERSION "0.26.0"\n#define GGML_COMMIT "d1be6fd"\n' > $@
+
+# ggml-cpu sources get the CPU feature flags and their own include dirs; the rest don't need them
+$(ND)/w/ggml/src/ggml-cpu/%.c.o: $(GG)/ggml-cpu/%.c $(ND)/gen/ggml-version.h
+	@mkdir -p $(@D)
+	$(NCC) -std=gnu11 $(NOPT) $(NARCH) $(NDEFS) $(NINC) -I$(GG)/ggml-cpu -c $< -o $@
+$(ND)/w/ggml/src/ggml-cpu/%.cpp.o: $(GG)/ggml-cpu/%.cpp $(ND)/gen/ggml-version.h
+	@mkdir -p $(@D)
+	$(NCXX) -std=gnu++17 $(NOPT) $(NARCH) $(NDEFS) $(NINC) -I$(GG)/ggml-cpu -c $< -o $@
+$(ND)/w/%.c.o: $(WSRC)/%.c $(ND)/gen/ggml-version.h
+	@mkdir -p $(@D)
+	$(NCC) -std=gnu11 $(NOPT) $(NARCH) $(NDEFS) $(NINC) -c $< -o $@
+$(ND)/w/%.cpp.o: $(WSRC)/%.cpp $(ND)/gen/ggml-version.h
+	@mkdir -p $(@D)
+	$(NCXX) -std=gnu++17 $(NOPT) $(NARCH) $(NDEFS) $(NINC) -DWHISPER_VERSION=\"1.9.5\" -c $< -o $@
+
+$(ND)/libwhisper_all.a: $(NOBJ)
+	rm -f $@
+	ar rcs $@ $(NOBJ)
+
+$(ND)/tars_voice: $(SRCS) src/*.h intent/*.h $(ND)/libwhisper_all.a
+	@mkdir -p $(ND)
+	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c src/main.c -o $(ND)/main.o
+	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c src/audio.c -o $(ND)/audio.o
+	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c src/vad.c -o $(ND)/vad.o
+	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c src/stt.c -o $(ND)/stt.o
+	$(NCC) $(CFLAGS) -D_QNX_SOURCE $(INC) -c intent/intent.c -o $(ND)/intent.o
+	$(NCXX) -o $@ $(ND)/main.o $(ND)/audio.o $(ND)/vad.o $(ND)/stt.o $(ND)/intent.o \
+	      $(ND)/libwhisper_all.a -lasound -lsocket -lm
+	@echo ">> built $@  (run from this directory: ./build/native/tars_voice -c voice.conf --dry)"
+
+$(ND)/mic_test: qnx/mic_test.c src/audio.c src/audio.h
+	@mkdir -p $(ND)
+	$(NCC) $(CFLAGS) -D_QNX_SOURCE -Isrc -o $@ qnx/mic_test.c src/audio.c -lasound -lsocket -lm
+
+native: $(ND)/mic_test $(ND)/tars_voice
+native-mic: $(ND)/mic_test
 
 # ---------------------------------------------------------------- deploy
 deploy:
