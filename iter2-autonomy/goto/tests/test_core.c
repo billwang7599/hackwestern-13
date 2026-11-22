@@ -1442,6 +1442,94 @@ static void test_map_reveal_measured(void)
     goto_cfg_defaults(&C);
 }
 
+/* Regression (bench pocket_mouth, virtual SM11 turning ~50% of every TURN): goto started each
+ * leg's MOVE whatever the heading after the TURN, so 1 m legs ran 20-50 deg off the route and
+ * the car zig-zagged into walls / blocked:map. Now it re-measures after the TURN and turns again
+ * (nav_heading_tol_deg, nav_heading_retries) before it drives. Returns the worst heading error
+ * (deg) at the start of a path MOVE; *fixes = corrective TURNs, *dist = end distance to the bin. */
+/* mode 0: ARKit, 2 fresh poses after each leg; 1: ARKit lost, dead reckoning only (DR yaw =
+ * the commanded TURN, the truth turns `scale` of it); 2: ARKit ok but no pose after the leg
+ * (the settle wait times out on a stale yaw) */
+static double heading_run_m(double scale, int retries, int *fixes, double *dist, int mode)
+{
+    map_setup();
+    C.nav_heading_retries = retries;
+    goto_sm_init(&S, &C, &O); goto_sm_set_memory(&S, &MM, 1e6); goto_sm_set_nav(&S, N); goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
+    S.cfg.robot_radius_m = 0.35;
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(1.5, 0, 1.7, 2.6, NAV_OCC);           /* a wall between robot and bin: up, over, down */
+    double DX = 0.6, DZ = 0.6, DYAW = 0;
+    if (mode == 1) nav_note_dr(N, (float)DX, (float)DZ, (float)DYAW);   /* DR = nav frame (anchor) */
+    put_robot(0.6, 0.6, 0);
+    if (mode == 1) nav_set_pose(N, 0, 0, 0, 0);                    /* ARKit lost: DR from here */
+    add_inst(3.0, 0.6, MEM_FRESH);
+    TURN_SCALE = scale;
+    EV[0] = 0;
+    start("trash can");
+    double worst = 0;
+    int id = 700;
+    for (int n = 0; n < 80; n++) {
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (!a && !m) break;
+        grab_events();
+        if (a) { PYAW -= a->a * TURN_SCALE * M_PI / 180; DYAW -= a->a * M_PI / 180; }
+        else {
+            DX += m->a / 1000 * sin(DYAW); DZ += m->a / 1000 * cos(DYAW);
+            if (S.st == ST_FOLLOW_PATH && S.leg == 1 && S.path_i < S.path_n) {
+                double dx = S.path[S.path_i].x - PX, dz = S.path[S.path_i].z - PZ;
+                double e = fabs(remainder(atan2(dx, dz) - PYAW, 2 * M_PI)) * 180 / M_PI;
+                if (e > worst) worst = e;
+            }
+            double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            PX = nx; PZ = nz;
+        }
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        if (mode == 0) leg_done_phone_lags(id);
+        else {
+            if (mode == 1) nav_note_dr(N, (float)DX, (float)DZ, (float)DYAW);
+            else nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);   /* one pose, before DONE: then silence */
+            goto_sm_move_status(&S, T, id, "done", "-");
+            advance(0.6);                              /* > nav_pose_fresh_s: a stale settle ends */
+        }
+    }
+    grab_events();
+    *fixes = S.heading_fixes;
+    *dist = hypot(PX - 3.0, PZ - 0.6);
+    TURN_SCALE = 1.0;
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+    return worst;
+}
+
+static double heading_run(double scale, int retries, int *fixes, double *dist) { return heading_run_m(scale, retries, fixes, dist, 0); }
+
+static void test_map_heading_closed_loop(void)
+{
+    int fixes;
+    double dist;
+    double w = heading_run(1.0, 3, &fixes, &dist);
+    CHECK(fixes == 0 && w <= 6.0 && dist < 1.0 && crossed_occ == 0, "exact turns: no corrective TURN (%d), worst %.1f deg, ends %.2f m from the bin", fixes, w, dist);
+    w = heading_run(0.5, 0, &fixes, &dist);
+    CHECK(w > 20.0, "TURN x0.50, correction off: legs start %.0f deg off (the bug)", w);
+    w = heading_run(0.5, 3, &fixes, &dist);
+    CHECK(w <= 6.0 + 0.5, "TURN x0.50: every path MOVE starts within the tolerance (worst %.1f deg)", w);
+    CHECK(fixes > 0 && crossed_occ == 0 && dist < 1.0, "... after %d corrective TURNs, never through the wall, ends %.2f m from the bin", fixes, dist);
+    w = heading_run(1.4, 3, &fixes, &dist);
+    CHECK(w <= 6.0 + 0.5 && crossed_occ == 0 && dist < 1.0, "TURN x1.40 (over-rotates): worst %.1f deg, %d fixes, %.2f m", w, fixes, dist);
+    /* dead reckoning only: its yaw is the commanded TURN, so it can't see the error: no correction, logged */
+    heading_run_m(0.5, 3, &fixes, &dist, 1);
+    CHECK(fixes == 0 && had_event("heading_unchecked trash can #1 dr", EV) && S.heading_unchecked > 0,
+          "DR pose: no corrective TURN (%d), heading_unchecked dr logged once (%d legs)", fixes, S.heading_unchecked);
+    /* ARKit but no pose since the TURN ended (settle timed out): never re-turn on the stale yaw */
+    heading_run_m(0.5, 3, &fixes, &dist, 2);
+    CHECK(fixes == 0 && had_event("heading_unchecked trash can #1 stale", EV),
+          "stale ARKit yaw after the TURN: no corrective TURN (%d), heading_unchecked stale (%.300s)", fixes, EV);
+}
+
 /* the fake robot's lidar_guard (lidar_guard.cpp, no slack): an OCC cell centre at 0 < forward
  * <= 0.6 m, |side| < 0.45 m, inside the phone's 60 deg cone -> BLOCKED */
 static int fake_guard_blocked(void)
@@ -2084,6 +2172,7 @@ int main(void)
     test_map_occluder_inside_footprint();
     test_map_no_route_fails();
     test_map_reveal_measured();
+    test_map_heading_closed_loop();
     test_map_guard_escape();
     test_map_long_leg_in_pieces();
     test_map_search_fails_then_memory_route();

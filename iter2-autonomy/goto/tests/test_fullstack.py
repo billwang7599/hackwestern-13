@@ -473,7 +473,9 @@ class Stack:
                   f"replans_here={st.get('replans_here')} elapsed={st.get('elapsed')}")
             tr = list(self.sens.trace)
             drove = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(tr, tr[1:]))
-            print(f"    [{name}] drove {drove:.2f} m (pose trace)")
+            nbm = sum(e.startswith("blocked:map") for e in self.goto.events)
+            print(f"    [{name}] drove {drove:.2f} m (pose trace), blocked:map {nbm}, "
+                  f"heading_fixes={st.get('heading_fixes', '-')} heading_unchecked={st.get('heading_unchecked', '-')}")
             g = self.sens.guard_gaps
             if g:
                 print(f"    [{name}] fake guard: max gap {1000 * max(g):.0f} ms, {sum(x >= 0.1 for x in g)} gaps >= 100 ms (tars_motor TTL)")

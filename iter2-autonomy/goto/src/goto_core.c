@@ -64,6 +64,8 @@ void goto_cfg_defaults(goto_cfg *c)
     c->cam_pitch_deg = 0.0;
     c->nav_pose_fresh_s = 0.5;
     c->nav_turn_min_deg = 4.0;
+    c->nav_heading_tol_deg = 6.0;
+    c->nav_heading_retries = 3;
     c->nav_leg_min_mm = 60.0;
     c->nav_max_replans = 6;
     c->nav_guard_wait_s = 0.5;
@@ -134,6 +136,7 @@ int goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen)
         {"memory_tries", &c->memory_tries, 0}, {"cam_height_mm", &c->cam_height_mm, 0},
         {"cam_pitch_deg", &c->cam_pitch_deg, 0},
         {"nav_pose_fresh_s", &c->nav_pose_fresh_s, 0}, {"nav_turn_min_deg", &c->nav_turn_min_deg, 0},
+        {"nav_heading_tol_deg", &c->nav_heading_tol_deg, 0}, {"nav_heading_retries", &c->nav_heading_retries, 0},
         {"nav_leg_min_mm", &c->nav_leg_min_mm, 0}, {"nav_max_replans", &c->nav_max_replans, 0},
         {"nav_guard_wait_s", &c->nav_guard_wait_s, 0}, {"nav_reveal_deg", &c->nav_reveal_deg, 0},
         {"nav_guard_stop_m", &c->nav_guard_stop_m, 0}, {"nav_guard_half_w", &c->nav_guard_half_w, 0},
@@ -1188,6 +1191,47 @@ static double path_move_mm(goto_sm *s, double d)
 
 static void crumb_note(goto_sm *s, int force, int corner);
 
+/* Closed-loop heading after a path TURN (legs 0, 4, 6). TURNs are open loop (no encoders: the
+ * car under/over-rotates; the bench SM11 lands at ~50%), so before the MOVE re-measure from the
+ * fresh pose: still more than nav_heading_tol_deg off -> another TURN of err as the same leg
+ * (it ends up here again), at most nav_heading_retries times, then MOVE anyway (event). A
+ * corrective TURN is an ordinary leg TURN: the guard, turn_stops, S and CANCEL treat it the same.
+ * 1 = a corrective TURN was started. */
+static int heading_fix(goto_sm *s, double err, int leg)
+{
+    char t[96];
+    if (s->cfg.nav_heading_retries <= 0) return 0;
+    /* only a MEASURED heading is worth correcting: the iPhone's ARKit pose, taken after this
+     * TURN ended (leg_settle saw 2 new pose seqs). A DR yaw is the commanded TURN integrated,
+     * always "on target"; a stale ARKit yaw (settle timed out) would re-turn on old data. */
+    if (nav_pose(s, NULL, NULL, NULL) != NAV_POSE_ARKIT || !s->settle_fresh) {
+        if (!s->heading_unchecked++) {           /* once per GOTO: STATUS heading_unchecked= counts */
+            snprintf(t, sizeof t, "heading_unchecked %s #%d %s", target_name(s), s->mem_id,
+                     nav_pose(s, NULL, NULL, NULL) == NAV_POSE_ARKIT ? "stale" : "dr");
+            emit(s, ACT_EVENT, 0, 0, t);
+        }
+        s->heading_tries = 0;
+        return 0;
+    }
+    if (fabs(err) <= s->cfg.nav_heading_tol_deg) {
+        s->heading_tries = 0;
+        return 0;
+    }
+    if (s->heading_tries >= (int)s->cfg.nav_heading_retries) {
+        snprintf(t, sizeof t, "heading_off %s #%d %.0f", target_name(s), s->mem_id, err);
+        emit(s, ACT_EVENT, 0, 0, t);
+        s->heading_tries = 0;
+        return 0;
+    }
+    s->heading_tries++;
+    s->heading_fixes++;
+    snprintf(t, sizeof t, "heading_fix %s #%d %.0f", target_name(s), s->mem_id, err);
+    emit(s, ACT_EVENT, 0, 0, t);
+    s->leg = leg;
+    start_leg(s, ACT_TURN, err);
+    return 1;
+}
+
 static void next_leg(goto_sm *s)
 {
     crumb_note(s, 1, 1);                        /* a path leg starts here: a corner of the trail */
@@ -1197,6 +1241,7 @@ static void next_leg(goto_sm *s)
         if (d < s->cfg.nav_leg_min_mm) { s->path_i++; continue; }
         if (guard_escape(s, b)) return;
         s->leg_mm = d;
+        s->heading_tries = 0;
         if (fabs(b) > s->cfg.nav_turn_min_deg) { s->leg = 0; start_leg(s, ACT_TURN, b); }
         else { s->leg = 1; start_leg(s, ACT_MOVE, path_move_mm(s, d)); }
         return;
@@ -1413,6 +1458,8 @@ static int guard_escape(goto_sm *s, double b_wp)
         snprintf(t, sizeof t, "escape %s #%d %.0f", target_name(s), s->mem_id, b);
         emit(s, ACT_EVENT, 0, 0, t);
         s->leg_mm = s->cfg.nav_escape_mm;
+        s->esc_yaw = h;
+        s->heading_tries = 0;
         if (fabs(b) > s->cfg.nav_turn_min_deg) { s->leg = 4; start_leg(s, ACT_TURN, b); }
         else { s->leg = 5; start_leg(s, ACT_MOVE, s->leg_mm); }
         return 1;
@@ -1793,6 +1840,7 @@ static void bt_step(goto_sm *s)
         s->bt_tries++;
         double t = wrap180(b - 180.0);           /* afterwards the point is straight behind */
         s->bt_mm = d;
+        s->heading_tries = 0;
         if (fabs(t) > s->cfg.nav_turn_min_deg) { s->leg = 6; start_leg(s, ACT_TURN, t); }
         else start_back_move(s, d);
         return;
@@ -2228,6 +2276,7 @@ static void leg_done(goto_sm *s)
         rel_to(s, s->path[s->path_i].x, s->path[s->path_i].z, &b, &d);
         if (d < s->cfg.nav_leg_min_mm) { s->path_i++; next_leg(s); return; }
         if (guard_escape(s, b)) return;            /* the turn landed facing something */
+        if (heading_fix(s, b, 0)) return;          /* the turn came up short/long: aim again */
         s->leg = 1;
         s->leg_mm = d;
         start_leg(s, ACT_MOVE, path_move_mm(s, d));
@@ -2243,11 +2292,16 @@ static void leg_done(goto_sm *s)
         if (s->leg_cut) { next_leg(s); return; }  /* only part of the way: re-measure, same waypoint */
         s->path_i++; next_leg(s); return;
     case 2: start_look(s, s->now + s->cfg.settle_s); return;
-    case 4: s->leg = 5; start_leg(s, ACT_MOVE, s->leg_mm); return;   /* escape: pivoted, now the step */
+    case 4: {                                   /* escape: pivoted, now the step */
+        double yaw = 0;
+        if (nav_pose(s, NULL, NULL, &yaw) && heading_fix(s, wrap180(DEG(yaw - s->esc_yaw)), 4)) return;
+        s->leg = 5; start_leg(s, ACT_MOVE, s->leg_mm); return;
+    }
     case 5: if (travel_capped(s)) return; do_plan(s); return;
     case 6: {                                   /* backtrack: turned the back to the point, now reverse */
         double b, d;
         rel_to(s, s->bt_pts[s->bt_i].x, s->bt_pts[s->bt_i].z, &b, &d);
+        if (heading_fix(s, wrap180(b - 180.0), 6)) return;   /* back not quite facing the point yet */
         start_back_move(s, d);
         return;
     }
@@ -2580,6 +2634,7 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->revealed_deg = 0;                       /* each GOTO may look around once more */
     s->reveal_have_yaw = 0;
     s->escapes = 0;
+    s->heading_tries = s->heading_fixes = s->heading_unchecked = 0;
     s->mem_fallback = s->fallback_noroute = 0;
     s->guard_refusals = s->guard_aborts = s->guard_other_stops = 0;
     s->crumb_head = s->crumb_n = 0;
@@ -2965,6 +3020,8 @@ void goto_sm_tick(goto_sm *s, double now)
         if (s->st == ST_FOLLOW_PATH && s->leg_settle) {   /* leg done: a post-move pose yet? */
             if (nav_pose_seq(s->nav) - s->settle_seq >= 2 || nav_pose(s, NULL, NULL, NULL) != NAV_POSE_ARKIT ||
                 now - s->settle_since >= s->cfg.nav_pose_fresh_s) {
+                s->settle_fresh = nav_pose_seq(s->nav) - s->settle_seq >= 2 &&
+                                  nav_pose(s, NULL, NULL, NULL) == NAV_POSE_ARKIT;
                 s->leg_settle = 0;
                 leg_done(s);
             }
@@ -2979,10 +3036,13 @@ void goto_sm_tick(goto_sm *s, double now)
          * refused while the guard denies, and tars_motor's abort is what we want then) */
         if (s->st == ST_FOLLOW_PATH && s->nav && nav_version(s->nav) != s->path_ver && s->leg <= 1) {
             s->path_ver = nav_version(s->nav);
-            if (path_blocked(s)) {                    /* the map changed under the route */
+            int pb = path_blocked(s);
+            if (pb) {                                 /* the map changed under the route */
                 emit(s, ACT_STOP, 0, 0, NULL);
                 if (s->optimistic) {                  /* expected while exploring: not a failure, its own cap */
-                    map_event(s, "blocked:map");
+                    char t[96];                       /* why: 1 wall on a leg, 2 guard box, 3 footprint */
+                    snprintf(t, sizeof t, "blocked:map %s #%d why=%d", target_name(s), s->mem_id, pb);
+                    emit(s, ACT_EVENT, 0, 0, t);
                     if (++s->opt_replans > (int)s->cfg.nav_max_opt_replans) { goto_sm_fail(s, now, "replan cap"); return; }
                     set_state(s, ST_PLAN);
                     s->plan_wait = 1;
@@ -3051,6 +3111,7 @@ void goto_sm_move_status(goto_sm *s, double now, int move_id, const char *move, 
          * move ended (and nav prefers ARKit while it's < nav_pose_fresh_s old): planning
          * from it turns by a stale heading. Wait for 2 newer poses (the first may have been
          * in flight); goto_sm_tick() finishes the leg. */
+        s->settle_fresh = 0;                    /* set by goto_sm_tick() only on 2 post-move poses */
         if (nav_pose(s, NULL, NULL, NULL) == NAV_POSE_ARKIT) {
             s->leg_settle = 1;
             s->settle_seq = nav_pose_seq(s->nav);
@@ -3088,7 +3149,7 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
     snprintf(out, len,
              "state=%s target=%s result=%s seen=%d bearing=%.1f h=%.2f searched=%.0f fps=%.1f "
              "elapsed=%.1f frames=%d hits=%d l=%.2f r=%.2f mode=%s mem=%s map=%s path=%d/%d replans=%d "
-             "guard=%s guard_refusals=%d guard_aborts=%d guard_stops_other=%d backtracks=%d replans_here=%d",
+             "guard=%s guard_refusals=%d guard_aborts=%d guard_stops_other=%d backtracks=%d replans_here=%d heading_fixes=%d heading_unchecked=%d",
              goto_state_name(s->st), tn, s->result,
              s->st == ST_APPROACH && s->now - s->last_seen < 0.5, s->last_bearing,
              s->have_track ? s->ema_h : 0.0, s->searched_deg, s->fps_ema,
@@ -3099,5 +3160,5 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
              !s->nav ? "off" : s->map_mode ? (s->vantage ? "detour" : "route") : "ready",
              s->path_i, s->path_n, s->replans,
              !s->guard_known ? "-" : s->guard_ok ? "clear" : "denied",
-             s->guard_refusals, s->guard_aborts, s->guard_other_stops, s->backtracks, s->replans_here);
+             s->guard_refusals, s->guard_aborts, s->guard_other_stops, s->backtracks, s->replans_here, s->heading_fixes, s->heading_unchecked);
 }
