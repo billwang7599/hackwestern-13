@@ -329,7 +329,7 @@ def main():
             if keyboard.claimed:
                 native = motors.snapshot()
                 left, right = keyboard.state(enabled and native.get('connected', False) and
-                                             (permitted or (keyboard.shifted and classified_obstacle(edge_snapshot['safety']))))
+                                             (permitted or keyboard.shifted))
                 if keyboard.generation != last_keyboard_generation:
                     drive.generation += 1
                     last_keyboard_generation = keyboard.generation
