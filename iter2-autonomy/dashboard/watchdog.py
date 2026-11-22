@@ -31,7 +31,8 @@ def main():
     if token.is_file() and 'TARS_BENCH_TOKEN' not in os.environ:
         env['TARS_BENCH_TOKEN'] = token.read_text().strip()
     # Autonomy: state/goto-mode = 0 | map | 1 (1 = GOTO drives, detect on); state/nav-dir = goto build to use.
-    for name, key in (('goto-mode', 'TARS_ENABLE_GOTO'), ('nav-dir', 'TARS_NAV_DIR')):
+    # web-token: the telemetry page at http://<pi-ip>:5580/telemetry?token=... (room_view.py).
+    for name, key in (('goto-mode', 'TARS_ENABLE_GOTO'), ('nav-dir', 'TARS_NAV_DIR'), ('web-token', 'TARS_WEB_TOKEN')):
         f = STATE / name
         if f.is_file() and key not in os.environ:
             env[key] = f.read_text().strip()

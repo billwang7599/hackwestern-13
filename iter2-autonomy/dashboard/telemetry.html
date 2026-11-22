@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TARS Telemetry</title>
+<style>
+:root{--bg:#0f1619;--card:#172126;--line:#2b3a40;--text:#dce7e9;--muted:#93a6ab;--ok:#76e4bb;--warn:#edbf78;--bad:#ff7a6e;--accent:#7cb8ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.35 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:baseline;padding:12px 16px;border-bottom:1px solid var(--line)}
+h1{font-size:18px;margin:0}
+h2{font-size:13px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+a{color:var(--accent)}
+main{display:grid;gap:12px;padding:12px 16px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0}
+.big{font-size:22px;font-weight:700}
+.row{display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px solid #ffffff0a}
+.row:last-child{border-bottom:0}
+.row span:first-child{color:var(--muted)}
+.row span:last-child{text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.muted{color:var(--muted)}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:700;background:#ffffff12}
+.bars{display:grid;grid-template-columns:auto 1fr 64px;gap:4px 8px;align-items:center;font-variant-numeric:tabular-nums}
+.bar{height:8px;background:#ffffff10;border-radius:4px;position:relative;overflow:hidden}
+.bar i{position:absolute;top:0;bottom:0;background:var(--accent)}
+.keys{font:600 20px ui-monospace,Menlo,monospace;color:var(--accent);min-height:28px}
+canvas{width:100%;height:260px;background:#0b1114;border-radius:8px;display:block}
+#banner{width:100%;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>TARS telemetry</h1>
+  <span id="link" class="pill">connecting…</span>
+  <span id="guard" class="pill">guard</span>
+  <span class="muted">Read-only. Everything here is what the Pi publishes to the phone.</span>
+  <a href="/">Room map →</a>
+  <div id="banner" class="warn"></div>
+</header>
+<main>
+  <section><h2>Safety guard</h2><div id="safety"></div></section>
+  <section><h2>Motors</h2><div id="motor"></div></section>
+  <section><h2>Keyboard (Shift+WASD)</h2><div class="keys" id="keys">—</div><div id="keyboard"></div></section>
+  <section><h2>Voice</h2><div id="voice"></div></section>
+  <section><h2>Phone sensors</h2><div id="sensors"></div></section>
+  <section><h2>Motion</h2><div class="bars" id="motion"></div></section>
+  <section><h2>Edge AI</h2><div id="ai"></div></section>
+  <section><h2>Mapping</h2><div id="mapping"></div></section>
+  <section style="grid-column:1/-1"><h2>Floor map (LiDAR)</h2><canvas id="floor"></canvas>
+    <div class="muted" style="margin-top:6px">teal = free floor · orange = obstacle · white arrow = phone pose</div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = v => String(v).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num = (v, d = 1, unit = '') => (typeof v === 'number' && isFinite(v)) ? v.toFixed(d) + unit : '—';
+const yes = (v, good = 'yes', bad = 'no') => v === true ? `<span class="ok">${good}</span>` : v === false ? `<span class="bad">${bad}</span>` : '—';
+function rows(el, list) {
+  $(el).innerHTML = list.filter(Boolean).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><span>${v ?? '—'}</span></div>`).join('');
+}
+function txt(v, fallback = '—') { return v === undefined || v === null || v === '' ? fallback : esc(v); }
+
+function render(s) {
+  const fresh = s.publisher_live;
+  $('link').textContent = fresh ? (s.streaming ? 'RECEIVING' : 'PAUSED') : 'STALE';
+  $('link').className = 'pill ' + (fresh ? (s.streaming ? 'ok' : 'warn') : 'bad');
+  const safety = s.safety || {}, motor = s.motor || {}, kb = s.keyboard || {}, voice = s.voice || {};
+  const verdict = safety.verdict || 'STALE';
+  $('guard').textContent = 'Guard ' + verdict;
+  $('guard').className = 'pill ' + (verdict === 'CLEAR' ? 'ok' : verdict === 'CAUTION' ? 'warn' : 'bad');
+  const problems = [];
+  if (!s.phone_connected) problems.push('Phone app not connected to the Pi (open MotionUSB, keep it in front, press Start).');
+  if (fresh && !s.motion_live) problems.push('No phone motion data.');
+  if (safety.permit !== true) problems.push('Guard is not permitting motion: ' + (safety.reason || verdict) + '. Shift+WASD still overrides it.');
+  $('banner').textContent = problems.join(' ');
+
+  rows('safety', [
+    ['Verdict', `<b class="${verdict === 'CLEAR' ? 'ok' : verdict === 'CAUTION' ? 'warn' : 'bad'}">${txt(verdict)}</b>`],
+    ['Motion permitted', yes(safety.permit)],
+    ['Reason', txt(safety.reason)],
+    ['LiDAR verdict', txt(safety.lidar_verdict)],
+    ['Nearest obstacle', num(safety.nearest_obstacle_m ?? safety.nearest_m, 2, ' m')],
+    ['Inferred nearest', num(safety.inferred_nearest_m, 2, ' m')],
+    ['Stop source', txt(safety.stop_source)],
+    ['Guard loop', num(safety.tick_hz, 0, ' Hz') + ' · late max ' + num(safety.max_lateness_ms, 1, ' ms')],
+    ['Status age', num(safety.status_age_ms, 0, ' ms')],
+  ]);
+  const out = motor.output || [], req = motor.requested || [];
+  rows('motor', [
+    ['Driver', motor.backend === 'gpio' ? 'Pi GPIO → L298N' : txt(motor.backend)],
+    ['Connected', yes(motor.connected)],
+    ['State', motor.inhibited ? `<span class="warn">STOP / inhibited</span>` : `<span class="ok">gate open</span>`],
+    ['Reason', txt(motor.reason)],
+    ['Output L / R', num(out[0], 2) + ' / ' + num(out[1], 2)],
+    ['Requested L / R', num(req[0], 2) + ' / ' + num(req[1], 2)],
+    ['Exact move', txt(motor.move) + (motor.move_kind && motor.move_kind !== '-' ? ' ' + esc(motor.move_kind) + ' ' + num(motor.move_req, 0) : '') + (motor.move_why && motor.move_why !== '-' ? ' (' + esc(motor.move_why) + ')' : '')],
+    ['Guard epoch', txt(motor.guard_epoch)],
+    motor.command_error ? ['Last error', `<span class="bad">${txt(motor.command_error)}</span>`] : null,
+    motor.nav_event ? ['Navigation', txt(motor.nav_event)] : null,
+  ]);
+  const keys = kb.keys || [];
+  $('keys').textContent = keys.length ? keys.join(' + ') : (kb.connected ? 'no keys held' : 'keyboard not seen');
+  rows('keyboard', [
+    ['Receiver', yes(kb.connected, 'connected', 'not seen')],
+    ['Driving', txt(kb.active, 'no')],
+    ['Shift override', yes(kb.obstacle_override, 'ON (guard bypassed)', 'off')],
+    ['Control owner', txt(kb.owner)],
+    ['Last keys', txt((kb.last_keys || []).join(' + '))],
+    ['Events', txt(kb.event_count, 0) + (kb.last_event_age_ms != null ? ' · last ' + num(kb.last_event_age_ms / 1000, 1, ' s ago') : '')],
+    ['Max hold', num(kb.max_hold_s, 0, ' s')],
+    kb.error ? ['Note', `<span class="warn">${txt(kb.error)}</span>`] : null,
+  ]);
+  rows('voice', [
+    ['Last command', voice.text ? `“${txt(voice.text)}”` : 'none yet'],
+    ['Pi answer', voice.state === 'error' ? `<span class="warn">${txt(voice.reply)}</span>` : txt(voice.reply, voice.text ? 'waiting…' : '—')],
+    ['When', voice.at ? new Date(voice.at * 1000).toLocaleTimeString() : '—'],
+  ]);
+  rows('sensors', [
+    ['Phone link', yes(s.phone_connected, 'connected', 'down')],
+    ['Streams', s.streaming ? '<span class="ok">on</span>' : '<span class="warn">paused</span>'],
+    ['Motion', (s.motion_live ? '<span class="ok">live</span> ' : '<span class="bad">stale</span> ') + num(s.motion_hz, 1, ' Hz')],
+    ['Camera', (s.camera_live ? '<span class="ok">live</span> ' : '<span class="bad">stale</span> ') + num(s.camera_fps, 1, ' fps')],
+    ['Samples / gaps', txt(s.samples, 0) + ' / ' + txt(s.gaps, 0)],
+    ['Frames', txt(s.frames, 0)],
+    ['Pi receipt age', num(s.receipt_age_ms, 0, ' ms')],
+    ['Pi screen', txt(s.mode)],
+  ]);
+  const bar = (label, v, scale, unit) => {
+    const ok = typeof v === 'number' && isFinite(v), f = ok ? Math.max(-1, Math.min(1, v / scale)) : 0;
+    const left = f < 0 ? 50 + f * 50 : 50, width = Math.abs(f) * 50;
+    return `<span class="muted">${label}</span><div class="bar"><i style="left:${left}%;width:${width}%"></i></div><span>${num(v, 2)} ${unit}</span>`;
+  };
+  const a = s.accel_m_s2 || [], g = s.gyro_rad_s || [];
+  $('motion').innerHTML = ['x', 'y', 'z'].map((k, i) => bar('accel ' + k, a[i], 12, 'm/s²')).join('') +
+                          ['x', 'y', 'z'].map((k, i) => bar('gyro ' + k, g[i], 3, 'rad/s')).join('');
+  const ai = s.ai || {}, depth = s.depth || {};
+  rows('ai', [
+    ['Object detector', ai.live ? '<span class="ok">live</span>' : '<span class="muted">idle</span>'],
+    ['Objects', txt(ai.objects ?? (ai.detections || []).length, '0')],
+    ['Inference', num(ai.ai_ms ?? ai.ms, 0, ' ms')],
+    ['Depth (MiDaS)', depth.live ? '<span class="ok">live</span>' : '<span class="muted">off</span>'],
+    ai.ai_error || ai.error ? ['Error', `<span class="warn">${txt(ai.ai_error || ai.error)}</span>`] : null,
+  ]);
+}
+
+let room = null;
+function renderMap() {
+  const c = $('floor'), w = c.clientWidth, h = c.clientHeight, dpr = devicePixelRatio || 1;
+  c.width = w * dpr; c.height = h * dpr;
+  const g = c.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  if (!room || !room.grid || !room.origin || !room.size) {
+    g.fillStyle = '#93a6ab'; g.font = '13px system-ui'; g.fillText('No LiDAR map yet: the phone needs to be streaming.', 14, 24);
+    rows('mapping', [['Map', 'waiting for the phone'], ['Publisher', yes(room && room.publisher_live, 'live', 'stale')]]);
+    return;
+  }
+  const n = room.size, res = room.resolution, org = room.origin, rowsN = Math.ceil(room.grid.length / n);
+  const sc = Math.min(w / (n * res), h / (rowsN * res));
+  const X = x => (x - org[0]) * sc + (w - n * res * sc) / 2, Y = z => (z - org[1]) * sc + (h - rowsN * res * sc) / 2;
+  const colors = ['', '#33675e', '#e6a760', '#9d78c1'];
+  for (let i = 0; i < room.grid.length; i++) {
+    const col = colors[Number(room.grid[i])];
+    if (col) { g.fillStyle = col; g.fillRect(X(org[0] + (i % n) * res), Y(org[1] + Math.floor(i / n) * res), res * sc + .4, res * sc + .4); }
+  }
+  for (const o of room.objects || []) {
+    if (!o.position) continue;
+    g.fillStyle = '#7cb8ff'; g.beginPath(); g.arc(X(o.position[0]), Y(o.position[2]), 5, 0, 7); g.fill();
+    g.fillText(o.label || o.name || '', X(o.position[0]) + 7, Y(o.position[2]) + 4);
+  }
+  if (room.pose) {
+    const p = room.pose; g.save(); g.translate(X(p[0]), Y(p[2])); g.rotate(-p[3]);
+    g.fillStyle = '#fff'; g.beginPath(); g.moveTo(0, 9); g.lineTo(-6, -5); g.lineTo(6, -5); g.closePath(); g.fill(); g.restore();
+  }
+  rows('mapping', [
+    ['Tracking', txt(room.tracking, room.tracking_live ? 'live' : 'waiting')],
+    ['Floor', room.floor_ready ? '<span class="ok">calibrated</span>' : '<span class="warn">needed</span>'],
+    ['Scene frames', txt(room.frames, 0)],
+    ['Stored 3D cells', txt(room.voxels, 0)],
+    ['Remembered targets', txt((room.objects || []).length, 0)],
+    ['Scan coverage', num(room.scan_degrees, 0, '°')],
+    ['Map source', txt(room.grid_source)],
+    ['Planner', txt(room.plan_status)],
+  ]);
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/status.json', {cache: 'no-store'});
+    if (r.status === 401) { $('banner').textContent = 'Open this page with ?token=<token> once.'; return; }
+    render(await r.json());
+  } catch (e) {
+    $('link').textContent = 'PI UNREACHABLE'; $('link').className = 'pill bad';
+  }
+}
+async function pollMap() {
+  try { const r = await fetch('/map.json', {cache: 'no-store'}); if (r.ok) room = await r.json(); } catch (e) { }
+  renderMap();
+}
+poll(); pollMap();
+setInterval(poll, 250);
+setInterval(pollMap, 1000);
+addEventListener('resize', renderMap);
+</script>
+</body>
+</html>

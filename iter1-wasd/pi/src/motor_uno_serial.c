@@ -131,6 +131,11 @@ static void parse_line(char *s)
     char *end, what, why[16] = "";
     float amt, amt2;
     int n;
+    if (!strcmp(s, "READY") || !strncmp(s, "WHEELS ", 7)) {   /* firmware is there: link up now, */
+        if (!confirmed) fprintf(stderr, "[uno] confirmed firmware on %s\n", opened_path);
+        confirmed = 1;                                         /* not at the next '?' probe */
+        last_reply = now_ms();
+    }
     if (!strcmp(s, "READY")) {
         ev_push(MOTOR_EV_READY, 0);
     } else if (sscanf(s, "WHEELS DC %f %f%n", &amt, &amt2, &n) == 2 && !s[n]
