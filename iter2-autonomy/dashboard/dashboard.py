@@ -12,7 +12,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'iphone-usb'))
 from receive_motion import validate
 from video import VideoFeed
-from control import ControlLink, DebugDrive, MotorLink, classified_obstacle
+from control import ControlLink, DebugDrive, MotorLink, VoiceRelay, classified_obstacle
 from keyboard_drive import KeyboardDrive
 from mapping import SceneFeed
 from edge_status import EdgeStatus
@@ -154,6 +154,8 @@ def main():
     motors = MotorLink()
     motor_thread = threading.Thread(target=motors.run, daemon=True)
     motor_thread.start()
+    voice = VoiceRelay()
+    threading.Thread(target=voice.run, daemon=True).start()
     edge = EdgeStatus()
     edge_thread = threading.Thread(target=edge.run, daemon=True)
     edge_thread.start()
@@ -232,6 +234,13 @@ def main():
                 if command['op'] in ('halt', 'stop'):
                     motors.request_stop()
                     keyboard.stop()
+                if command['op'] == 'voice':
+                    if VoiceRelay.is_stop(command['text']):   # stop first, locally
+                        motors.request_stop()
+                        keyboard.stop()
+                        drive.command({'op': 'halt'}, now)
+                    voice.submit(command['text'])
+                    continue
                 if command['op'] == 'drive' and keyboard.claimed:
                     continue
                 drive.command(command, now)
@@ -327,7 +336,7 @@ def main():
             override_key = chr(keyboard.key) if keyboard.claimed and keyboard.key and keyboard.shifted else None
             motors.update(left, right, drive.generation, override_key)
             motor_status = motors.snapshot()
-            link.publish(dict(type='status', mode='dashboard', streaming=enabled,
+            link.publish(dict(type='status', mode='dashboard', streaming=enabled, voice=voice.snapshot(),
                               motion_hz=round(rate, 1), camera_fps=round(camera_rate, 1),
                               samples=count, gaps=gaps, frames=video_count,
                               motion_live=bool(live), camera_live=bool(camera_live),
@@ -340,6 +349,7 @@ def main():
                 break
             time.sleep(0.025)
     finally:
+        voice.stop.set()
         motors.stop.set()
         motor_thread.join(timeout=1)
         edge.stop.set()

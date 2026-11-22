@@ -7,6 +7,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import queue
+import re
 import select
 import socket
 import threading
@@ -338,3 +339,60 @@ class MotorLink:
                     self.connected = False
                     self.denied_generation = self.generation
             self.stop.wait(0.5)
+
+
+class VoiceRelay:
+    """Phone voice commands (speech-to-text on the iPhone) -> tars_voice's HEAR input (127.0.0.1:5574).
+
+    tars_voice's intent classifier decides (MOVE/TURN/GOTO/SCAN/...), exactly like the mic path.
+    A stop word is also applied here before anything is queued, so a stop never waits on voice.
+    One worker thread; a full queue drops the oldest-but-unsent command, never a stop.
+    """
+    STOP_WORDS = {'stop', 'halt', 'freeze', 'whoa', 'wait'}
+
+    def __init__(self, port=5574):
+        self.port = port
+        self.queue = queue.Queue(maxsize=4)
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.latest = {}
+
+    @classmethod
+    def is_stop(cls, text):
+        return any(word in cls.STOP_WORDS for word in re.findall(r"[a-z']+", text.lower()))
+
+    def submit(self, text):
+        text = ' '.join(str(text).split())[:200]
+        if not text:
+            return
+        while True:
+            try:
+                self.queue.put_nowait(text)
+                break
+            except queue.Full:
+                try: self.queue.get_nowait()
+                except queue.Empty: pass
+        with self.lock:
+            self.latest = dict(text=text, state='sent', reply=None, at=time.time())
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                text = self.queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                with socket.create_connection(('127.0.0.1', self.port), timeout=0.5) as sock:
+                    sock.settimeout(3)
+                    sock.sendall(b'HEAR ' + text.encode('utf-8', 'replace') + b'\n')
+                    reply = sock.makefile('rb').readline(1024).decode('utf-8', 'replace').strip()
+                state = 'ok' if reply.startswith('OK') else 'error'
+            except OSError as error:
+                reply, state = f'voice service unavailable ({type(error).__name__})', 'error'
+            with self.lock:
+                if self.latest.get('text') == text:
+                    self.latest.update(reply=reply or 'no reply', state=state)
+
+    def snapshot(self):
+        with self.lock:
+            return dict(self.latest)

@@ -137,7 +137,7 @@ def serve():
         'ai': [sys.executable, str(EDGE / 'inference_worker.py')],
         **({'depth': [sys.executable, str(EDGE / 'inference_worker.py'), '--depth']}
            if os.environ.get('TARS_ENABLE_MIDAS') == '1' else {}),
-        'headless': [sys.executable, str(HERE / 'headless.py')],
+        'headless': [sys.executable, str(HERE / ('dashboard.py' if gui_mode() else 'headless.py'))],
     }
     # The installed flat Pi layout keeps navigation under iter2-autonomy.
     nav = HERE.parent / 'goto'
@@ -276,6 +276,7 @@ def serve():
                         try:
                             command = client.recv(32).strip()
                             if command in (b'gui', b'headless'):
+                                set_gui_mode(command == b'gui')
                                 terminate(children['headless'])
                                 filename = 'dashboard.py' if command == b'gui' else 'headless.py'
                                 commands['headless'] = [sys.executable, str(HERE / filename)]
@@ -309,6 +310,21 @@ def serve():
             for name in reversed(commands):
                 if name in children:
                     terminate(children[name])
+
+
+def gui_mode():
+    """Visual dashboard on the Pi's screen instead of headless (state/display = gui)."""
+    try:
+        return (STATE / 'display').read_text().strip() == 'gui'
+    except OSError:
+        return False
+
+
+def set_gui_mode(on):
+    if on:
+        (STATE / 'display').write_text('gui\n')
+    else:
+        (STATE / 'display').unlink(missing_ok=True)
 
 
 def main():
