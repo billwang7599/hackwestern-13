@@ -59,6 +59,28 @@
         s.className = 'light off'; s.textContent = name; s.dataset.tip = tip; s.title = tip + '\n(no data yet)';
         lights.appendChild(s); L[k] = {el: s, name, tip};
       }
+      // sim only: demo speed (run_sim --speed; the car, world and goto all run N x the wall clock)
+      let speedSel = null, speedBusy = false;
+      if (!real) {
+        speedSel = document.createElement('select');
+        speedSel.id = 'simspeed'; speedSel.className = 'simspeed';
+        speedSel.title = 'Sim speed (demo): the virtual car, the world sim and goto all run this many times faster than real time, ' +
+          'so a MOVE still lands where it does at 1×. Voice stays real time. Changing it stops the car and restarts goto ' +
+          '(memory kept, map cleared). Use 1× for testing timing-sensitive things.';
+        for (const v of [1, 2, 4]) speedSel.append(new Option(`${v}× speed`, String(v)));
+        speedSel.disabled = true;
+        speedSel.addEventListener('change', async () => {
+          const v = +speedSel.value;
+          speedBusy = true; speedSel.disabled = true;
+          try {
+            const r = await Bench.api('world/speed', {speed: v});
+            Bench.log('world', `sim speed ${v}×: ${r && r.ok ? 'ok (goto restarted, memory kept)' : 'failed'}`);
+          } catch (e) {
+            Bench.log('world', `sim speed not changed: ${e.message}`);
+          } finally { speedBusy = false; }
+        });
+        lights.after(speedSel);
+      }
       const set = (k, cls, detail) => {
         const l = L[k]; l.el.className = 'light ' + cls; l.el.title = l.tip + (detail ? '\n' + detail : '');
       };
@@ -87,6 +109,13 @@
         set('guard', /BLOCK/.test(v) ? 'bad' : /CLEAR/.test(v) ? 'ok' : v ? 'warn' : 'off', v ? `verdict ${v}` : 'no obstacle data');
         L.guard.el.textContent = /BLOCK/.test(v) ? 'Path blocked' : 'Path';
         guardNote(/BLOCK/.test(v), f);
+        if (speedSel && !speedBusy && world) {
+          const sp = +world.speed || 1;
+          if (![...speedSel.options].some(o => +o.value === sp)) speedSel.append(new Option(`${sp}× speed`, String(sp)));
+          if (document.activeElement !== speedSel) speedSel.value = String(sp);
+          speedSel.disabled = !world.supervisor;
+          speedSel.classList.toggle('fast', sp !== 1);
+        }
 
         // activity, in priority order: safety stops, go-to, hand driving
         let text, cls = '';

@@ -57,14 +57,17 @@ def profile_path(profile: str) -> str:
 
 def start(profile: str = "sm11", truth_port: int = 5590, ctl_port: int = 5591, seed: int = 1,
           link: str | None = None, log=None, extra: list[str] | None = None,
-          timeout: float = 5.0) -> tuple[subprocess.Popen, str]:
+          timeout: float = 5.0, speed: float = 1.0) -> tuple[subprocess.Popen, str]:
     """Start the virtual car. Returns (proc, device path for tars_motor -d).
     truth_port 0 = no default truth destination (subscribe with {"sub": port} instead).
-    log: file object for the car's stderr (default: inherit)."""
+    log: file object for the car's stderr (default: inherit).
+    speed: bench demo time scale (vuno --speed; 1 = real time, the default)."""
     build()
     link = link or os.path.join(tempfile.gettempdir(), f"tars-vuno-{ctl_port}")
     cmd = [VUNO, "--profile", profile_path(profile), "--truth", str(truth_port),
            "--ctl", str(ctl_port), "--seed", str(seed), "--link", link, *(extra or [])]
+    if speed != 1.0:
+        cmd += ["--speed", f"{speed:g}"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log, text=True)
     deadline = time.time() + timeout
     got = None

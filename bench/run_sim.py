@@ -4,6 +4,7 @@
     python3 bench/run_sim.py                    # real port numbers on 127.0.0.1, room "default"
     python3 bench/run_sim.py --room demo_detour --free-ports
     python3 bench/run_sim.py --car stub         # force the stub car
+    python3 bench/run_sim.py --speed 4          # demo: the robot's motion and timers run 4 x faster
 
   car          virtual SM11 (bench/car/launch.py, real firmware on a pty) if present,
                else the STUB CAR (tars_motor -b stub + bench/world/stub_car.py, no physics)
@@ -15,6 +16,12 @@
   mission_relay  only with --relay
   world sim    bench/world/worldsim.py: phone pose + LiDAR guard + nav feed + YOLO, room edits
   bench        bench/bench.py --target sim, with every port
+
+--speed N (bench demo only; default 1 = real time): the virtual car (firmware clock + physics),
+the world sim (phone/LiDAR/camera rates, latencies) and goto (-T) all run N x the wall clock, so
+a timed MOVE still lands where it does at 1x. tars_motor and voice stay real time (the car
+keeps the firmware's link/drive watchdogs safe; see bench/car/vuno.cpp). Virtual car only.
+Live switch: the bench top bar (supervisor op "speed"); goto restarts (memory kept, map cleared).
 
 Ctrl-C: S to tars_motor and CANCEL to goto first, then every child is stopped.
 Everything is a child in its own session; logs go to a temp run directory (printed).
@@ -123,6 +130,7 @@ class Stack:
         self.voice_note = ""
         self.lock = threading.Lock()
         self.goto_proc = None
+        self.speed = float(a.speed)
 
     # ------------------------------------------------------------ helpers
     def spawn(self, name: str, argv: list[str], **kw) -> subprocess.Popen:
@@ -169,7 +177,8 @@ class Stack:
                     # interface (lead, kothar/bench-car f6b29d0): start(profile, truth, ctl, seed) -> (proc, dev);
                     # dev is a symlink that survives a simulated unplug, so tars_motor gets the link
                     carlog = open(os.path.join(self.run_dir, "car.log"), "w")
-                    proc, pty = car_launch.start(self.a.profile, P["truth"], P["car_ctl"], self.a.seed, log=carlog)
+                    proc, pty = car_launch.start(self.a.profile, P["truth"], P["car_ctl"], self.a.seed, log=carlog,
+                                                 speed=self.speed)
                     self.car_launch = car_launch
                     self.procs.append(("car", proc))
                     self.car_kind = "virtual"
@@ -182,6 +191,9 @@ class Stack:
                 raise RuntimeError("--car virtual: bench/car/launch.py not in this tree")
         if pty is None:
             self.car_kind = "stub"
+            if self.speed != 1.0:
+                raise RuntimeError("--speed needs the virtual car (the stub car's moves are timed by tars_motor, "
+                                   "which runs in real time)")
         # 2. tars_motor
         backend = ["-b", "uno", "-d", pty] if pty else ["-b", "stub"]
         # TARS_KEYBOARD_AUTH: the robot's service.py gives tars_motor a fresh keyboard key per boot so a
@@ -209,7 +221,8 @@ class Stack:
                              "--truth", str(P["truth"]), "--truth-fwd", f"127.0.0.1:{truth_copy}",
                              "--car-ctl", str(P["car_ctl"]), "--ctl", str(P["world_ctl"]),
                              "--state-to", f"127.0.0.1:{P['world_state']}", "--guard", str(P["guard"]),
-                             "--nav", str(P["nav"]), "--det", str(P["det"]), "--seed", str(self.a.seed)])
+                             "--nav", str(P["nav"]), "--det", str(P["det"]), "--seed", str(self.a.seed),
+                             "--speed", f"{self.speed:g}"])
         self.must(wait_for(lambda: port_open(P["world_ctl"]), 8), "world sim didn't open its control port", "world")
         self.rows.append(("world sim", f"TCP+UDP {P['world_ctl']}", f"room {self.room['name']}, state UDP {P['world_state']}"))
         # the sim's lidar_guard box = goto.conf's car size (goto --guard-flags), like service.py on the robot
@@ -261,6 +274,7 @@ class Stack:
                        BENCH_CAR_TRUTH=str(truth_copy), BENCH_CAR_KIND=self.car_kind,
                        TARS_BENCH_PHONE_ROOM_PORT=str(P["phone_room"]), TARS_BENCH_PHONE_SCENE_PORT=str(P["phone_scene"]),
                        TARS_KEYBOARD_AUTH=self.keyboard_auth)
+            env["BENCH_SIM_SPEED"] = f"{self.speed:g}"
             argv = [sys.executable, os.path.join(HERE, "bench.py"), "--port", str(P["bench"]), "--target", "sim",
                     "--motor", f"127.0.0.1:{P['motor']}", "--goto", f"127.0.0.1:{P['goto']}",
                     "--voice", f"127.0.0.1:{P['voice']}"]
@@ -288,14 +302,16 @@ class Stack:
             os.remove(self.mem_path)
         p = self.spawn("goto", [GOTO_BIN, "-m", f"127.0.0.1:{P['motor']}", "-p", str(P["goto"]), "-u", str(P["det"]),
                                 "-n", str(P["nav"]), "-r", "0", "-M", self.mem_path, "-v",
-                                "-o", os.path.join(GOTO_DIR, "objects.txt"), "-c", self.goto_conf()])
+                                "-o", os.path.join(GOTO_DIR, "objects.txt"), "-c", self.goto_conf(),
+                                *(["-T", f"{self.speed:g}"] if self.speed != 1.0 else [])])
         self.goto_proc = p
         self.must(wait_for(lambda: port_open(P["goto"]), 8), "goto didn't open its port", "goto")
         if not any(r[0] == "goto" for r in self.rows):
             self.rows.append(("goto", f"TCP {P['goto']}", f"detections UDP {P['det']}, nav TCP {P['nav']}, memory {self.mem_path}"))
 
-    def restart_goto(self, mem_text: str | None) -> dict:
-        """new room: S first, a fresh goto (memory = the room's, empty map), tars_motor pose reset"""
+    def restart_goto(self, mem_text: str | None, keep_memory: bool = False) -> dict:
+        """new room: S first, a fresh goto (memory = the room's, empty map), tars_motor pose reset.
+        keep_memory (speed change): goto's own memory file and tars_motor's pose stay as they are."""
         P = self.ports
         with self.lock:
             try:
@@ -311,12 +327,48 @@ class Stack:
                 except subprocess.TimeoutExpired:
                     old.kill()
             wait_for(lambda: not port_open(P["goto"]), 3)
+            if keep_memory:
+                self.start_goto_keep()
+                return {"ok": True, "memory": os.path.exists(self.mem_path)}
             self.start_goto(mem_text)
             try:
                 rep = line_cmd(P["motor"], ["WHO run_sim", "POSE RESET"])[-1]
             except OSError as e:
                 rep = f"ERR {e}"
         return {"ok": True, "pose_reset": rep, "memory": bool(mem_text)}
+
+    def start_goto_keep(self):
+        """goto again on the memory file it left behind (it saves on exit and every memory_save_s)"""
+        text = None
+        if os.path.exists(self.mem_path):
+            with open(self.mem_path) as f:
+                text = f.read()
+        self.start_goto(text)
+
+    def set_speed(self, v) -> dict:
+        """live demo speed: S + CANCEL (stop wins), the world + car clock, then goto with the new -T"""
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "speed: a number"}
+        if not 0.25 <= v <= 16:
+            return {"ok": False, "error": "speed 0.25..16"}
+        if self.car_kind != "virtual" and v != 1.0:
+            return {"ok": False, "error": "speed needs the virtual car (stub car moves are timed by tars_motor)"}
+        P = self.ports
+        try:
+            line_cmd(P["motor"], ["WHO run_sim", "S"])
+        except OSError:
+            pass
+        try:
+            rep = json.loads(line_cmd(P["world_ctl"], [json.dumps({"op": "speed", "speed": v})], timeout=3)[0])
+        except (OSError, ValueError) as e:
+            return {"ok": False, "error": f"world sim: {e}"}
+        if not rep.get("ok"):
+            return rep
+        old, self.speed = self.speed, v
+        g = self.restart_goto(None, keep_memory=True) if old != v else {"ok": True}
+        return {"ok": True, "speed": v, "was": old, "goto_restart": g}
 
     def _sup_loop(self):
         while True:
@@ -330,9 +382,12 @@ class Stack:
                 if msg.get("op") == "restart_goto":
                     rep = self.restart_goto(msg.get("memory"))
                 elif msg.get("op") == "info":
-                    rep = {"ok": True, "ports": self.ports, "car": self.car_kind, "run_dir": self.run_dir}
+                    rep = {"ok": True, "ports": self.ports, "car": self.car_kind, "run_dir": self.run_dir,
+                           "speed": self.speed}
+                elif msg.get("op") == "speed":
+                    rep = self.set_speed(msg.get("speed")) if "speed" in msg else {"ok": True, "speed": self.speed}
                 else:
-                    rep = {"ok": False, "error": "ops: restart_goto, info"}
+                    rep = {"ok": False, "error": "ops: restart_goto, info, speed"}
             except Exception as e:
                 rep = {"ok": False, "error": f"{type(e).__name__}: {e}"}
             try:
@@ -383,6 +438,8 @@ class Stack:
         car = "STUB CAR: tars_motor -b stub, no firmware, no physics" if self.car_kind == "stub" else "virtual SM11 (real firmware)"
         out = [f"TARS sim stack (SIM, not the robot), car = {car}", ""]
         out += [f"  {a:<{w}}  {b:<{w2}}  {c}" for a, b, c in self.rows]
+        if self.speed != 1.0:
+            out += ["", f"  SIM SPEED {self.speed:g}x: the car, world and goto run {self.speed:g} x the wall clock (demo)"]
         out += ["", f"  logs: {self.run_dir}", "  Ctrl-C: S + CANCEL, then everything stops"]
         return "\n".join(out)
 
@@ -402,8 +459,12 @@ def main(argv=None) -> int:
     ap.add_argument("--slow-stub", action="store_true", help="stub car at the stepper's real ~41 mm/s")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="demo sim speed (1 = real time; 2, 4 for demos; virtual car only; 0.25..16)")
     ap.add_argument("--ports-file", default="", help="write ports + pids as JSON here once everything is up")
     a = ap.parse_args(argv)
+    if not 0.25 <= a.speed <= 16:
+        ap.error("--speed: 0.25..16")
 
     st = Stack(a)
     done = threading.Event()
@@ -419,7 +480,7 @@ def main(argv=None) -> int:
     if a.ports_file:
         with open(a.ports_file + ".tmp", "w") as f:
             json.dump({"ports": st.ports, "car": st.car_kind, "run_dir": st.run_dir,
-                       "pids": {n: p.pid for n, p in st.procs}, "voice": st.voice_note or "up"}, f)
+                       "pids": {n: p.pid for n, p in st.procs}, "voice": st.voice_note or "up", "speed": st.speed}, f)
         os.replace(a.ports_file + ".tmp", a.ports_file)
     try:
         while not done.is_set():

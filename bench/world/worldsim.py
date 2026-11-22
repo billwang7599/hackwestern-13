@@ -88,7 +88,13 @@ class World:
         self.fault_data: dict[str, dict] = {}
         self.reloc = (0.0, 0.0, 0.0)                # persistent ARKit frame offset (dx, dy, dth) world
         self.truth = None                            # latest truth dict (+ "_rx" monotonic)
-        self.hist = collections.deque(maxlen=400)    # (rx monotonic, x, y, th)
+        self.hist = collections.deque(maxlen=2000)   # (rx monotonic, x, y, th); truth is up to 16 x 50 Hz
+        # bench demo speed (--speed / op "speed"): sim time runs this many times the wall clock.
+        # Sensor rates (phone, camera) are in SIM Hz, so they go out speed x as often on the wall
+        # clock; latencies and fault durations are in sim seconds. The GAT1 guard stays at
+        # guard_hz WALL Hz: tars_motor (not sped up) drops a guard verdict after 100 ms wall.
+        self.speed = 1.0
+        self._sp_wall0 = self._sp_sim0 = time.monotonic()
         self.rev = 0
         self.t0 = time.monotonic()
         self.seq = 0
@@ -106,6 +112,21 @@ class World:
         self.state_to = [_addr(a) for a in args.state_to]
         self.load(C.load_room_file(args.room) if not args.room.endswith(".json")
                   else C.normalise_room(json.load(open(args.room))))
+
+    def sim_now(self) -> float:
+        """sim-time seconds (monotonic; == time.monotonic() at speed 1)"""
+        return self._sp_sim0 + (time.monotonic() - self._sp_wall0) * self.speed
+
+    def set_speed(self, v: float) -> dict:
+        v = float(v)
+        if not 0.25 <= v <= 16:
+            return {"ok": False, "error": "speed 0.25..16"}
+        with self.lock:
+            self._sp_sim0, self._sp_wall0 = self.sim_now(), time.monotonic()
+            self.speed = v
+        self.car_ctl({"speed": v})
+        self.counts["speed_changes"] += 1
+        return {"ok": True, "speed": v}
 
     # ---------------------------------------------------------------- room
     def load(self, room: dict, teleport=True):
@@ -238,6 +259,13 @@ class World:
                 self.load(C.normalise_room(self.original), teleport=False)
                 return {"ok": True, "rev": self.rev, "car": car and [round(v, 3) for v in car],
                         "goto_memory": C.goto_memory_text(self.room, car=car)}
+            if op == "speed":         # bench demo speed; goto's -T is run_sim's job (it restarts goto)
+                if "speed" not in msg:
+                    return {"ok": True, "speed": self.speed}
+                try:
+                    return self.set_speed(msg["speed"])
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "speed: a number 0.25..16"}
             if op == "car_to_start":  # only the car moves: room, drawn walls, faults and goto untouched
                 s = self.room["start"]
                 self.car_ctl({"pose": {"x": s["x"], "y": s["y"], "th": s["th"]}})
@@ -321,7 +349,7 @@ class World:
             self._end_fault(name)
             return {"ok": True}
         dur = float(msg.get("s", 0) or 0)
-        until = time.monotonic() + dur if dur > 0 else math.inf
+        until = time.monotonic() + dur / self.speed if dur > 0 else math.inf
         if name == "reloc":         # one-shot: the ARKit frame jumps and stays jumped
             p = self.params
             a = self.rng.uniform(0, 2 * math.pi)
@@ -443,13 +471,13 @@ class World:
     def phone_tick(self):
         p = self.params
         now = time.monotonic()
-        pose = self.pose_at(p["pose_latency_ms"] / 1000)
+        pose = self.pose_at(p["pose_latency_ms"] / 1000 / self.speed)
         if pose is None or self.fault("pose_stale"):
             self.last_frame = None if pose is None else self.last_frame
             return
         if p["dropout_per_min"] > 0 and now >= self.dropout_until and \
                 self.rng.random() < p["dropout_per_min"] / 60 / max(1, p["phone_hz"]):
-            self.dropout_until = now + p["dropout_s"]
+            self.dropout_until = now + p["dropout_s"] / self.speed
         tracking = not (self.fault("pose_lost") or now < self.dropout_until)
         flags = 7 if tracking else 0
         pts, rays = self.lidar_frame(pose)
@@ -469,7 +497,7 @@ class World:
         cy, sy = math.cos(yaw), math.sin(yaw)
         ark = [(xa + f * sy + l * cy, h, za + f * cy - l * sy) for f, l, h in pts]
         self.seq += 1
-        uptime = int((now - self.t0) * 1e6) + 1
+        uptime = int((self.sim_now() - self.t0) * 1e6) + 1    # the phone's clock: sim time
         body = b"LDR1" + struct.pack(">IQII", self.seq, uptime, flags, len(ark))
         body += struct.pack(">4f", xa, p["phone_h"], za, yaw) + struct.pack(">f", 0.0)
         body += struct.pack(f">{3 * len(ark)}f", *(v for q in ark for v in q))
@@ -507,7 +535,7 @@ class World:
             chunk = pts[k:k + 1000]
             with self.lock:
                 self.seq += 1
-                uptime = int((time.monotonic() - self.t0) * 1e6) + 1 + k
+                uptime = int((self.sim_now() - self.t0) * 1e6) + 1 + k
             body = b"LDR1" + struct.pack(">IQII", self.seq, uptime, 7, len(chunk))
             body += struct.pack(">4f", xa, self.params["phone_h"], za, yaw) + struct.pack(">f", 0.0)
             body += struct.pack(f">{3 * len(chunk)}f", *(v for q in chunk for v in q))
@@ -583,7 +611,7 @@ class World:
     # ---------------------------------------------------------------- webcam + YOLO
     def cam_tick(self):
         p = self.params
-        pose = self.pose_at(p["cam_latency_ms"] / 1000)
+        pose = self.pose_at(p["cam_latency_ms"] / 1000 / self.speed)
         if pose is None or self.fault("cam_off"):
             self.last_dets = []
             return
@@ -669,7 +697,8 @@ class World:
                           "pose": fr and [round(v, 3) for v in fr["pose"]]},
                 "dets": self.last_dets, "hfov_deg": round(math.degrees(self.hfov), 1),
                 "lidar_hfov_deg": self.params["lidar_hfov_deg"],
-                "faults": {k: (None if v == math.inf else round(v - now, 1)) for k, v in self.faults.items()},
+                "faults": {k: (None if v == math.inf else round((v - now) * self.speed, 1)) for k, v in self.faults.items()},
+                "speed": self.speed,
                 "reloc": [round(v, 3) for v in self.reloc], "counts": dict(self.counts)}
 
 
@@ -714,6 +743,8 @@ def guard_loop(w, stop: threading.Event):
 def serve(args) -> int:
     sys.setswitchinterval(0.001)     # the GAT1 thread must not wait 5 ms+ per GIL handoff
     w = World(args)
+    if args.speed != 1.0:
+        w.speed = args.speed                # the car got its own --speed at launch
     stop = threading.Event()
 
     # truth in
@@ -810,8 +841,8 @@ def serve(args) -> int:
     threads.append(threading.Thread(target=w.nav_sender, args=(stop,), daemon=True))
     threads.append(threading.Thread(target=guard_loop, args=(w, stop), daemon=True))
     threads += [threading.Thread(target=every, args=(hz, fn, stop, n), daemon=True) for hz, fn, n in (
-        (lambda: P["phone_hz"], w.phone_tick, "phone"), 
-        (lambda: P["cam_hz"], w.cam_tick, "cam"), (lambda: 10, state_tick, "state"), (lambda: 0.5, walls_tick, "walls"))]
+        (lambda: P["phone_hz"] * w.speed, w.phone_tick, "phone"),
+        (lambda: P["cam_hz"] * w.speed, w.cam_tick, "cam"), (lambda: 10, state_tick, "state"), (lambda: 0.5, walls_tick, "walls"))]
     for t in threads:
         t.start()
     print(f"world: room={w.room['name']} truth=:{args.truth} car_ctl=:{args.car_ctl} ctl=:{args.ctl} "
@@ -841,6 +872,8 @@ def parse_args(argv=None):
     ap.add_argument("--nav", type=int, default=0, help="goto nav port (LDR1 over TCP); 0 = no phone")
     ap.add_argument("--det", type=int, default=0, help="goto detection port (UDP JSON); 0 = no camera")
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="bench demo: sim time runs N x the wall clock (sensor rates x N); the car needs the same")
     a = ap.parse_args(argv)
     if not a.state_to:
         a.state_to = ["127.0.0.1:5593"]
