@@ -90,6 +90,11 @@ void goto_cfg_defaults(goto_cfg *c)
     c->nav_unknown_leg_mm = 500;
     c->nav_travel_cap_m = 0;
     c->nav_max_opt_replans = 25;
+    c->nav_turn_cost_m = 0;        /* heading-aware A*: off on the robot until the lead signs off (sim turns it on) */
+    c->nav_start_turn_cost_m = 0;
+    c->nav_sticky = 0;             /* sticky re-planning on map changes: off on the robot (sim turns it on) */
+    c->nav_sticky_frac = 0.15;
+    c->nav_sticky_m = 0.3;
     snprintf(c->memory_path, sizeof c->memory_path, "memory.txt");
     c->n_arrive_over = 1;
     snprintf(c->arrive_over_label[0], sizeof c->arrive_over_label[0], "person");
@@ -151,6 +156,9 @@ int goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen)
         {"nav_block_s", &c->nav_block_s, 0}, {"nav_optimistic", &c->nav_optimistic, 0},
         {"nav_unknown_penalty", &c->nav_unknown_penalty, 0}, {"nav_unknown_leg_mm", &c->nav_unknown_leg_mm, 0},
         {"nav_travel_cap_m", &c->nav_travel_cap_m, 0}, {"nav_max_opt_replans", &c->nav_max_opt_replans, 0},
+        {"nav_turn_cost_m", &c->nav_turn_cost_m, 0}, {"nav_start_turn_cost_m", &c->nav_start_turn_cost_m, 0},
+        {"nav_sticky", &c->nav_sticky, 0}, {"nav_sticky_frac", &c->nav_sticky_frac, 0},
+        {"nav_sticky_m", &c->nav_sticky_m, 0},
     };
     char line[256];
     while (fgets(line, sizeof line, f)) {
@@ -1551,12 +1559,14 @@ static int plan_from_robot_1(goto_sm *s, double x, double z, double tx, double t
     int n = ring_default ? nav_plan(s->nav, (float)x, (float)z, (float)tx, (float)tz, s->path, 64)
                          : nav_plan_ring(s->nav, (float)x, (float)z, (float)tx, (float)tz, 0.0f, 0.11f, s->path, 64);
     double bx, bz;
+    s->backed_off = 0;
     if (n != NAV_ERR_START_BLOCKED || !backoff_cell(s, x, z, &bx, &bz)) return n;
     int m = ring_default ? nav_plan(s->nav, (float)bx, (float)bz, (float)tx, (float)tz, s->path + 1, 63)
                          : nav_plan_ring(s->nav, (float)bx, (float)bz, (float)tx, (float)tz, 0.0f, 0.11f, s->path + 1, 63);
     if (m < 0) return m == NAV_ERR_START_BLOCKED ? n : m;
     s->path[0].x = (float)bx;
     s->path[0].z = (float)bz;
+    s->backed_off = 1;
     return m + 1;
 }
 
@@ -1877,14 +1887,14 @@ static int on_stuck(goto_sm *s, const char *why)
 
 /* Does the route from (sx, sz) through path[from..] keep the guard's box clear (as nav's
  * guard-aware A* checks it)? Object goals ignore obstacles near the target (docking). */
-static int route_guard_clear(const goto_sm *s, double sx, double sz, int from)
+static int route_guard_clear_pts(const goto_sm *s, double sx, double sz, const nav_pt_t *pts, int count)
 {
     if (!s->nav || !nav_guard_active(s->nav)) return 1;
     int obj = !s->vantage && !s->exploring;
     float ir = obj ? (float)NAV_GUARD_IGNORE_R : 0.0f;
     double ax = sx, az = sz;
-    for (int i = from; i < s->path_n; i++) {
-        double bx = s->path[i].x, bz = s->path[i].z, L = hypot(bx - ax, bz - az);
+    for (int i = 0; i < count; i++) {
+        double bx = pts[i].x, bz = pts[i].z, L = hypot(bx - ax, bz - az);
         if (L > 1e-6) {
             double h = atan2(bx - ax, bz - az);
             for (double p = 0; p <= L + 1e-9; p += 0.1) {
@@ -1897,6 +1907,11 @@ static int route_guard_clear(const goto_sm *s, double sx, double sz, int from)
         ax = bx; az = bz;
     }
     return 1;
+}
+
+static int route_guard_clear(const goto_sm *s, double sx, double sz, int from)
+{
+    return from >= s->path_n || route_guard_clear_pts(s, sx, sz, s->path + from, s->path_n - from);
 }
 
 static void take_route(goto_sm *s, int n, double x, double z);
@@ -2019,16 +2034,106 @@ static int replan_here(goto_sm *s, double ref_yaw)
     return 1;
 }
 
+/* Heading-aware A* (nav_turn_cost_m, nav_start_turn_cost_m) for the plans goto drives: do_plan and
+ * search hops. Off again afterwards, so reachability probes (pick_vantage, pick_explore) are unchanged. */
+static void heading_cost_on(goto_sm *s, double yaw)
+{
+    if (s->nav) nav_set_turn_cost(s->nav, (float)s->cfg.nav_turn_cost_m, (float)s->cfg.nav_start_turn_cost_m, (float)yaw, 1);
+}
+static void heading_cost_off(goto_sm *s) { if (s->nav) nav_set_turn_cost(s->nav, 0, 0, 0, 0); }
+
+/* a route's cost in metres from (x, z), scored like the planner (optimistic when goto.conf allows it,
+ * so a known-floor route and one through unknown floor compare); INFINITY = footprint or guard box
+ * blocked. Turn costs are whatever heading_cost_on set. */
+static double route_cost_m(goto_sm *s, double x, double z, const nav_pt_t *p, int n)
+{
+    int opt = s->cfg.nav_optimistic > 0;
+    if (opt) nav_set_optimistic(s->nav, 1, (float)s->cfg.nav_unknown_penalty);
+    double c = nav_route_cost(s->nav, (float)x, (float)z, p, n);
+    if (opt) nav_set_optimistic(s->nav, 0, 0);
+    if (isfinite(c) && !route_guard_clear_pts(s, x, z, p, n)) c = INFINITY;
+    return c * NAV_RES;
+}
+
+/* Sticky re-planning (nav_sticky), after a map-change re-plan has put a fresh route in s->path
+ * (n waypoints, from (x, z)). old[0..on) = what was left of the route being followed.
+ *  - the old route still fits (footprint + guard box) -> keep it unless the fresh one is cheaper by
+ *    max(nav_sticky_frac x old, nav_sticky_m): EVENT route_kept
+ *  - else repair: A* from here to one of the old route's next waypoints (up to 6), then the old route
+ *    from there; the cheapest repair wins unless the fresh route is clearly cheaper: EVENT route_repair
+ *  - else the fresh route: EVENT route_switch
+ * Returns the waypoint count now in s->path. Plain computation, no waiting: S/CANCEL/guard unaffected. */
+static int sticky_choose(goto_sm *s, double x, double z, int n, const nav_pt_t *old, int on, int old_opt)
+{
+    char t[128];
+    double cnew = n >= 0 ? route_cost_m(s, x, z, s->path, n) : INFINITY;
+    double cold = route_cost_m(s, x, z, old, on);
+    if (isfinite(cold) && !(cnew < cold - fmax(cold * s->cfg.nav_sticky_frac, s->cfg.nav_sticky_m))) {
+        memcpy(s->path, old, (size_t)on * sizeof old[0]);
+        s->optimistic = old_opt;
+        s->relaxed = 0;
+        s->sticky_kept++;
+        snprintf(t, sizeof t, "route_kept %s #%d %.2f %.2f", target_name(s), s->mem_id, cold, cnew);
+        emit(s, ACT_EVENT, 0, 0, t);
+        return on;
+    }
+    if (n < 0) return n;
+    nav_pt_t tmp[64], best[64];
+    int bn = -1, bj = -1;
+    double bc = INFINITY;
+    int fresh_opt = s->optimistic;
+    if (fresh_opt) nav_set_optimistic(s->nav, 1, (float)s->cfg.nav_unknown_penalty);
+    for (int j = 0; j < on && j < 6; j++) {
+        int m = nav_plan_ring(s->nav, (float)x, (float)z, old[j].x, old[j].z, 0.0f, 0.11f, tmp, 64);
+        if (m < 0 || m >= 64) continue;
+        if (m == 0 || hypot(tmp[m - 1].x - old[j].x, tmp[m - 1].z - old[j].z) > 0.01) tmp[m++] = old[j];
+        if (m + (on - j - 1) > 64) continue;
+        memcpy(tmp + m, old + j + 1, (size_t)(on - j - 1) * sizeof old[0]);
+        int tn = m + on - j - 1;
+        if (fresh_opt) nav_set_optimistic(s->nav, 0, 0);
+        double c = route_cost_m(s, x, z, tmp, tn);
+        if (fresh_opt) nav_set_optimistic(s->nav, 1, (float)s->cfg.nav_unknown_penalty);
+        if (c < bc) { bc = c; bn = tn; bj = j; memcpy(best, tmp, (size_t)tn * sizeof tmp[0]); }
+    }
+    if (fresh_opt) nav_set_optimistic(s->nav, 0, 0);
+    if (bn > 0 && isfinite(cnew) && bc <= cnew + fmax(cnew * s->cfg.nav_sticky_frac, s->cfg.nav_sticky_m)) {
+        memcpy(s->path, best, (size_t)bn * sizeof best[0]);
+        s->optimistic = fresh_opt || old_opt;
+        s->sticky_repairs++;
+        snprintf(t, sizeof t, "route_repair %s #%d %d %.2f %.2f", target_name(s), s->mem_id, bj, bc, cnew);
+        emit(s, ACT_EVENT, 0, 0, t);
+        return bn;
+    }
+    snprintf(t, sizeof t, "route_switch %s #%d %.2f %.2f", target_name(s), s->mem_id, cnew, cold);
+    emit(s, ACT_EVENT, 0, 0, t);
+    return n;
+}
+
 static void do_plan(goto_sm *s)
 {
     double x, z, yaw;
+    int sticky_map = s->sticky_map;
+    s->sticky_map = 0;
     if (!nav_pose(s, &x, &z, &yaw)) { map_fallback(s, "no_pose"); return; }
     set_state(s, ST_PLAN);
     s->plan_wait = 0;
     if (nav_count(s->nav, NAV_FREE) == 0) { map_fallback(s, "no_map"); return; }
     mark_footprint_free(s, x, z);
+    double gx = s->vantage ? s->vx : s->goal_x, gz = s->vantage ? s->vz : s->goal_z;
+    /* sticky: only for a re-plan because the map changed under the route, same goal, a route that
+     * wasn't the guard-ignoring fallback (relaxed) */
+    int on = 0, old_opt = s->optimistic;
+    nav_pt_t old[64];
+    if (s->cfg.nav_sticky > 0 && sticky_map && s->path_i < s->path_n && !s->relaxed &&
+        s->rt_vantage == s->vantage && hypot(s->rt_gx - gx, s->rt_gz - gz) < 0.05) {
+        on = s->path_n - s->path_i;
+        memcpy(old, s->path + s->path_i, (size_t)on * sizeof old[0]);
+    }
+    heading_cost_on(s, yaw);
     int n = s->vantage ? plan_from_robot(s, x, z, s->vx, s->vz, 0)
                        : plan_from_robot(s, x, z, s->goal_x, s->goal_z, 1);
+    if (on > 0 && !s->relaxed && !(n > 0 && s->backed_off)) n = sticky_choose(s, x, z, n, old, on, old_opt);
+    heading_cost_off(s);
     s->path_ver = nav_version(s->nav);
     if (n >= 0) {
         take_route(s, n, x, z);
@@ -2053,6 +2158,9 @@ static void take_route(goto_sm *s, int n, double x, double z)
         s->path_i = 0;
         s->plan_sx = x;
         s->plan_sz = z;
+        s->rt_vantage = s->vantage;
+        s->rt_gx = s->vantage ? s->vx : s->goal_x;
+        s->rt_gz = s->vantage ? s->vz : s->goal_z;
         s->route_guard_ok = !s->relaxed && route_guard_clear(s, x, z, 0);
         if (s->optimistic) {                   /* travel cap: 3 x the longest optimistic estimate + 2 m */
             double len = 0, px = x, pz = z;
@@ -2590,7 +2698,9 @@ static int search_hop(goto_sm *s)
         }
     if (best < 40) return 0;                     /* nothing much more to see anywhere near */
     mark_footprint_free(s, x, z);
+    heading_cost_on(s, yaw);
     int n = plan_from_robot(s, x, z, bx, bz, 0);
+    heading_cost_off(s);
     if (n <= 0) return 0;
     s->search_hops++;
     s->search_hop = 1;
@@ -2598,6 +2708,9 @@ static int search_hop(goto_sm *s)
     s->map_mode = 1;
     s->vx = bx;
     s->vz = bz;
+    s->rt_vantage = 1;
+    s->rt_gx = bx;
+    s->rt_gz = bz;
     s->path_n = n;
     s->path_i = 0;
     s->plan_sx = x;
@@ -2662,6 +2775,7 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->n_gone = 0;
     s->optimistic = s->opt_failed = s->unreachable = s->opt_replans = s->leg_cut = s->unblock_tried = 0;
     s->travel_m = s->opt_len0 = s->last_move_mm = 0;
+    s->sticky_map = s->sticky_kept = s->sticky_repairs = s->backed_off = 0;
     if (s->nav) nav_temp_clear(s->nav);
     crumb_note(s, 1, 1);
     if (mem_try_next(s)) return;
@@ -3055,6 +3169,7 @@ void goto_sm_tick(goto_sm *s, double now)
             int pb = path_blocked(s);
             if (pb) {                                 /* the map changed under the route */
                 emit(s, ACT_STOP, 0, 0, NULL);
+                s->sticky_map = 1;                    /* do_plan may keep / repair this route (nav_sticky) */
                 if (s->optimistic) {                  /* expected while exploring: not a failure, its own cap */
                     char t[96];                       /* why: 1 wall on a leg, 2 guard box, 3 footprint */
                     snprintf(t, sizeof t, "blocked:map %s #%d why=%d", target_name(s), s->mem_id, pb);
@@ -3165,7 +3280,8 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
     snprintf(out, len,
              "state=%s target=%s result=%s seen=%d bearing=%.1f h=%.2f searched=%.0f fps=%.1f "
              "elapsed=%.1f frames=%d hits=%d l=%.2f r=%.2f mode=%s mem=%s map=%s path=%d/%d replans=%d "
-             "guard=%s guard_refusals=%d guard_aborts=%d guard_stops_other=%d backtracks=%d replans_here=%d heading_fixes=%d heading_unchecked=%d",
+             "guard=%s guard_refusals=%d guard_aborts=%d guard_stops_other=%d backtracks=%d replans_here=%d heading_fixes=%d heading_unchecked=%d "
+             "route_kept=%d route_repairs=%d",
              goto_state_name(s->st), tn, s->result,
              s->st == ST_APPROACH && s->now - s->last_seen < 0.5, s->last_bearing,
              s->have_track ? s->ema_h : 0.0, s->searched_deg, s->fps_ema,
@@ -3176,5 +3292,6 @@ void goto_sm_describe(const goto_sm *s, char *out, size_t len)
              !s->nav ? "off" : s->map_mode ? (s->vantage ? "detour" : "route") : "ready",
              s->path_i, s->path_n, s->replans,
              !s->guard_known ? "-" : s->guard_ok ? "clear" : "denied",
-             s->guard_refusals, s->guard_aborts, s->guard_other_stops, s->backtracks, s->replans_here, s->heading_fixes, s->heading_unchecked);
+             s->guard_refusals, s->guard_aborts, s->guard_other_stops, s->backtracks, s->replans_here, s->heading_fixes, s->heading_unchecked,
+             s->sticky_kept, s->sticky_repairs);
 }
