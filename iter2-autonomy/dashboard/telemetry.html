@@ -88,7 +88,7 @@ function render(s) {
   pill('p-guard', 'guard ' + verdict, vcls);
   pill('p-motor', m.inhibited ? 'motors stop: ' + (m.reason || '?') : 'motors open', m.inhibited ? 'warn' : 'ok');
   pill('p-goto', 'goto ' + (gs.state || (g.live ? '?' : 'off')) + (gs.target && gs.target !== '-' ? ' → ' + gs.target : ''), gs.state && gs.state !== 'idle' ? 'warn' : g.live ? 'ok' : 'bad');
-  const issues = [];
+  const issues = s.view_source ? ['via ' + s.view_source] : [];
   if (!s.publisher_live) issues.push('Pi status is stale');
   else if (!s.phone_connected) issues.push('Phone app not linked: open MotionUSB in the foreground and press Start');
   if (sf.reason === 'set_floor') issues.push('calibrate the floor in the phone app');
