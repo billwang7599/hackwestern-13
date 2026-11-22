@@ -79,7 +79,7 @@
           const st = h('select', {}, ...STATES.map(s => h('option', {value: s}, s)));
           st.value = e.state;
           st.onchange = () => edit({op: 'update', key: e.key, state: st.value}, `${e.key} → ${st.value}`);
-          const xi = h('input', {size: 5, value: num(e.x)}), yi = h('input', {size: 5, value: num(e.y)});
+          const xi = h('input', {size: 5, value: num(e.x), 'data-esc': 'local'}), yi = h('input', {size: 5, value: num(e.y), 'data-esc': 'local'});   // Esc here cancels the edit, not STOP
           for (const i of [xi, yi]) {
             i.onfocus = () => { editing = e.key; };
             i.onblur = () => setTimeout(() => { if (document.activeElement !== xi && document.activeElement !== yi) editing = null; }, 0);

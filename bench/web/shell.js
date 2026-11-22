@@ -47,7 +47,7 @@ const Bench = (() => {
     drive: ['Drive the car: tell TARS what to do in words, or drive it by hand. The map on the right shows where it is.',
       '<b>Talk to TARS</b>: type a command or hold <kbd>T</kbd> and speak, e.g. “go to the trash can”. Turn <b>Send to robot</b> off for a dry run.',
       '<b>Drive by hand</b>: hold <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or press the pad. Exact distances and angles are under “Exact moves”.',
-      'Tip: if the top bar says BLOCKED, <kbd>S</kbd> (reverse) still works. <kbd>Space</kbd> or STOP stops everything.'],
+      'Tip: if Path says BLOCKED, <kbd>S</kbd> (reverse) still works. <kbd>Space</kbd>, <kbd>Esc</kbd> or STOP stops everything.'],
     room: ['Build the simulated room the car drives in. Sim only: nothing here touches a real robot.',
       'Add boxes, walls, people and objects with the tools above the map. <b>Things in the room</b> lists them all, with 🗑 to delete (or right-click on the map).',
       '<b>Faults</b> breaks sensors on purpose; <b>Map demos</b> runs explore-from-nothing and saved-map (prescan) demos.',
@@ -62,7 +62,7 @@ const Bench = (() => {
       'Tip: hold <kbd>T</kbd> anywhere on this page to talk.'],
     car: ['The car itself: the obstacle guard, the virtual car’s true state, and every field of tars_motor’s raw STATUS.',
       'Sim only: push, tip or brown out the car under <b>Faults</b>, and try motor guesses under <b>Profile</b> (nothing measured yet).',
-      'Tip: if <b>Safety</b> says BLOCKED, the LiDAR guard is refusing forward drives. Clicking the Path light in the top bar opens this page.'],
+      'Tip: if <b>Safety</b> says BLOCKED, the LiDAR guard is refusing forward drives. Clicking <b>Path</b> in the status strip opens this page.'],
     tests: ['Bring-up checks for when the real car arrives, and the tools to see why one failed.',
       '<b>Scenarios</b>: one click runs a scripted check and shows pass/fail with measured numbers. <b>Wheels</b>: commanded vs real wheel speed, plus a raw command console.',
       '<b>Recorder</b> saves everything and replays it without sending anything to the robot. <b>Log</b> has every message, newest first.',
@@ -468,9 +468,17 @@ const Bench = (() => {
   }
   const typing = t => { const tag = (t.tagName || '').toLowerCase(); return tag === 'input' || tag === 'textarea' || tag === 'select'; };
   window.addEventListener('keydown', ev => {
-    if (ev.code === 'Escape' && !typing(ev.target)) {
+    // Esc stops too, on every page and even in a text box (stop always wins), except when it has a
+    // smaller job right there: close the help card, close a right-click menu, or deselect on the
+    // Room page's editing map (focus on a canvas there), or cancel an inline table edit (data-esc="local").
+    if (ev.code === 'Escape') {
+      if (ev.repeat) return;
       const help = document.getElementById('help');
-      if (help && !help.hidden) hideHelp();
+      if (help && !help.hidden) { hideHelp(); return; }
+      if (document.querySelector('.ctxmenu')) return;
+      if (curPage === 'room' && (ev.target.tagName || '').toLowerCase() === 'canvas') return;
+      if (ev.target.dataset && ev.target.dataset.esc === 'local') return;   // an inline edit box: Esc cancels the edit
+      stop();
       return;
     }
     // 1…7 switch pages (outside text boxes, no modifiers)
