@@ -68,6 +68,17 @@ def serve():
     keyboard_auth = secrets.token_hex(16)
     nav_mode = env.get('TARS_ENABLE_GOTO', 'map')
     commands['guard'] += ['--identify-obstacles', '1']
+    # One source of truth for the car's size: goto.conf (car_length_m / car_width_m / safety_margin_m /
+    # guard_stop_m). goto prints the matching lidar_guard corridor flags; without a goto build the
+    # guard keeps its defaults (0.45 / 0.6).
+    try:
+        flags = subprocess.run([str(nav / 'build/goto'), '-c', str(nav / 'goto.conf'), '--guard-flags'],
+                               capture_output=True, text=True, timeout=5).stdout.split()
+        if len(flags) == 4 and flags[0] == '--half-width' and flags[2] == '--stop-distance':
+            commands['guard'] += flags
+            print('Guard corridor from goto.conf: ' + ' '.join(flags), flush=True)
+    except (OSError, subprocess.SubprocessError):
+        pass
     if nav_mode != '0':
         commands['guard'] += ['--nav-port', '5572']
         commands['goto'] = [str(nav / 'build/goto'), '-c', str(nav / 'goto.conf'),
