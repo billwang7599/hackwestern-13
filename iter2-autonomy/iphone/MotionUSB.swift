@@ -84,53 +84,69 @@ struct MotionUSBApp: App {
     }
 
     private var primaryControls: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-                Button(server.running ? "Stop" : "Start") {
-                    if server.running { server.stop(); camera.stop() }
-                    else { server.start(); if server.running { camera.start() } }
-                }.buttonStyle(.borderedProminent)
-                Button("Set floor") { camera.setFloor() }
-                    .accessibilityHint("Uses the mounted phone height with the rover resting on the floor.")
-                Button { controls.toggle() } label: {
-                    Image(systemName: controls ? "xmark" : "slider.horizontal.3")
-                }.accessibilityLabel(controls ? "Close controls" : "More controls")
-            }
-            HStack(spacing: 4) {
-                Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
-                Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
-            }
-        }.buttonStyle(.bordered).controlSize(.small).font(.caption)
+        HStack(spacing: 4) {
+            Button(server.running ? "Stop sensors" : "Start") {
+                if server.running { server.stop(); camera.stop() }
+                else { server.start(); if server.running { camera.start() } }
+            }.buttonStyle(.borderedProminent)
+            Button("Set floor") { camera.setFloor() }
+                .accessibilityHint("Uses the mounted phone height with the rover resting on the floor.")
+            Button("Save map") { camera.saveMap { pi.command(["op":"map_save"]) } }
+            Button("Load map") { camera.loadMap { pi.command(["op":"map_load"]) } }
+            Button { controls.toggle() } label: {
+                Image(systemName: controls ? "xmark" : "slider.horizontal.3")
+            }.accessibilityLabel(controls ? "Close controls" : "More controls")
+        }.buttonStyle(.bordered).controlSize(.small).font(.caption).lineLimit(1).minimumScaleFactor(0.7)
     }
 
-    private var sensorColumn: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if !controls {
-                feed("YOLO", camera.qnxInspectionImage, camera.qnxInspectionTimestamp)
-                feed("LiDAR", camera.inspectionImage, camera.inspectionTimestamp)
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 3) {
-                    motionReadout
-                    primaryControls
-                    let keyboard = pi.latestStatus["keyboard"] as? [String: Any]
-                    let key = (keyboard?["last_press"] as? [String])?.joined(separator: "+") ?? ""
-                    Text((pi.connected ? "Pi online" : "Pi offline") + " · " +
-                         (pi.connected && keyboard?["connected"] as? Bool == true ? "Keys " + (key.isEmpty ? "ready" : key) : "Keys offline"))
-                    TimelineView(.periodic(from: .now, by: 5)) { _ in
-                        Text("Wi-Fi " + (wifiAddress() ?? "off")).font(.caption.monospaced())
-                    }
-                    TimelineView(.periodic(from: .now, by: 0.3)) { _ in
-                        let guardState = ObstaclePresentation(status: pi.latestStatus, connected: currentGuardConnection)
-                        Text(guardState.title).foregroundStyle(guardState.color).fontWeight(.bold)
-                    }
-                    if !speech.lastSpoken.isEmpty {
-                        Label(speech.lastSpoken, systemImage: "speaker.wave.2.fill").lineLimit(2)
-                    }
-                    if mic.enabled || !mic.warning.isEmpty { MicStatusView(mic: mic) }
-                    Text(camera.roomTagStatus).lineLimit(2)
-                    if controls {
-                        Text(camera.status)
+    /// Top-left: live readings (the mount hides the bottom half of the screen).
+    private var dataColumn: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                TimelineView(.periodic(from: .now, by: 0.3)) { _ in
+                    let guardState = ObstaclePresentation(status: pi.latestStatus, connected: currentGuardConnection)
+                    Text(guardState.title).foregroundStyle(guardState.color).fontWeight(.bold)
+                }
+                let keyboard = pi.latestStatus["keyboard"] as? [String: Any]
+                let key = (keyboard?["last_press"] as? [String])?.joined(separator: "+") ?? ""
+                Text((pi.connected ? "Pi online" : "Pi offline") + " · " +
+                     (pi.connected && keyboard?["connected"] as? Bool == true ? "Keys " + (key.isEmpty ? "ready" : key) : "Keys offline"))
+                TimelineView(.periodic(from: .now, by: 5)) { _ in
+                    Text("Wi-Fi " + (wifiAddress() ?? "off")).font(.caption2.monospaced())
+                }
+                motionReadout
+                if voice.listening || !voice.transcript.isEmpty {
+                    Label(voice.listening ? "Listening: " + voice.transcript : "Heard: " + voice.transcript,
+                          systemImage: voice.listening ? "mic.fill" : "mic").foregroundStyle(voice.listening ? .red : .primary).lineLimit(2)
+                }
+                if let v = pi.latestStatus["voice"] as? [String: Any], let reply = v["reply"] as? String {
+                    Text("Pi: " + reply).lineLimit(2).foregroundStyle(.secondary)
+                }
+                if !speech.lastSpoken.isEmpty {
+                    Label(speech.lastSpoken, systemImage: "speaker.wave.2.fill").lineLimit(2)
+                }
+                if mic.enabled || !mic.warning.isEmpty { MicStatusView(mic: mic) }
+                Text(camera.roomTagStatus).lineLimit(2)
+                Text(camera.status).lineLimit(2).foregroundStyle(.secondary)
+            }.font(.caption2).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Top-right: controls. The slider button opens the full panel (voice card, manual drive).
+    private var controlColumn: some View {
+        ScrollView {
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack(spacing: 4) {
+                    Button("STOP") { pi.command(["op": "halt"]) }
+                        .buttonStyle(.borderedProminent).tint(.red).disabled(!pi.connected)
+                    Toggle(isOn: Binding(get: { voice.airpodsArmed }, set: { voice.setAirPodsTrigger($0) })) {
+                        Label(voice.listening ? "Listening" : "AirPods talk", systemImage: voice.listening ? "mic.fill" : "airpodspro")
+                    }.toggleStyle(.button).tint(voice.listening ? .red : .accentColor).disabled(!pi.connected || mic.enabled)
+                }.controlSize(.small).font(.caption)
+                primaryControls
+                if !voice.problem.isEmpty { Text(voice.problem).font(.caption2).foregroundStyle(.orange) }
+                if controls {
+                    VStack(alignment: .leading, spacing: 3) {
                         if let rgb = pi.surroundings["camera_height_m"] as? NSNumber,
                            let lidar = pi.surroundings["lidar_height_m"] as? NSNumber {
                             let assumed = pi.surroundings["floor_assumed"] as? Bool == true
@@ -143,37 +159,49 @@ struct MotionUSBApp: App {
                             .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. QNXplorer replies from the phone speaker.")
                         VoiceCommandPanel(pi: pi, voice: voice, micBusy: mic.enabled)
                         ManualDrivePanel(pi: pi)
-                        Button("Reset scan") { camera.resetMap() }
-                        ForEach(["start","stop"], id: \.self) { op in
-                            Button("Pi " + op + " streams") { pi.command(["op":op]) }
-                        }
-                    }
-                }.font(.caption2).padding(.horizontal, 3)
-                 .frame(maxWidth: .infinity, alignment: .leading)
-            }
+                        HStack {
+                            Button("Reset scan") { camera.resetMap() }
+                            ForEach(["start","stop"], id: \.self) { op in
+                                Button("Pi " + op + " streams") { pi.command(["op":op]) }
+                            }
+                        }.buttonStyle(.bordered).controlSize(.small)
+                    }.font(.caption2)
+                }
+            }.frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    /// Between a third and half height: what the phone sees.
+    private var visualStrip: some View {
+        HStack(spacing: 2) {
+            feed("YOLO", camera.qnxInspectionImage, camera.qnxInspectionTimestamp)
+            feed("LiDAR", camera.inspectionImage, camera.inspectionTimestamp)
+            PointCloudView(map: cloud, compact: true)
+                .frame(maxWidth: .infinity).clipped().accessibilityLabel("3D surroundings")
+            SurroundingsView(map: pi.surroundings, connected: pi.connected, onCommand: pi.command, compact: true)
+                .frame(maxWidth: .infinity).clipped().accessibilityLabel("Floor minimap")
         }
     }
 
     var body: some Scene {
         WindowGroup {
             GeometryReader { g in
-                // The mount covers the middle half of the physical display below its midpoint.
-                let insets = g.safeAreaInsets
-                let quarter = (g.size.width + insets.leading + insets.trailing) / 4
-                let left = max(0, quarter - insets.leading)
-                let right = max(0, quarter - insets.trailing)
-                let top = (g.size.height + insets.bottom - insets.top) / 2
-                HStack(alignment: .top, spacing: 2) {
-                    sensorColumn.frame(width: left)
-                    VStack(alignment: .trailing, spacing: 2) {
-                        PointCloudView(map: cloud, compact: true)
-                            .frame(maxWidth: .infinity).frame(height: top)
-                            .clipped().accessibilityLabel("3D surroundings")
-                        SurroundingsView(map: pi.surroundings, connected: pi.connected, onCommand: pi.command, compact: true)
-                            .frame(width: right).frame(maxHeight: .infinity)
-                            .clipped().accessibilityLabel("Floor minimap")
+                // The mount hides the bottom half of the screen: controls and data live in the top
+                // third (data left, controls right), the camera / LiDAR / map strip fills the rest
+                // of the top half. The full controls panel takes the whole top half when open.
+                let full = g.size.height + g.safeAreaInsets.top + g.safeAreaInsets.bottom
+                let third = full / 3 - g.safeAreaInsets.top
+                let half = full / 2 - g.safeAreaInsets.top
+                VStack(spacing: 2) {
+                    HStack(alignment: .top, spacing: 6) {
+                        dataColumn.frame(maxWidth: .infinity)
+                        controlColumn.frame(maxWidth: .infinity)
+                    }.frame(height: max(60, controls ? half : third))
+                    if !controls {
+                        visualStrip.frame(height: max(40, half - third - 2))
                     }
-                }
+                    Spacer(minLength: 0)
+                }.padding(.horizontal, 4)
             }
             .overlay {
                 TimelineView(.periodic(from: .now, by: 0.08)) { _ in
