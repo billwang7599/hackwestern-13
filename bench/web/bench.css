@@ -42,7 +42,11 @@ body.offline .offline-note { display: inline; }
 .hdr-panel { display: contents; }
 
 /* plain-words guard note under the top bar (topbar.js) */
-.guardnote { padding: 5px 14px; background: #3a1414; color: #ffd0d0; border-bottom: 1px solid var(--bad); font-weight: 600; }
+/* floats over the page (no layout shift when it comes and goes); clicks pass through it */
+.guardnote { position: fixed; left: 50%; bottom: 38px; transform: translateX(-50%); z-index: 50; max-width: min(720px, 92vw);
+  padding: 6px 12px; background: rgba(58, 20, 20, .94); color: #ffd0d0; border: 1px solid var(--bad); border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.45); font-weight: 600; font-size: 13px; pointer-events: none; }
+.guardnote[hidden] { display: none; }
 .guardnote .dim { color: #e0a8a8; font-weight: 400; }
 
 /* ---------------------------------------------------------------- navbar: one page per job */

@@ -120,9 +120,9 @@
         if (!show) return;
         note.replaceChildren();
         if (own) { note.textContent = '⚠ ' + own; return; }
-        note.append('⚠ Obstacle ahead: the safety guard blocks driving forward. ');
+        note.append('⚠ Path blocked: no driving forward. ');
         const d = document.createElement('span'); d.className = 'dim';
-        d.textContent = 'Turn away first (say “turn around”, or TURN under Exact moves on the Drive page), or move/delete the obstacle on the Room page (sim). Details: Car page → Safety.';
+        d.textContent = 'Back up (S), turn away, or move the obstacle (Room page). Details: Car → Safety.';
         note.append(d);
       }
       setInterval(tick, 250); tick();
