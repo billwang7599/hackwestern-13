@@ -858,6 +858,15 @@ int main(int argc, char **argv)
             cfg.nav_foot_cells >= 1 ? (int)cfg.nav_foot_cells : (int)ceil((cfg.robot_radius_m > 0 ? cfg.robot_radius_m : NAV_DEFAULT_ROBOT_RADIUS) / NAV_RES - 1e-9),
             cfg.nav_foot_cells >= 1 ? " nav_foot_cells" : "", cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_hfov_deg,
             cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_plan > 0 ? "" : " (guard-aware planning OFF)");
+    /* -T N (bench sim at N x): the move deadline pad is stall slack for the host, which runs in
+     * wall time (tars_motor's own move timeout and vuno's 1x fallback during stalls both are), so
+     * keep it the same in wall seconds: 3 s of goto time is only 0.75 s of wall at 4x. T=1 (the
+     * robot): unchanged. */
+    if (time_scale > 1.0) {
+        cfg.move_timeout_pad_s *= time_scale;
+        fprintf(stderr, "goto: -T %.2g: move_timeout_pad_s %.1f (goto time) = %.1f s wall\n", time_scale,
+                cfg.move_timeout_pad_s, cfg.move_timeout_pad_s / time_scale);
+    }
     goto_objects_defaults(&objs);
     if (obj_path && goto_objects_load(&objs, obj_path) < 0) { fprintf(stderr, "goto: can't read %s\n", obj_path); return 1; }
     goto_sm_init(&sm, &cfg, &objs);

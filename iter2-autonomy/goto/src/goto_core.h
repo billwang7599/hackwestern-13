@@ -294,6 +294,8 @@ typedef struct {
     /* move tracking */
     int move_id;                      /* -1 = waiting for the TURN reply */
     double move_deadline;
+    double move_status_t;             /* time of the last STATUS about move_id (-1e9: none yet) */
+    int move_timeouts;                /* route legs past their deadline this GOTO (1st: re-plan) */
     /* target track */
     int have_track;
     double ema_x, ema_h;              /* x: -1..1 left..right, h: box height / frame height */
