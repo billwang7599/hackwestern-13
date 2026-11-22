@@ -66,7 +66,7 @@ const Bench = (() => {
     tests: ['Bring-up checks for when the real car arrives, and the tools to see why one failed.',
       '<b>Scenarios</b>: one click runs a scripted check and shows pass/fail with measured numbers. <b>Wheels</b>: commanded vs real wheel speed, plus a raw command console.',
       '<b>Recorder</b> saves everything and replays it without sending anything to the robot. <b>Log</b> has every message, newest first.',
-      'Tip: STOP or <kbd>Space</kbd> aborts a running check.'],
+      'Tip: STOP, <kbd>Space</kbd> or <kbd>Esc</kbd> aborts a running check.'],
     mission: ['Mission control for the real robot: the phone camera through the Pi, the robot’s own voice log, the phone link and Pi services.',
       'In SIM most of this stays empty: there is no robot camera and no Pi.',
       'Tip: hold <kbd>V</kbd> to talk straight to the robot’s tars_voice.'],
