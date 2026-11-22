@@ -43,10 +43,16 @@ the whole simulated stack and then the bench.
   (pi) or `V <json>` tars_voice events (sim/usb); `listen("cam", fn)` gets relay CAM frames (pi).
 
 **Panels** (browser side): `bench/web/panels/<name>.js` calls
-`Bench.register({id, title, order, area, help, view, wide, mount(el, Bench)})`.
+`Bench.register({id, title, short, order, area, help, view, wide, tall, mount(el, Bench)})`.
+`help` is one plain-English line saying what the panel is for: the shell puts a small **ⓘ** after the title
+that shows/hides it (closed by default, remembered per panel in `localStorage` as `bench.help.<id>`), and it
+is the tooltip on the panel's sub-tab or map-view button. Every panel should have one. The map view switch has
+its own ⓘ that shows the current view's `help`. `short` is the label on a sub-tab (else `title`); `tall`
+makes a grid panel span two rows (the Car page's virtual car beside safety + raw STATUS).
 In a panel: `Bench.on(topic, fn)`, `await Bench.api("<plugin>/<what>", body?)`, `Bench.log(src, text)`,
 `Bench.emit(topic, data)` (local event to this tab's `Bench.on` handlers), `Bench.openPage(id)` (`openTab` is
-the old name), `Bench.page`, `Bench.on('page', fn)`, `Bench.showView(id)`, `Bench.setBadgeDetail(text)`, and
+the old name), `Bench.page`, `Bench.on('page', fn)`, `Bench.openSub(page, panelId)` (pick a sub-tab), `Bench.showPanel(id)`
+(its page, its sub-tab, scrolled into view), `Bench.showView(id)`, `Bench.setBadgeDetail(text)`, and
 `Bench.mic.start()` / `await Bench.mic.stop()` (the one laptop-mic capture: a 16 kHz mono WAV, `mic` local
 event while recording).
 **STOP** and **Space** live in the shell (`web/shell.js` → `POST /api/robot/stop`), so
@@ -59,14 +65,20 @@ stay on every page. Pages marked *map* show the big centre view (`area: 'view'` 
 `map3d`, with a switch above it) beside their column; the others use the full width in a grid
 (`wide: true` spans it).
 
+Each page starts with a collapsible **What's this page for?** box (`ABOUT` in `shell.js`: what the page is
+for, what you can do, one tip), full width under the navbar. It is open on the first visit; after that it
+stays as the user left it (`bench.about.<page>`); closed, it shows a one-line reminder. Pages marked *sub*
+show one panel at a time behind sub-tabs (the panels in `order`; the choice is remembered as
+`bench.sub.<page>`, the default is the lowest order), so no page is one long scroll.
+
 | Page (`#hash`, key) | Map | Panels |
 |---|---|---|
 | Drive `#drive` 1 (default) | yes | `command` (Talk to TARS), `drive` (WASD pad, speed, exact MOVE/TURN) |
-| Room `#room` 2 | yes, edit mode on | `room-objects` (every object and wall, 🗑 per row, Delete selected, Undo), `world-tools` (faults, sensor noise), `maps` (map demos) |
+| Room `#room` 2 | yes, edit mode on, *sub* | `room-objects` (every object and wall, 🗑 per row, Delete selected, Undo), `world-tools` (faults, sensor noise), `maps` (map demos) |
 | Memory `#memory` 3 | yes, Robot's map | `mc-memory` (what goto remembers, Forget per row, Forget all with a confirm), `mc-goto` (goto status table, GOTO/RECALL/SCAN/CANCEL, events) |
 | Voice lab `#voice` 4 | | `voice` |
-| Car `#car` 5 | | `mc-safety` (guard), `car` (virtual car readings, faults, profile), `status` (raw tars_motor STATUS) |
-| Tests `#tests` 6 | | `scenarios` (table with results), `drive-debug` (wheel chart, raw console), `recorder`, `log` |
+| Car `#car` 5 | | `mc-safety` (guard), `car` (virtual car readings, faults, profile; `tall`), `status` (raw tars_motor STATUS) |
+| Tests `#tests` 6 | *sub* | `scenarios` (table with results), `drive-debug` (wheel chart, raw console), `recorder`, `log` |
 | Mission `#mission` 7 | | `mc-camera`, `mc-voice`, `mc-phone`, `mc-pi` |
 
 The page is the URL hash (linkable), else the last one shown (`localStorage`), else Drive; keys 1–7 switch
@@ -75,7 +87,7 @@ pages outside text boxes. Each map page remembers its own map view. Old drawer i
 page. A page left with no panels (Room on the real robot: its panels are sim-only) drops out of the navbar.
 Hidden pages stay in the DOM, so panels keep their state and their topic handlers; canvases are 0×0 while
 hidden and redraw on the `resize` the shell fires after every page/view switch. `?nohelp` skips the
-first-run help (screenshots). The last log line is in the footer (click: the log, on Tests).
+first-run help (screenshots). The last log line is in the footer (click: the Log sub-tab on Tests).
 
 **Removing things:**
 - *Sim room objects* (Room page): 🗑 on a row of "Things in the room" (walls are under "Walls"), **Delete

@@ -15,7 +15,7 @@
   document.body.appendChild(banner);
 
   Bench.register({
-    id: 'recorder', title: 'Recorder / replay', order: 40, area: 'tests',
+    id: 'recorder', title: 'Recorder / replay', short: '⏺ Recorder', order: 40, area: 'tests',
     help: 'Everything is recorded from the start. Replay never sends anything to the robot.',
     mount(el) {
       el.innerHTML = `<div class="dim" style="font-size:12px">Every event (telemetry and every command sent) is saved as JSONL in bench/recordings/.

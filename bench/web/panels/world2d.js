@@ -110,7 +110,7 @@
       side.append(faultBox, sliderBox);
       const sensors = h('div', {class: 'mono'});
       css(sensors, {fontSize: '12px', marginTop: '6px', whiteSpace: 'pre-wrap'});
-      B.register({id: 'world-tools', title: 'Faults and sensor noise (sim)', order: 10, area: 'room',
+      B.register({id: 'world-tools', title: 'Faults and sensor noise (sim)', short: '⚠ Faults & noise', order: 10, area: 'room',
         help: 'Break things on purpose to see how the robot copes. Faults toggle on click; sliders change the sim sensors live.',
         mount(el2) { el2.append(banner, sensors, side); }});
       // Room page: every object and wall as a table, with delete buttons and undo
@@ -120,7 +120,7 @@
       const wallsBox = h('details', {}, h('summary', {class: 'dim', style: {cursor: 'pointer', fontSize: '12px', margin: '8px 0 4px'}}, 'Walls'),
         h('div', {class: 'tbl-scroll', style: {maxHeight: '200px'}}, h('table', {class: 'dt', 'data-k': 'walls'},
           h('thead', {}, h('tr', {}, h('th', {}, 'Wall'), h('th', {}, 'From (x, y)'), h('th', {}, 'To (x, y)'), h('th', {}, 'Length'), h('th', {}, ''))), wallTbody)));
-      B.register({id: 'room-objects', title: 'Things in the room', order: 1, area: 'room',
+      B.register({id: 'room-objects', title: 'Things in the room', short: '📦 Things', order: 1, area: 'room',
         help: 'Every object in the sim room. Click a row to select it on the map; 🗑 deletes it (Undo brings it back). You can also right-click it on the map → Delete.',
         mount(el2) {
           el2.append(h('div', {class: 'toolbar'}, delSelBtn,

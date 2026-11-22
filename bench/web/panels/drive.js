@@ -113,7 +113,7 @@
 
   // ---------------------------------------------------------------- wheel chart + console (Debug tab)
   Bench.register({
-    id: 'drive-debug', title: 'Wheels chart + command console', order: 30, area: 'tests',
+    id: 'drive-debug', title: 'Wheels chart + command console', short: '📈 Wheels + console', order: 30, area: 'tests',
     help: 'Commanded wheel power vs what tars_motor outputs vs the virtual car’s real wheel speed; and send any raw line.',
     mount(el) {
       el.innerHTML = `

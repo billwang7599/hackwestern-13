@@ -14,10 +14,10 @@
   const COL = {pass: 'ok', fail: 'bad', error: 'bad', aborted: 'bad', skip: 'warn', running: 'dim'};
 
   Bench.register({
-    id: 'scenarios', title: 'Scenarios (bring-up checks)', order: 10, area: 'tests',
+    id: 'scenarios', title: 'Scenarios (bring-up checks)', short: '✅ Scenarios', order: 10, area: 'tests',
     help: 'One-click scripted checks with pass/fail and measured numbers. STOP aborts a run.',
     async mount(el) {
-      el.innerHTML = `<div class="dim where" style="font-size:12px;margin-bottom:4px"></div><div class="tbl-scroll" style="max-height:420px"><table class="dt sc-list"><thead><tr><th>Check</th><th>Needs</th><th>PI_TEST</th><th>Last result</th><th></th></tr></thead><tbody></tbody></table></div>
+      el.innerHTML = `<div class="dim where" style="font-size:12px;margin-bottom:4px"></div><div class="tbl-scroll" style="max-height:max(420px, calc(100vh - 380px))"><table class="dt sc-list"><thead><tr><th>Check</th><th>Needs</th><th>PI_TEST</th><th>Last result</th><th></th></tr></thead><tbody></tbody></table></div>
         <div class="sc-run" style="display:none"><div><b class="name"></b> <span class="state"></span> <span class="dim wh"></span>
         <button class="cancel" style="float:right">cancel</button></div>
         <div class="sc-prompt" style="display:none"></div>

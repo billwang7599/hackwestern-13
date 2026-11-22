@@ -5,15 +5,18 @@
 //   Bench.register({
 //     id: 'drive', title: 'Drive', order: 10,   // lower order = earlier on its page
 //     area: 'drive',                            // which page (below); 'view' = the map; 'header' = top bar
-//     help: 'one line saying what this is for', // shown under the title
+//     help: 'one line saying what this is for', // behind the ⓘ next to the title (collapsed; remembered per panel)
 //     view: 'Room',                             // area 'view' only: the label on the map's view switch
 //     wide: false,                              // full-width pages: span every column
+//     tall: false,                              // grid pages: span two rows (a long panel beside two short ones)
 //     mount(el, Bench) { ... }                  // build the DOM inside el
 //   });
 //   Pages: PAGES below ('drive', 'room', 'memory', 'voice', 'car', 'tests', 'mission'). Old drawer tab ids
 //   still work (LEGACY: side→drive, robot→memory, sim/maps→room, pi→mission, debug→tests); an unknown id
 //   makes a new page titled tabTitle or the id. Pages with map: true show the map (area 'view') beside
-//   their column; the others use the full width.
+//   their column; the others use the full width. Pages with sub: true show one panel at a time behind
+//   sub-tabs (the panel titles), so a page is never one long scroll. Every page has a collapsible
+//   "What's this page for?" box (ABOUT below), open on the first visit, then as the user left it.
 //   Bench.on('status', data => ...)   // server-sent event topic (also local Bench.emit topics)
 //   Bench.on('page', id => ...)       // local: the shown page changed (also fired once at boot)
 //   Bench.emit('topic', data)         // local event to every Bench.on('topic') handler in this tab
@@ -29,16 +32,45 @@ const Bench = (() => {
   let es = null;
   let info = {panels: [], plugins: [], target: {}};
 
-  // pages, in navbar order: [id, title, help, map shown?, default map view]
+  // pages, in navbar order: [id, title, help (navbar tooltip), map shown?, default map view, sub-tabs?]
   const PAGES = [
     ['drive', '🕹 Drive', 'Talk to TARS or drive by hand, and watch the map.', true, null],
-    ['room', '🧱 Room', 'SIMULATION: edit the sim room (add, move, delete things), load or save rooms, break sensors on purpose, map demos.', true, 'world2d'],
+    ['room', '🧱 Room', 'SIMULATION: edit the sim room (add, move, delete things), load or save rooms, break sensors on purpose, map demos.', true, 'world2d', true],
     ['memory', '🧠 Memory', 'What the robot’s go-to controller remembers and where. Forget one thing or everything; send GOTO / SCAN directly.', true, 'mc-map'],
     ['voice', '🎙 Voice lab', 'The speech pipeline in depth: what the classifier decides, which lines it sends, batch accuracy with noise.', false, null],
     ['car', '🚗 Car', 'The car: readings, the safety guard, tars_motor’s raw STATUS, and (sim) faults and motor guesses.', false, null],
-    ['tests', '✅ Tests', 'Scripted bring-up checks with pass/fail, record/replay, the wheel chart, a raw command console and the full log.', false, null],
+    ['tests', '✅ Tests', 'Scripted bring-up checks with pass/fail, record/replay, the wheel chart, a raw command console and the full log.', false, null, true],
     ['mission', '📡 Mission', 'Real-robot mission control: the phone camera through the Pi, the robot’s own voice log, Pi services and journals.', false, null],
   ];
+  // the "What's this page for?" box at the top of each page: what it's for, what you can do, one tip
+  const ABOUT = {
+    drive: ['Drive the car: tell TARS what to do in words, or drive it by hand. The map on the right shows where it is.',
+      '<b>Talk to TARS</b>: type a command or hold <kbd>T</kbd> and speak, e.g. “go to the trash can”. Turn <b>Send to robot</b> off for a dry run.',
+      '<b>Drive by hand</b>: hold <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or press the pad. Exact distances and angles are under “Exact moves”.',
+      'Tip: if the top bar says BLOCKED, <kbd>S</kbd> (reverse) still works. <kbd>Space</kbd> or STOP stops everything.'],
+    room: ['Build the simulated room the car drives in. Sim only: nothing here touches a real robot.',
+      'Add boxes, walls, people and objects with the tools above the map. <b>Things in the room</b> lists them all, with 🗑 to delete (or right-click on the map).',
+      '<b>Faults</b> breaks sensors on purpose; <b>Map demos</b> runs explore-from-nothing and saved-map (prescan) demos.',
+      'Tip: ↺ Reset puts the room back as it was loaded and restarts goto.'],
+    memory: ['What the robot remembers seeing, and where. “Go to the trash can” drives back to these spots.',
+      '<b>What the robot remembers</b>: Forget one object or all of them. Anything the camera still sees is learned again at once.',
+      '<b>Go-to controller</b>: goto’s state now, direct GOTO / RECALL / SCAN / CANCEL, and its event log.',
+      'Tip: the map on the right is the robot’s own map (what it believes), not the sim’s truth.'],
+    voice: ['Test the speech pipeline: type or speak a phrase and see exactly what the classifier decides and which lines it sends.',
+      'With <b>send to robot</b> on, the phrase also goes to the robot’s tars_voice, so the car acts on it. Off = dry run.',
+      'Open <b>batch</b> to measure accuracy, confusion and latency over many phrases, with added noise.',
+      'Tip: hold <kbd>T</kbd> anywhere on this page to talk.'],
+    car: ['The car itself: the obstacle guard, the virtual car’s true state, and every field of tars_motor’s raw STATUS.',
+      'Sim only: push, tip or brown out the car under <b>Faults</b>, and try motor guesses under <b>Profile</b> (nothing measured yet).',
+      'Tip: if <b>Safety</b> says BLOCKED, the LiDAR guard is refusing forward drives. Clicking the Path light in the top bar opens this page.'],
+    tests: ['Bring-up checks for when the real car arrives, and the tools to see why one failed.',
+      '<b>Scenarios</b>: one click runs a scripted check and shows pass/fail with measured numbers. <b>Wheels</b>: commanded vs real wheel speed, plus a raw command console.',
+      '<b>Recorder</b> saves everything and replays it without sending anything to the robot. <b>Log</b> has every message, newest first.',
+      'Tip: STOP or <kbd>Space</kbd> aborts a running check.'],
+    mission: ['Mission control for the real robot: the phone camera through the Pi, the robot’s own voice log, the phone link and Pi services.',
+      'In SIM most of this stays empty: there is no robot camera and no Pi.',
+      'Tip: hold <kbd>V</kbd> to talk straight to the robot’s tars_voice.'],
+  };
   const LEGACY = {side: 'drive', robot: 'memory', sim: 'room', maps: 'room', pi: 'mission', debug: 'tests', more: 'tests'};
   const pageDef = {};
   const pageOrder = [];
@@ -84,12 +116,17 @@ const Bench = (() => {
     let body = document.querySelector(`#pages > .page[data-page="${id}"]`);
     if (body) return body;
     const def = PAGES.find(t => t[0] === id);
-    pageDef[id] = {title: (def && def[1]) || title || id, help: (def && def[2]) || '', map: !!(def && def[3]), view: def && def[4]};
+    pageDef[id] = {title: (def && def[1]) || title || id, help: (def && def[2]) || '', map: !!(def && def[3]), view: def && def[4],
+                   sub: !!(def && def[5])};
     body = document.createElement('div');
     body.className = 'page'; body.dataset.page = id; body.id = 'page-' + id; body.hidden = true;
     body.setAttribute('role', 'tabpanel');
-    const head = document.createElement('div'); head.className = 'page-help'; head.textContent = pageDef[id].help;
-    if (pageDef[id].help) body.appendChild(head);
+    aboutBox(id);
+    if (pageDef[id].sub) {
+      const strip = document.createElement('div'); strip.className = 'subtabs'; strip.setAttribute('role', 'tablist');
+      strip.setAttribute('aria-label', pageDef[id].title + ' sections');
+      body.appendChild(strip); body.classList.add('has-sub');
+    }
     const grid = document.createElement('div'); grid.className = 'page-grid';
     body.appendChild(grid);
     document.getElementById('pages').appendChild(body);
@@ -107,6 +144,72 @@ const Bench = (() => {
   }
   const pageGrid = (id, title) => ensurePage(id, title).querySelector('.page-grid');
 
+  // "What's this page for?": one <details> per page in #about (full width, under the navbar); only the
+  // shown page's is visible. Open on the first visit; after that, as the user last left it (per page).
+  function aboutBox(id) {
+    const host = document.getElementById('about');
+    if (!host || host.querySelector(`[data-page="${id}"]`)) return;
+    const lines = ABOUT[id] || (pageDef[id].help ? [pageDef[id].help] : []);
+    if (!lines.length) return;
+    const d = document.createElement('details');
+    d.className = 'about'; d.dataset.page = id; d.hidden = true;
+    d.open = store.get('bench.about.' + id) !== 'closed';
+    const sm = document.createElement('summary');
+    sm.innerHTML = `<span class="about-q">What’s this page for?</span> <span class="about-short"></span>`;
+    sm.querySelector('.about-short').textContent = pageDef[id].help;   // a one-line reminder while it's closed
+    d.appendChild(sm);
+    const ul = document.createElement('ul');
+    for (const l of lines) { const li = document.createElement('li'); li.innerHTML = l; ul.appendChild(li); }   // our own text, not user input
+    d.appendChild(ul);
+    d.addEventListener('toggle', () => { store.set('bench.about.' + id, d.open ? 'open' : 'closed'); relayout(); });
+    host.appendChild(d);
+  }
+
+  // sub-tabs: on a page with sub: true, one panel shows at a time; the strip lists the panel titles in order
+  const subSel = {};
+  function refreshSubtabs(id) {
+    const pg = document.querySelector(`#pages > .page[data-page="${id}"]`);
+    const strip = pg && pg.querySelector('.subtabs');
+    if (!strip) return;
+    const secs = [...pg.querySelectorAll('.page-grid > .panel')].sort((a, b) => (+a.style.order) - (+b.style.order));
+    strip.textContent = '';
+    for (const sec of secs) {
+      const b = document.createElement('button');
+      b.className = 'subtab'; b.dataset.panel = sec.dataset.panel; b.setAttribute('role', 'tab');
+      b.textContent = sec.dataset.short || sec.querySelector('h2 .ttl').textContent;
+      b.title = sec.dataset.help || '';
+      b.onclick = () => openSub(id, sec.dataset.panel);
+      strip.appendChild(b);
+    }
+    const want = [subSel[id], store.get('bench.sub.' + id), secs[0] && secs[0].dataset.panel]
+      .find(p => p && secs.some(s => s.dataset.panel === p));
+    if (want) openSub(id, want, false);
+  }
+  function openSub(page, panelId, persist = true) {
+    page = LEGACY[page] || page;
+    const pg = document.querySelector(`#pages > .page[data-page="${page}"]`);
+    if (!pg || !pg.querySelector('.subtabs')) return false;
+    if (persist) subSel[page] = panelId;   // an explicit choice sticks; the default follows the panel order
+    for (const sec of pg.querySelectorAll('.page-grid > .panel')) sec.classList.toggle('sub-off', sec.dataset.panel !== panelId);
+    for (const b of pg.querySelectorAll('.subtabs .subtab')) {
+      const on = b.dataset.panel === panelId;
+      b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+    if (persist) store.set('bench.sub.' + page, panelId);
+    relayout();
+    return true;
+  }
+  // show a panel wherever it is: its page, and its sub-tab if the page has them
+  function showPanel(panelId) {
+    const sec = document.getElementById('panel-' + panelId);
+    const pg = sec && sec.closest('#pages > .page');
+    if (!pg) return false;
+    openPage(pg.dataset.page);
+    openSub(pg.dataset.page, panelId);
+    sec.scrollIntoView({block: 'nearest'});
+    return true;
+  }
+
   let curPage = null;
   const store = {get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
                  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }};
@@ -116,6 +219,7 @@ const Bench = (() => {
     if (!pg) return false;
     curPage = id;
     for (const x of document.querySelectorAll('#pages > .page')) x.hidden = x.dataset.page !== id;
+    for (const x of document.querySelectorAll('#about > .about')) x.hidden = x.dataset.page !== id;
     for (const b of document.querySelectorAll('#navbar .navtab')) {
       const on = b.dataset.page === id;
       b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -146,7 +250,9 @@ const Bench = (() => {
     if (!v) return;
     shownView = id;
     for (const x of document.querySelectorAll('#views > .view')) x.hidden = x.dataset.view !== id;
-    for (const b of document.querySelectorAll('#viewbar button')) b.classList.toggle('on', b.dataset.view === id);
+    for (const b of document.querySelectorAll('#viewbar button[data-view]')) b.classList.toggle('on', b.dataset.view === id);
+    const vh = document.getElementById('view-help');
+    if (vh) vh.textContent = (panels.find(p => p.id === id) || {}).help || '';
     if (persist) { store.set('bench.view', id); if (curPage) store.set('bench.view.' + curPage, id); }
     emit('view', id);
     relayout();
@@ -156,13 +262,38 @@ const Bench = (() => {
     const sec = document.createElement('section');
     sec.className = 'panel' + (p.wide ? ' wide' : '');
     sec.id = 'panel-' + p.id;
+    if (p.tall) sec.classList.add('tall');
     sec.style.order = p.order ?? 50;
-    const h = document.createElement('h2'); h.textContent = p.title || p.id;
+    sec.dataset.panel = p.id;
+    if (p.short) sec.dataset.short = p.short;
+    const h = document.createElement('h2');
+    const ttl = document.createElement('span'); ttl.className = 'ttl'; ttl.textContent = p.title || p.id;
+    h.appendChild(ttl);
     sec.appendChild(h);
-    if (p.help) { const d = document.createElement('div'); d.className = 'panel-help'; d.textContent = p.help; sec.appendChild(d); }
+    if (p.help) {
+      // ⓘ next to the title shows/hides a one-line description; closed by default, remembered per panel
+      sec.dataset.help = p.help;
+      const d = document.createElement('div'); d.className = 'panel-help'; d.textContent = p.help;
+      const b = infoButton('bench.help.' + p.id, d, 'what this section does');
+      h.appendChild(b);
+      sec.appendChild(d);
+    }
     const body = document.createElement('div'); body.className = 'body';
     sec.appendChild(body);
     return [sec, body];
+  }
+
+  function infoButton(key, target, what) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'info-btn'; b.textContent = 'ⓘ';
+    const set = open => {
+      target.hidden = !open; b.classList.toggle('on', open);
+      b.setAttribute('aria-expanded', open ? 'true' : 'false');
+      b.title = (open ? 'Hide ' : 'Show ') + what;
+    };
+    set(store.get(key) === 'open');
+    b.onclick = ev => { ev.stopPropagation(); const open = target.hidden; set(open); store.set(key, open ? 'open' : 'closed'); relayout(); };
+    return b;
   }
 
   function register(p) {
@@ -190,6 +321,7 @@ const Bench = (() => {
       const [sec, body] = section(p);
       pageGrid(area, p.tabTitle).appendChild(sec);
       mountEl = body;
+      refreshSubtabs(LEGACY[area] || area);
     }
     try { p.mount(mountEl, Bench); }
     catch (e) { mountEl.textContent = 'panel failed: ' + e; console.error(e); }
@@ -197,7 +329,7 @@ const Bench = (() => {
 
   // the shell's own log panel (Tests page)
   function logPanel() {
-    register({id: 'log', title: 'Log', order: 90, area: 'tests', wide: true, help: 'Every message from every part, newest first.',
+    register({id: 'log', title: 'Log', short: '📜 Log', order: 90, area: 'tests', wide: true, help: 'Every message from every part, newest first. The footer shows the latest line.',
       mount(el) {
         const box = document.createElement('div'); box.id = 'log'; box.setAttribute('aria-label', 'log');
         el.appendChild(box);
@@ -253,10 +385,19 @@ const Bench = (() => {
       document.getElementById('views').innerHTML = '<div class="empty">No map view on this target.</div>';
     }
     document.getElementById('viewbar').hidden = document.querySelectorAll('#viewbar button').length < 2;
+    if (views.length) {   // ⓘ at the end of the view switch: one line about the map view shown
+      const vh = document.createElement('div'); vh.id = 'view-help'; vh.className = 'panel-help view-help';
+      document.getElementById('views').before(vh);
+      const ib = infoButton('bench.help.views', vh, 'what this map view shows');
+      ib.style.order = 999;
+      document.getElementById('viewbar').appendChild(ib);
+      vh.textContent = (panels.find(p => p.id === shownView) || {}).help || '';
+    }
     // a page with nothing on it (e.g. Room on the real robot: its panels are sim-only) leaves the navbar
     for (const pg of document.querySelectorAll('#pages > .page')) {
       const empty = !pg.querySelector('.page-grid > .panel');
-      if (empty) { pg.remove(); document.querySelector(`#navbar .navtab[data-page="${pg.dataset.page}"]`)?.remove(); }
+      if (empty) { pg.remove(); document.querySelector(`#navbar .navtab[data-page="${pg.dataset.page}"]`)?.remove();
+                   document.querySelector(`#about > .about[data-page="${pg.dataset.page}"]`)?.remove(); }
     }
     pageOrder.splice(0, pageOrder.length, ...[...document.querySelectorAll('#navbar .navtab')].map(x => x.dataset.page));
     // the page: the URL hash (#room), else the last one shown, else Drive
@@ -354,12 +495,12 @@ const Bench = (() => {
     document.getElementById('help-close').addEventListener('click', hideHelp);
     document.getElementById('help').addEventListener('click', ev => { if (ev.target.id === 'help') hideHelp(); });
     document.getElementById('ticker').addEventListener('click', () => {
-      openPage('tests'); document.getElementById('panel-log')?.scrollIntoView({block: 'nearest'});
+      showPanel('log');
     });
     let seen = null; try { seen = localStorage.getItem('bench.helpSeen'); } catch (e) { /* private mode */ }
     if (!seen && !/[?&]nohelp\b/.test(location.search)) showHelp();
     boot();
   });
-  return {on, emit, api, log, register, openPage, openTab: openPage, closeDrawer: () => openPage('drive'), showView, setBadgeDetail, mic,
+  return {on, emit, api, log, register, openPage, openSub, showPanel, openTab: openPage, closeDrawer: () => openPage('drive'), showView, setBadgeDetail, mic,
     get info() { return info; }, get panels() { return panels; }, get page() { return curPage; }, PAGES};
 })();

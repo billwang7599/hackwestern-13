@@ -15,7 +15,7 @@
   }
 
   Bench.register({
-    id: 'maps', title: 'Map demos (SIM)', order: 20, wide: true, area: 'room',
+    id: 'maps', title: 'Map demos (SIM)', short: '🗺 Map demos', order: 20, wide: true, area: 'room',
     help: 'A: start knowing nothing, explore, then find the target. B: load a saved map, drop the car anywhere, GOTO. Watch the map view while it runs.',
     mount(el, B) {
       let grid = null, cells = null, mode = {}, showGrid = true, world = null;
