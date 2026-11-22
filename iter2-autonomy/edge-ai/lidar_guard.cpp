@@ -30,6 +30,12 @@ using Clock = std::chrono::steady_clock;
 using namespace std::chrono;
 constexpr size_t HEADER = 44, MAX_POINTS = 1024, MAX_PACKET = HEADER + MAX_POINTS * 12;
 constexpr int STALE_MS = 150;
+// Guard corridor: an obstacle point within +-half_width of the heading line and no
+// further ahead than stop_distance blocks. Defaults are the original 0.45 / 0.6;
+// --half-width / --stop-distance set them from the car size (goto.conf car_* keys).
+static double g_half_width = .45;   // m, |side| < this counts as "ahead"
+static double g_stop = .6;          // m, forward <= this blocks
+static float g_stop_f = .6f;        // the original compared against double(.6f)
 static std::atomic<bool> stopping{false};
 static_assert(std::atomic<bool>::is_always_lock_free, "Signal-safe stop flag must be lock-free");
 static void on_signal(int) { stopping = 1; }
@@ -159,12 +165,13 @@ static bool parse(const uint8_t* p, size_t size, Sample& out) {
         const double forward = forward_x * dx + forward_z * dz;
         const double side = forward_z * dx - forward_x * dz;
         const double height = point[1] - floor;
-        if (std::abs(side) < .45 && forward > 0 && height >= .08 && height <= 1.2) {
+        if (std::abs(side) < g_half_width && forward > 0 && height >= .08 && height <= 1.2) {
             if (out.nearest < 0 || forward < out.nearest) out.nearest = forward;
-            if (forward <= double(.6f)) blocked = true;
+            if (forward <= double(g_stop_f)) blocked = true;
         }
-        if (std::abs(side) < .45 && forward >= .15 && forward <= 1.5 && std::abs(height) <= .06)
-            ++out.floor_hits[side < -.15 ? 0 : (side > .15 ? 2 : 1)];
+        // floor visible across the corridor: left / middle / right thirds (was +-0.15 of 0.45)
+        if (std::abs(side) < g_half_width && forward >= .15 && forward <= 1.5 && std::abs(height) <= .06)
+            ++out.floor_hits[side < -g_half_width / 3 ? 0 : (side > g_half_width / 3 ? 2 : 1)];
     }
     // Invalid tracking/calibration can never authorize clearance, even if the
     // geometry happens to look empty. BLOCKED takes priority only when calibrated.
@@ -265,8 +272,10 @@ static void receiver(Shared& shared, unsigned port, int cpu, unsigned nav_port) 
                     double dx=floor_map[i][0]-x, dz=floor_map[i][1]-z;
                     double f=dx*std::sin(yaw)+dz*std::cos(yaw);
                     double side=dx*std::cos(yaw)-dz*std::sin(yaw);
-                    if (f>=.15 && f<.60 && side>=-.45 && side<.45)
-                        covered[std::min(2,int((f-.15)/.15))*3+std::min(2,int((side+.45)/.30))]=true;
+                    // 3 x 3 floor cells over the stop zone: 0.15 m .. stop ahead, +-half_width
+                    const double band_f=(g_stop-.15)/3, band_s=2*g_half_width/3;
+                    if (f>=.15 && f<g_stop && side>=-g_half_width && side<g_half_width)
+                        covered[std::min(2,int((f-.15)/band_f))*3+std::min(2,int((side+g_half_width)/band_s))]=true;
                 }
                 if (std::all_of(covered.begin(),covered.end(),[](bool v){return v;})) {
                     candidate.verdict=Verdict::Clear;
@@ -300,6 +309,16 @@ int main(int argc, char** argv) {
     bool require_clear = false, identify_obstacles = false;
     for (int i = 1; i < argc; ++i) {
         if (i + 1 >= argc) { std::fprintf(stderr, "Missing option value\n"); return 2; }
+        if (!std::strcmp(argv[i], "--half-width") || !std::strcmp(argv[i], "--stop-distance")) {
+            const bool half = argv[i][2] == 'h';
+            char* end = nullptr; const double v = std::strtod(argv[++i], &end);
+            // half-width 0.05..1.0 m, stop distance 0.15..2.0 m (floor cells need > 0.15)
+            if (!*argv[i] || *end || !std::isfinite(v) || (half ? (v < .05 || v > 1.0) : (v <= .15 || v > 2.0))) {
+                std::fprintf(stderr, "Unknown/invalid option: %s\n", argv[i - 1]); return 2;
+            }
+            if (half) g_half_width = v; else { g_stop = v; g_stop_f = float(v); }
+            continue;
+        }
         const char* key = argv[i]; int value = number(argv[++i], 0, 65535);
         if (value < 0) return 2;
         if (!std::strcmp(key, "--port") && value) port = unsigned(value);
@@ -335,6 +354,7 @@ int main(int argc, char** argv) {
     Shared shared;
     std::thread reader(receiver, std::ref(shared), port, cpu, nav_port);
     const Scheduling scheduling = schedule(20, cpu);
+    std::fprintf(stderr, "LiDAR guard corridor: half_width=%.3f m stop_distance=%.3f m\n", g_half_width, g_stop);
     std::fprintf(stderr, "LiDAR guard 100 Hz, stale=%d ms, native motor gate; policy=%d priority=%d runmask=%u schedule_error=%d affinity_error=%d\n",
                  STALE_MS, scheduling.policy, scheduling.priority, scheduling.runmask, scheduling.error, scheduling.affinity_error);
     const auto start = Clock::now();
@@ -369,7 +389,7 @@ int main(int argc, char** argv) {
         const bool inferred_live = fusion.live(fusion_now);
         const double inferred_distance = inferred_live ? fusion.nearest : -1;
         const bool inferred_stop = received_inferred_stop ||
-            (inferred_distance >= 0 && inferred_distance <= double(.6f));
+            (inferred_distance >= 0 && inferred_distance <= double(g_stop_f));
         const bool permit = lidar_permit && !inferred_stop;
         const char* stop_source = !lidar_permit ? "lidar" : inferred_stop ? "inferred" : "none";
         if (lidar_permit && inferred_stop) verdict = "BLOCKED";
@@ -401,7 +421,7 @@ int main(int argc, char** argv) {
                 "{\"type\":\"guard\",\"version\":1,\"verdict\":\"%s\",\"permit\":%s,\"advisory_only\":%s,\"motor_gate_enabled\":%s,"
                 "\"reason\":\"%s\",\"lidar_verdict\":\"%s\",\"stop_source\":\"%s\",\"lidar_nearest_m\":%s,"
                 "\"inferred_live\":%s,\"inferred_nearest_m\":%s,\"inferred_packets\":%llu,\"inferred_invalid\":%llu,"
-                "\"fusion_enabled\":%s,\"sample_age_ms\":%s,\"nearest_m\":%s,\"nearest_obstacle_m\":%s,\"stop_distance_m\":0.6,\"warning_distance_m\":1.2,\"source_us\":%llu,\"seq\":%u,\"frames\":%llu,"
+                "\"fusion_enabled\":%s,\"sample_age_ms\":%s,\"nearest_m\":%s,\"nearest_obstacle_m\":%s,\"stop_distance_m\":%.3f,\"half_width_m\":%.3f,\"warning_distance_m\":1.2,\"source_us\":%llu,\"seq\":%u,\"frames\":%llu,"
                 "\"map_supported\":%s,\"points\":%u,\"floor_hits\":[%u,%u,%u],\"backlog_ms\":%.3f,\"connected\":%s,"
                 "\"ticks\":%llu,\"tick_hz\":100,\"late_ticks\":%llu,\"missed_ticks\":%llu,\"max_lateness_ms\":%.3f,"
                 "\"snapshot_contention\":%llu,\"invalid_packets\":%llu,\"uptime_ms\":%.3f,"
@@ -410,7 +430,7 @@ int main(int argc, char** argv) {
                 verdict, permit ? "true" : "false", motor_port ? "false" : "true", motor_port ? "true" : "false",
                 reason, lidar_verdict, stop_source, lidar_nearest, inferred_live ? "true" : "false", inferred_nearest,
                 (unsigned long long)fusion.accepted, (unsigned long long)fusion.invalid, fusion_port ? "true" : "false",
-                age_text, nearest, nearest,
+                age_text, nearest, nearest, g_stop, g_half_width,
                 (unsigned long long)sample.source_us, sample.seq, (unsigned long long)sample.frames,
                 sample.map_supported ? "true" : "false", sample.points, sample.floor_hits[0], sample.floor_hits[1], sample.floor_hits[2], sample.backlog_ms,
                 connected ? "true" : "false", (unsigned long long)ticks, (unsigned long long)late_ticks,

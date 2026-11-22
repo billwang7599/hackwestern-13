@@ -6,7 +6,8 @@
  * Inputs
  *   control  TCP 5570, one command per line, reply "OK ..." / "ERR ...":
  *              GOTO <object words>   start (or retarget). Aliases: iter2-autonomy/goto/objects.txt
- *              CANCEL | STOP | S     stop now (sends S to tars_motor even when idle)
+ *              STOP | S              stop now (sends S to tars_motor even when idle)
+ *              CANCEL                stop the GOTO (S to tars_motor only if goto is busy)
  *              STATUS                "OK state=.. target=.. result=.. ..."
  *              OBJECTS               "OK trash can,chair,..."
  *              RESOLVE <words>       "OK <canonical>" or "ERR unknown object"
@@ -47,7 +48,7 @@
  * memory says the object is, then looks; if it's not there, normal search.
  *
  * Usage: goto [-m host:port] [-p ctl_port] [-u det_port] [-i] [-c goto.conf]
- *             [-o objects.txt] [-M memory.txt|-] [-r rt_prio] [-v] [-T time_scale (tests only)]
+ *             [-o objects.txt] [-M memory.txt|-] [-r rt_prio] [-v] [-T time_scale (tests, bench run_sim --speed)]
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -377,6 +378,8 @@ static void poll_status(void)
     if (kv(reply, "guard_epoch", v, sizeof v) == 0) {
         char gp[8] = "1";
         kv(reply, "guard_permit", gp, sizeof gp);
+        char gr[24];
+        if (kv(reply, "guard_reason", gr, sizeof gr) == 0) goto_sm_guard_reason(&sm, gr);
         goto_sm_guard(&sm, now_s(), atoi(gp) != 0, strtoull(v, NULL, 10));
         run_actions();
         if (!goto_sm_busy(&sm)) return;
@@ -441,10 +444,10 @@ static void nav_snapshot(int fd)
         "{\"source\":\"native-nav\",\"instance\":%ld,\"epoch\":%u,\"version\":%u,"
         "\"session\":\"%s\",\"size\":%d,\"resolution\":%.2f,\"origin\":[%.2f,%.2f],"
         "\"live\":%s,\"feed_age_s\":%.3f,\"floor_ready\":%s,\"floor_y\":%.4f,"
-        "\"pose\":[%.4f,%.4f,%.4f,%.5f],\"robot_radius\":%.2f,\"grid\":\"",
+        "\"pose\":[%.4f,%.4f,%.4f,%.5f],\"robot_radius\":%.3f,\"guard_half_width\":%.3f,\"guard_stop\":%.3f,\"grid\":\"",
         (long)getpid(), nav_generation(nav), nav_version(nav), nav_session, NAV_SIZE, NAV_RES,
         NAV_ORIGIN_X, NAV_ORIGIN_Z, live ? "true" : "false", age, have_floor ? "true" : "false",
-        floor, x, cy, z, yaw, NAV_DEFAULT_ROBOT_RADIUS);
+        floor, x, cy, z, yaw, nav_robot_radius(nav), cfg.nav_guard_half_w, cfg.nav_guard_stop_m);
     for (int iz = 0; iz < NAV_SIZE; iz++)
         for (int ix = 0; ix < NAV_SIZE; ix++) out[o++] = (char)('0' + nav_cell_at(nav, ix, iz));
     o += (size_t)snprintf(out + o, cap - o, "\",\"path\":[");
@@ -490,7 +493,11 @@ static void handle_ctl(conn *c, char *line)
     const char *arg = line + strlen(cmd);
     while (*arg == ' ') arg++;
     if (!cmd[0]) return;
-    if (!strcasecmp(cmd, "CANCEL") || !strcasecmp(cmd, "STOP") || !strcasecmp(cmd, "S")) {
+    if (!strcasecmp(cmd, "CANCEL") && !goto_sm_busy(&sm)) {
+        /* nothing to cancel: no S. Voice sends CANCEL right before a manual MOVE/TURN, and our
+         * late S used to abort it. STOP / S (below) always send S, idle or not. */
+        send_str(c->fd, "OK\n");
+    } else if (!strcasecmp(cmd, "CANCEL") || !strcasecmp(cmd, "STOP") || !strcasecmp(cmd, "S")) {
         goto_sm_cancel(&sm, now_s(), "cancel");    /* S goes out before we reply */
         run_actions();
         send_str(c->fd, "OK\n");
@@ -591,10 +598,12 @@ static void handle_ctl(conn *c, char *line)
         float x = 0, z = 0, yaw = 0;
         int src = nav ? nav_get_pose(nav, &x, &z, &yaw) : NAV_POSE_NONE;
         static const char *sn[] = {"none", "arkit", "dr", "stale"};
-        snprintf(reply, sizeof reply, "OK pose=%s,%.2f,%.2f,%.1f free=%d occ=%d version=%u packets=%ld bad=%ld feed_age=%.2f\n",
+        snprintf(reply, sizeof reply, "OK pose=%s,%.2f,%.2f,%.1f free=%d occ=%d version=%u packets=%ld bad=%ld feed_age=%.2f"
+                 " robot_radius=%.3f guard_half_width=%.3f guard_stop=%.3f blocked_cells=%d\n",
                  sn[src & 3], x, z, yaw * 180 / M_PI, nav ? nav_count(nav, NAV_FREE) : 0,
                  nav ? nav_count(nav, NAV_OCC) : 0, nav ? nav_version(nav) : 0, nav_pkts, nav_bad,
-                 nav_last_pkt < 0 ? -1.0 : (now_s() - nav_last_pkt) / time_scale);
+                 nav_last_pkt < 0 ? -1.0 : (now_s() - nav_last_pkt) / time_scale,
+                 nav ? nav_robot_radius(nav) : 0.0f, cfg.nav_guard_half_w, cfg.nav_guard_stop_m, nav ? nav_temp_count(nav) : 0);
         send_str(c->fd, reply);
     } else if (!strcasecmp(cmd, "SCAN")) {
         if (!motor_ready(c)) return;
@@ -685,7 +694,10 @@ static navconn navc[2];
 static void nav_packet(const unsigned char *b, size_t len)
 {
     size_t off = len >= 8 && !memcmp(b + 4, "LDR1", 4) ? 4 : 0;   /* optional length prefix */
-    int r = nav_ingest_ldr1(nav, b, len);
+    /* -T (bench --speed): the map's clear-span timers run on goto's scaled clock too; at 1
+     * (the robot) this is exactly nav_ingest_ldr1() */
+    int r = time_scale == 1.0 ? nav_ingest_ldr1(nav, b, len)
+                              : nav_ingest_ldr1_at(nav, b, len, (uint64_t)(now_s() * 1e6));
     nav_pkts++;
     if (r < 0) { nav_bad++; return; }
     if (r == NAV_LDR1_OLD) return;
@@ -796,7 +808,14 @@ int main(int argc, char **argv)
     const char *cfg_path = NULL, *obj_path = NULL;
     int opt;
     const char *mem_opt = NULL;
-    while ((opt = getopt(argc, argv, "m:p:u:n:ic:o:M:r:vT:h")) != -1) {
+    /* logs go to files under run_sim / the bench: line-buffer both so the tail survives a kill */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
+    int guard_flags = 0;
+    /* --guard-flags: print the lidar_guard flags that match goto.conf's car size, then exit */
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--guard-flags")) { guard_flags = 1; argv[i] = "-G"; }
+    while ((opt = getopt(argc, argv, "m:p:u:n:ic:o:M:r:vT:hG")) != -1) {
         switch (opt) {
         case 'm': {
             char *colon = strrchr(optarg, ':');
@@ -814,6 +833,7 @@ int main(int argc, char **argv)
         case 'r': rt_prio = atoi(optarg); break;
         case 'v': verbose++; break;
         case 'T': time_scale = atof(optarg); if (time_scale <= 0) time_scale = 1; break;
+        case 'G': guard_flags = 1; break;
         default: usage(argv[0]); return opt == 'h' ? 0 : 2;
         }
     }
@@ -827,11 +847,31 @@ int main(int argc, char **argv)
         if (goto_cfg_load(&cfg, cfg_path, err, sizeof err) < 0) { fprintf(stderr, "goto: can't read %s\n", cfg_path); return 1; }
         if (err[0]) fprintf(stderr, "goto: %s: %s (ignored)\n", cfg_path, err);
     }
+    if (guard_flags) {
+        printf("--half-width %.3f --stop-distance %.3f\n", cfg.nav_guard_half_w, cfg.nav_guard_stop_m);
+        return 0;
+    }
+    fprintf(stderr, "goto: car %s: robot_radius=%.3f m (nav inflation, footprint %d cells%s) guard half_width=%.3f m stop=%.3f m hfov=%.0f"
+            " -> lidar_guard --half-width %.3f --stop-distance %.3f%s\n",
+            cfg.car_derived ? "from car_length_m/car_width_m/safety_margin_m" : "legacy (car_* unset)",
+            cfg.robot_radius_m,
+            cfg.nav_foot_cells >= 1 ? (int)cfg.nav_foot_cells : (int)ceil((cfg.robot_radius_m > 0 ? cfg.robot_radius_m : NAV_DEFAULT_ROBOT_RADIUS) / NAV_RES - 1e-9),
+            cfg.nav_foot_cells >= 1 ? " nav_foot_cells" : "", cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_hfov_deg,
+            cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_plan > 0 ? "" : " (guard-aware planning OFF)");
+    /* -T N (bench sim at N x): the move deadline pad is stall slack for the host, which runs in
+     * wall time (tars_motor's own move timeout and vuno's 1x fallback during stalls both are), so
+     * keep it the same in wall seconds: 3 s of goto time is only 0.75 s of wall at 4x. T=1 (the
+     * robot): unchanged. */
+    if (time_scale > 1.0) {
+        cfg.move_timeout_pad_s *= time_scale;
+        fprintf(stderr, "goto: -T %.2g: move_timeout_pad_s %.1f (goto time) = %.1f s wall\n", time_scale,
+                cfg.move_timeout_pad_s, cfg.move_timeout_pad_s / time_scale);
+    }
     goto_objects_defaults(&objs);
     if (obj_path && goto_objects_load(&objs, obj_path) < 0) { fprintf(stderr, "goto: can't read %s\n", obj_path); return 1; }
     goto_sm_init(&sm, &cfg, &objs);
     nav = nav_new();
-    if (!nav) { fprintf(stderr, "goto: out of memory for the nav grid\n"); return 1; }
+    if (!nav) { fprintf(stderr, "goto: out of memory for the nav grid\n"); return 1; }   /* set_nav: radius + guard box */
     goto_sm_set_nav(&sm, nav);
 
     /* memory file: -M, else memory_path; relative paths sit next to goto.conf */

@@ -58,10 +58,46 @@ typedef struct {
     /* map-guided GOTO (nav.h grid from the phone, feed on UDP/TCP 5572) */
     double nav_pose_fresh_s;  /* no LDR1 pose this long -> ARKit tracking treated as lost (DR takes over) */
     double nav_turn_min_deg;  /* path leg: turn first only if the heading is off by more than this */
+    double nav_heading_tol_deg; /* after a path TURN: still off by more (fresh pose) -> corrective TURN first */
+    double nav_heading_retries; /* ... at most this many corrective TURNs, then MOVE anyway (0 = off) */
     double nav_leg_min_mm;    /* path legs shorter than this are skipped */
     double nav_max_replans;   /* re-plans (guard denial, map change) per GOTO, then FAILED blocked */
     double nav_guard_wait_s;  /* after a guard-aborted leg: wait this long (and for CLEAR) before re-planning */
     double nav_reveal_deg;    /* robot's own footprint not mapped yet: turn this much to reveal floor, re-plan */
+    /* lidar_guard's stop zone, as goto predicts it from its map (mirror of lidar_guard.cpp, NOT
+     * the guard's thresholds: changing these never changes what the guard stops) */
+    double nav_guard_stop_m;  /* BLOCKED if an obstacle is this close ahead ... */
+    double nav_guard_half_w;  /* ... and less than this to the side ... */
+    double nav_guard_hfov_deg;/* ... and inside the phone's LiDAR cone (>= 180: the whole rectangle) */
+    double nav_escape_mm;     /* a path leg would start with an obstacle in that zone: pivot to the nearest
+                                 heading that's clear and drive this far, then re-plan (0 = off) */
+    double robot_radius_m;    /* nav footprint for inflation/fit checks (nav_set_robot_radius); MEASURE the real car */
+    double nav_foot_cells;    /* > 0: nav footprint half-size in 0.1 m cells (nav_set_foot_cells); 0 = ceil(robot_radius_m / 0.1) */
+    double nav_move_max_mm;   /* tars_motor's MOVE limit (wheels.h MOVE_MAX_MM): longer legs go in pieces */
+    /* ONE source of truth for the car's size. With car_length_m and car_width_m both > 0,
+     * goto_cfg_derive() sets robot_radius_m = half the diagonal + safety_margin_m and
+     * nav_guard_half_w = car_width_m / 2 + safety_margin_m (the guard corridor), and the guard's
+     * stop distance is guard_stop_m (= nav_guard_stop_m). The same numbers go to lidar_guard
+     * (goto --guard-flags). Both 0 = the legacy numbers above (0.35 / 0.45 / 0.6). */
+    double car_length_m, car_width_m, safety_margin_m;
+    int    car_derived;       /* 1 = robot_radius_m / nav_guard_half_w came from car_* */
+    double nav_guard_plan;    /* 1 = A* only plans legs the guard's box allows (nav_set_guard_box) */
+    double nav_backtrack;     /* 1 = when stuck, retrace the breadcrumb trail, then re-plan */
+    double nav_replan_here;   /* 1 = a guard stop of a path leg re-plans in place first (cost-to-go field); backtrack only if that fails */
+    double nav_here_turn_cost;/* metres of route a 90 deg pivot costs when ranking in-place legs */
+    double nav_block_s;       /* cells a guard refusal marked blocked are forgotten after this */
+    /* optimistic planning: no route over observed floor -> plan through UNKNOWN (penalised) */
+    double nav_optimistic;    /* 1 = on */
+    double nav_unknown_penalty;/* extra cost per step on not-yet-observed floor (1 = twice the cost) */
+    double nav_unknown_leg_mm;/* a leg through unknown floor drives at most this far, then re-plans */
+    double nav_travel_cap_m;  /* optimistic routes: give up after driving this far (0 = 3 x first route + 2 m) */
+    double nav_max_opt_replans;/* optimistic routes: re-plans because the map showed a wall on the route */
+    /* heading-aware, sticky routes (all 0 = off: the robot's behaviour before them) */
+    double nav_turn_cost_m;   /* A*: metres of route a 90 deg corner costs (fewer corners = fewer TURNs) */
+    double nav_start_turn_cost_m; /* A*: metres per 90 deg between the car's heading and the first leg (U-turn = 2x) */
+    double nav_sticky;        /* 1 = a map-change re-plan keeps the current route if it still fits, else repairs it */
+    double nav_sticky_frac;   /* ... unless the fresh route is cheaper by this fraction ... */
+    double nav_sticky_m;      /* ... and by at least this many metres */
     /* per-object arrive override, e.g. person is tall: arrive_h.person = 0.85 */
     int    n_arrive_over;
     char   arrive_over_label[16][32];
@@ -71,6 +107,7 @@ typedef struct {
 } goto_cfg;
 
 void goto_cfg_defaults(goto_cfg *c);
+void goto_cfg_derive(goto_cfg *c);            /* car_* -> radius / guard corridor (goto_cfg_load calls it) */
 /* "key = value" lines, # comments. Returns 0, or -1 if the file can't be
  * opened. Unknown keys are reported in err (first one) and skipped. */
 int  goto_cfg_load(goto_cfg *c, const char *path, char *err, size_t errlen);
@@ -116,7 +153,8 @@ int goto_parse_frame(const char *line, goto_frame *f);
  * remembered INSTANCES, keyed label + id (trash can #1, trash can #2). A
  * sighting merges into an instance of the same label whose world x,y is within
  * memory_merge_mm, or that lies on the same ray from the robot within the
- * (noisy) range; otherwise it becomes a new instance.
+ * (noisy) range; otherwise it becomes a new instance. With a fresh ARKit pose (have_nav_arkit)
+ * and an instance with a map position (has_w), that match is done in the map frame instead.
  * World frame: built on tars_motor's dead-reckoned pose (x forward, y right of
  * where tars_motor started, mm; headings/bearings deg, + = clockwise like
  * TURN). tars_motor's pose restarts at 0 when it restarts (new pose_epoch); the
@@ -156,6 +194,8 @@ typedef struct {
     int rebased;             /* times it re-based on a new epoch (STATUS / tests) */
     int have_nav;            /* robot pose in the nav (ARKit) frame, for has_w/wx/wz of new sightings */
     double nx, nz, nyaw;     /* metres, rad; forward = (sin yaw, cos yaw); + yaw = left turn */
+    int have_nav_arkit;      /* ... and it's a fresh ARKit pose (not DR-carried): sightings then
+                              * match instances by map position (wx, wz), not by the DR x/y */
 } goto_mem;
 
 void goto_mem_init(goto_mem *m);
@@ -260,6 +300,8 @@ typedef struct {
     /* move tracking */
     int move_id;                      /* -1 = waiting for the TURN reply */
     double move_deadline;
+    double move_status_t;             /* time of the last STATUS about move_id (-1e9: none yet) */
+    int move_timeouts;                /* route legs past their deadline this GOTO (1st: re-plan) */
     /* target track */
     int have_track;
     double ema_x, ema_h;              /* x: -1..1 left..right, h: box height / frame height */
@@ -285,18 +327,71 @@ typedef struct {
     int vantage;                      /* planning to (vx, vz) instead of the goal's approach ring */
     double vx, vz;
     nav_pt_t path[64];
-    int path_n, path_i, leg;          /* leg: 0 turn, 1 move, 2 face the goal, 3 reveal turn */
+    int path_n, path_i, leg;          /* leg: 0 turn, 1 move, 2 face the goal, 3 reveal turn, 4/5 escape, 6/7 backtrack */
     double leg_mm;
     unsigned path_ver;
     int replans, detoured_id;
     double revealed_deg;
+    int reveal_have_yaw;              /* reveal_yaw = ARKit yaw when the current reveal TURN started */
+    double reveal_yaw;
+    int mem_fallback, fallback_noroute;                 /* the search failed and we headed for the nearest-by-route memory */
+    int escapes;                      /* guard-zone escape steps this GOTO (leg 4 = its TURN, 5 = its MOVE) */
     int plan_wait;                    /* ST_PLAN: re-plan once the guard is CLEAR */
     int exploring, explores;          /* heading to a mapped cell nearer an unmapped goal, then re-plan */
     int leg_settle;                   /* leg done, ARKit pose: wait for 2 poses taken after it ended */
     unsigned settle_seq;
     double settle_since;
+    /* guard refusals of path legs this GOTO (fresh guard_blocked = the map didn't predict it):
+     * refused = ERR when the TURN/MOVE was asked for, aborts = stopped while running */
+    int guard_refusals, guard_aborts, guard_other_stops;
+    /* breadcrumb trail (nav frame, m): where the robot has driven this GOTO, every ~0.1 m and
+     * after each finished leg; corner = a path leg started there. Ring, newest last. */
+#define GOTO_CRUMBS 200
+    float crumb_x[GOTO_CRUMBS], crumb_z[GOTO_CRUMBS];
+    unsigned char crumb_corner[GOTO_CRUMBS];
+    int crumb_head, crumb_n;
+    /* stuck recovery: backtrack along the trail (leg 6 = its TURN, 7 = its reverse MOVE) */
+    int bt_rung, backtracks;          /* rung of the ladder used last (reset on progress), total this GOTO */
+    nav_pt_t bt_pts[64];
+    int bt_n, bt_i;
+    double bt_mm;
+    int ref_valid;                    /* the leg the guard just refused: start + waypoint */
+    double ref_sx, ref_sz, ref_wx, ref_wz;
+    double block_since;               /* nav_temp_block cells set at this time (decay nav_block_s) */
+    int turn_stops;                   /* consecutive TURNs stopped by the guard */
+    int settle_fresh;                 /* the last leg's settle ended on 2 new ARKit poses (not the timeout) */
+    int heading_unchecked;            /* legs whose heading could not be checked (DR / stale pose) this GOTO */
+    int heading_tries;                /* corrective TURNs since this leg's TURN (nav_heading_retries) */
+    double esc_yaw;                   /* escape leg 4: the nav yaw (rad) the pivot is aiming for */
+    int heading_fixes;                /* corrective TURNs this GOTO (STATUS heading_fixes=) */
+    double plan_sx, plan_sz;          /* where the current route starts (its first leg's start corner) */
+    int relaxed;                      /* the last plan_from_robot fell back to ignoring the guard box */
+    int route_guard_ok;               /* the route passed the guard-box check when planned (map-change re-check) */
+    int bt_tries;                     /* reverse attempts at the current backtrack point */
+    int here_tries;                   /* in-place re-plans since the last finished path MOVE (<= 3) */
+    double here_base;                 /* cells left on the route the guard first refused at this spot */
+    double here_ref[4];               /* headings (rad) refused at this spot */
+    int here_nref;
+    int replans_here;                 /* in-place re-plans this GOTO (capped; STATUS replans_here=) */
+    int have_goal;                    /* goal_x/z is a remembered spot of this GOTO (map frame) */
+    int los_standoffs;                /* searches moved to a cell that can see the spot, this GOTO */
+    int plan_depth;                   /* do_plan nesting guard */
+    int search_hops, search_hop;      /* search relocations this GOTO; 1 = driving to one, spin on arrival */
+    int optimistic;                   /* the current route goes through unknown floor */
+    int opt_failed;                   /* the last goal plan failed even through unknown floor */
+    int unblock_tried;                /* this GOTO already cleared guard temp blocks once before calling it unreachable */
+    int unreachable;                  /* ... for some instance this GOTO: fail reason unreachable */
+    double travel_m, opt_len0, last_move_mm;
+    int opt_replans, leg_cut;
+    int sticky_map;                   /* the pending re-plan is because the map changed under the route */
+    int sticky_kept, sticky_repairs;  /* nav_sticky outcomes this GOTO (STATUS) */
+    int backed_off;                   /* the last plan_from_robot_1 route starts with a back-off cell */
+    int rt_vantage;                   /* the goal the current route was planned to */
+    double rt_gx, rt_gz;
+    int gone_ids[8], n_gone;          /* instances looked at this GOTO with a clear view: not there */
     /* lidar_guard via tars_motor STATUS */
     int guard_known, guard_ok;
+    char guard_reason[24];            /* STATUS guard_reason= (clear|guard_blocked|guard_stale|...); "" = never reported */
     unsigned long long guard_epoch, lease_epoch;
     /* SCAN */
     int scan_n;
@@ -316,9 +411,13 @@ void goto_sm_goto(goto_sm *s, double now, int target);
 void goto_sm_recall(goto_sm *s, double now, int target);
 /* map: attach (may be NULL). Call nav_note_dr()/nav_set_pose() on it from the I/O side. */
 void goto_sm_set_nav(goto_sm *s, nav_t *nav);
+void search_fallback_for_test(goto_sm *s);   /* tests: the search fallback from the current state */
 /* STATUS guard_permit= / guard_epoch= (tars_motor with -g). An epoch change ends a leased
  * APPROACH leg: an old drive never resumes after the guard clears. */
 void goto_sm_guard(goto_sm *s, double now, int permit, unsigned long long epoch);
+/* STATUS guard_reason= (call before goto_sm_guard, so an epoch change sees the reason behind it).
+ * Only a fresh guard_blocked lets a guard stop at a big centred target count as docked. */
+void goto_sm_guard_reason(goto_sm *s, const char *reason);
 /* tars_motor refused a D/DL (ERR guard epoch changed / guard_blocked / ...) */
 void goto_sm_drive_refused(goto_sm *s, double now, const char *why);
 /* tars_motor refused a TURN/MOVE because of the guard (ERR guard_*). Map legs wait + re-plan;

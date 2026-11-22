@@ -245,7 +245,7 @@ static void test_give_up(void)
         if (S.st == ST_SEARCH_TURN) { turns++; ack_turn(100 + step); advance(0.4); }
     }
     CHECK(S.st == ST_IDLE && turns == 12, "full circle (12 x 30) then give up (turns=%d)", turns);
-    CHECK(!strcmp(S.result, "failed:not_found") && count(ACT_STOP) >= 1 && find(ACT_BEEP) && find(ACT_BEEP)->a == 3,
+    CHECK(!strcmp(S.result, "failed:not_found_no_memory") && count(ACT_STOP) >= 1 && find(ACT_BEEP) && find(ACT_BEEP)->a == 3,
           "not found: S + BEEP 3 (%s)", S.result);
 }
 
@@ -273,7 +273,7 @@ static void test_turn_guard_hiccup(void)
         for (int i = 0; i < 8 && S.st == ST_LOOK; i++) { advance(0.12); frame(NULL, 0, 0, 0); }
         if (S.st == ST_SEARCH_TURN) { turns++; ack_turn(200 + step); advance(0.4); }
     }
-    CHECK(S.st == ST_IDLE && turns == 12 && !strcmp(S.result, "failed:not_found"), "then a full 12 x 30 search (%d, %s)", turns, S.result);
+    CHECK(S.st == ST_IDLE && turns == 12 && !strcmp(S.result, "failed:not_found_no_memory"), "then a full 12 x 30 search (%d, %s)", turns, S.result);
 
     /* refused at the start (guard stale right then): same */
     reset_sm();
@@ -350,7 +350,7 @@ static void test_cancel_and_failures(void)
     goto_sm_move_started(&S, T, 5, 0.7);
     clear();
     for (int i = 0; i < 10; i++) { advance(0.12); frame(NULL, 0, 0, 0); }
-    advance(4.0);
+    for (int i = 0; i < 40; i++) { advance(0.1); goto_sm_move_status(&S, T, 5, "running", "-"); }   /* goto.c polls at 10 Hz */
     CHECK(S.st == ST_IDLE && strstr(S.result, "timed_out"), "TURN that never finishes -> fail (%s)", S.result);
 
     reset_sm();
@@ -597,7 +597,7 @@ static void test_memory_goto_miss(void)
     CHECK(S.st == ST_SEARCH_TURN && t && t->a == 30 && has_event("not_there") && S.mem_phase == 3,
           "not there -> normal search, starting toward the remembered side");
     int turns = count_turns_until_idle(NULL);   /* includes the queued first one */
-    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found") && turns == 12, "full circle then give up (%d turns)", turns);
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found_no_map") && turns == 12, "full circle then give up (%d turns)", turns);
     int i = goto_mem_find(&M, "backpack");
     CHECK(i >= 0 && M.e[i].status == MEM_STALE, "not there -> instance STALE");
     clear();
@@ -854,6 +854,7 @@ static nav_t *N;
 static goto_mem MM;
 static double PX, PZ, PYAW;                   /* the fake robot, nav frame */
 static int crossed_occ, reverse_moves, legs;
+static double TURN_SCALE = 1.0;                /* fake robot's TURN error (DC car: timed turns) */
 
 static void set_free_rect(double x0, double z0, double x1, double z1, int v)
 {
@@ -878,6 +879,7 @@ static void map_setup(void)
     if (!N) N = nav_new();
     nav_reset(N);
     nav_set_robot_radius(N, 0.35f);
+    S.cfg.robot_radius_m = 0.35;              /* map tests were written for the 0.35 m TARS footprint */
     goto_mem_init(&MM);
     goto_sm_set_memory(&S, &MM, 1e6);
     goto_sm_set_nav(&S, N);
@@ -939,7 +941,7 @@ static int run_legs_ev(int max)
         const goto_act *a = find(ACT_TURN);
         const goto_act *m = find(ACT_MOVE);
         if (!a && !m) return n;
-        if (a) PYAW -= a->a * M_PI / 180;
+        if (a) PYAW -= a->a * TURN_SCALE * M_PI / 180;
         else {
             if (m->a < 0) reverse_moves++;
             double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
@@ -956,6 +958,25 @@ static int run_legs_ev(int max)
     return max;
 }
 static void look_empty(int n) { for (int i = 0; i < n; i++) { advance(0.12); frame(NULL, 0, 0, 0); } }
+/* run every TURN/MOVE (path legs, reveal, search) on the fake robot, camera sees nothing, until idle */
+static void drive_until_idle(int max)
+{
+    int id = 3000;
+    for (int k = 0; k < max && S.st != ST_IDLE; k++) {
+        grab_events();
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (a) PYAW -= a->a * M_PI / 180;
+        else if (m) {
+            double nx = PX + fmin(m->a, 1000.0) / 1000 * sin(PYAW), nz = PZ + fmin(m->a, 1000.0) / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            PX = nx; PZ = nz;
+        }
+        if (a || m) { clear(); goto_sm_move_started(&S, T, ++id, 0.5); advance(0.3); leg_done_phone_lags(id); }
+        else { advance(0.3); nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1); }
+        look_empty(3);
+    }
+    grab_events();
+}
 
 /* Regression (full-stack sim flake): when tars_motor says a leg is done, the phone's newest
  * ARKit pose is still from before the move. Planning the next leg from it turned the robot by a
@@ -980,7 +1001,7 @@ static void test_map_leg_waits_for_post_move_pose(void)
             while (b > 180) b -= 360;
             while (b < -180) b += 360;
             if (a && fabs(a->a - b) > 1.0) bad_turn++;
-            if (m && fabs(m->a - hypot(dx, dz) * 1000) > 10) bad_move++;
+            if (m && fabs(m->a - fmin(hypot(dx, dz) * 1000, C.nav_move_max_mm)) > 10) bad_move++;   /* tars_motor's MOVE limit */
         }
         if (a) PYAW -= a->a * M_PI / 180;
         else { PX += m->a / 1000 * sin(PYAW); PZ += m->a / 1000 * cos(PYAW); }
@@ -1027,6 +1048,7 @@ static void test_map_leg_waits_for_post_move_pose(void)
  * not_found. An explore hop must be able to see the goal when such a cell exists. */
 static void test_map_explore_sees_the_goal(void)
 {
+    C.nav_optimistic = 0;                                 /* the explore hop is the non-optimistic path */
     map_setup();
     for (double x = -1.95; x < 2.0; x += 0.1)            /* room seen from (0,0): wall + its shadow */
         for (double z = -0.95; z < 3.0; z += 0.1) {
@@ -1056,6 +1078,9 @@ static void test_map_explore_sees_the_goal(void)
           "goal in the wall's shadow: reveal, then an explore hop (%s, %s)", goto_state_name(S.st), EV);
     int los = nav_line_clear(N, (float)S.vx, (float)S.vz, 0.0f, 2.4f);
     CHECK(los != 0, "the explore hop (%.2f, %.2f) can see the goal (line_clear %d), not the wall's middle", S.vx, S.vz, los);
+    goto_sm_cancel(&S, T, "x");
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
 }
 
 static void test_map_route_around_wall(void)
@@ -1140,6 +1165,103 @@ static void test_map_occluded_detour(void)
     look_empty(4);
     grab_events();
     CHECK(had_event("not_there trash can #1", EV), "nothing from the vantage either -> not_there");
+}
+
+/* Regression (bench L-pocket): the guard stopped a leg of the DETOUR to a vantage cell. Main's goto
+ * re-planned to the vantage, failed and went straight to next_candidate + a 360 search from behind the
+ * occluder. A guard stop is never "not there": the refused zone is marked, the robot backs out and
+ * re-plans (another stand-off cell / the approach ring); only a clear line of sight that sees nothing is. */
+static void test_map_detour_guard_stop(void)
+{
+    map_setup();
+    nav_set_robot_radius(N, 0.25f);
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(2.05, 0.85, 0);
+    add_inst(2.05, 1.65, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    run_legs_ev(10);
+    set_free_rect(1.9, 1.2, 2.2, 1.3, NAV_OCC);
+    advance(0.4);
+    clear();
+    look_empty(4);
+    grab_events();
+    CHECK(S.st == ST_FOLLOW_PATH && S.vantage, "detour to a vantage cell (%s)", goto_state_name(S.st));
+    int k = 0;
+    while (k++ < 6 && !find(ACT_MOVE) && find(ACT_TURN)) run_legs_ev(1);
+    CHECK(find(ACT_MOVE) != NULL, "a detour MOVE leg is asked for");
+    clear();
+    goto_sm_move_started(&S, T, 990, 1.0);
+    goto_sm_guard_reason(&S, "guard_blocked");          /* the guard saw something the map doesn't have */
+    goto_sm_move_status(&S, T, 990, "aborted", "lidar_guard");
+    grab_events();
+    CHECK(S.guard_aborts == 1, "counted as a guard abort on a path leg (%d)", S.guard_aborts);
+    goto_sm_guard_reason(&S, "clear");
+    for (int i = 0; i < 12 && S.st == ST_PLAN; i++) { advance(0.1); frame(NULL, 0, 0, 0); }
+    run_legs_ev(60);
+    grab_events();
+    CHECK(!had_event("next_candidate", EV) && !had_event("not_there", EV),
+          "guard stop on the detour: no next_candidate / not_there (%.300s)", EV);
+    CHECK(S.st == ST_LOOK, "re-planned and reached a view of the spot (%s)", goto_state_name(S.st));
+    CHECK(MM.e[goto_mem_find_id(&MM, "trash can", 1)].status == MEM_FRESH, "instance not downgraded");
+    goto_sm_cancel(&S, T, "x");
+}
+
+/* the search must not spin where a mapped wall hides the spot: it moves to a cell that sees it */
+static void test_map_search_needs_line_of_sight(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 5, 5, NAV_FREE);
+    set_free_rect(1.0, 2.0, 4.0, 2.1, NAV_OCC);           /* a wall between the robot and the spot */
+    put_robot(2.55, 1.05, 0);
+    add_inst(2.55, 3.4, MEM_FRESH);
+    S.have_goal = 1; S.goal_x = 2.55; S.goal_z = 3.4;
+    EV[0] = 0;
+    start("trash can");
+    S.have_goal = 1; S.goal_x = 2.55; S.goal_z = 3.4;
+    S.map_mode = 1; S.mem_id = 1;
+    clear();
+    search_fallback_for_test(&S);
+    grab_events();
+    CHECK(had_event("standoff_search", EV) && S.st == ST_FOLLOW_PATH,
+          "wall hides the spot: go to a stand-off cell with a line of sight, don't spin here (%s, %.200s)", goto_state_name(S.st), EV);
+    goto_sm_cancel(&S, T, "x");
+}
+
+/* optimistic route through unknown floor: a wall the LiDAR maps on it -> re-plan (not a failure,
+ * its own cap); legs through unknown <= nav_unknown_leg_mm; CANCEL mid-replan wins */
+static void test_map_optimistic(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 1.2, 4, NAV_FREE);                /* only a strip around the robot is mapped */
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.0, 3.0, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(had_event("route trash can #1", EV) && strstr(EV, "optimistic") && S.optimistic,
+          "no route over mapped floor -> optimistic route (%.200s)", EV);
+    int k = 0;
+    while (k++ < 6 && !find(ACT_MOVE) && find(ACT_TURN)) run_legs_ev(1);
+    const goto_act *m = find(ACT_MOVE);
+    CHECK(m && m->a <= C.nav_unknown_leg_mm + 1e-6, "a leg into unknown floor is short (%.0f mm)", m ? m->a : -1.0);
+    clear();
+    goto_sm_move_started(&S, T, 990, 1.0);
+    /* the LiDAR maps a wall across the rest of the route */
+    nav_pt_t w = S.path[S.path_n - 1];
+    set_free_rect(w.x - 0.6, w.z - 1.2, w.x + 0.6, w.z - 1.0, NAV_OCC);
+    for (int i = 0; i < 3; i++) set_free_rect(1.2 + i * 0.01, 0, 1.21 + i * 0.01, 0.01, NAV_FREE);   /* bump version */
+    advance(0.1);
+    grab_events();
+    CHECK(S.st == ST_PLAN && S.opt_replans >= 1 && S.replans == 0 && count(ACT_STOP) >= 1,
+          "wall mapped on the route -> S + re-plan, own counter (%s, opt_replans %d, replans %d)",
+          goto_state_name(S.st), S.opt_replans, S.replans);
+    clear();
+    goto_sm_cancel(&S, T, "stop");
+    advance(2.0);
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1 && !find(ACT_TURN) && !find(ACT_MOVE),
+          "CANCEL while waiting to re-plan: S, idle, nothing more (%s)", goto_state_name(S.st));
 }
 
 /* distance from (px,pz) to an axis-aligned rectangle */
@@ -1230,8 +1352,142 @@ static void test_map_occluder_inside_footprint(void)
     CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "ARRIVED after the detour (%s)", S.result);
 }
 
+/* guard temp blocks (nav_block_s) must never make the goal "unreachable": a route through a gap, then
+ * the guard's temporary blocks seal the gap mid-leg. Before calling it unreachable goto forgets them
+ * once ("unblock") and plans again. A real wall in the gap is still unreachable after that one try. */
+static void seal_room(int real_gap)
+{
+    map_setup();
+    set_free_rect(-0.4, -0.4, 5.4, 5.4, NAV_OCC);       /* a walled room: no way round through unknown */
+    set_free_rect(0, 0, 5, 5, NAV_FREE);
+    set_free_rect(0, 2.0, 1.4, 2.2, NAV_OCC);          /* wall across z = 2 with a 1.2 m gap */
+    set_free_rect(2.6, 2.0, 5, 2.2, NAV_OCC);
+    if (real_gap) set_free_rect(1.35, 1.95, 2.65, 2.25, NAV_OCC);
+    put_robot(0.55, 0.55, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+}
+
+static void test_map_temp_blocks_not_unreachable(void)
+{
+    seal_room(0);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(had_event("route trash can #1", EV) && S.st == ST_FOLLOW_PATH, "route through the gap (%s, %.160s)",
+          goto_state_name(S.st), EV);
+    int k = 0;
+    while (k++ < 6 && !find(ACT_MOVE) && find(ACT_TURN)) run_legs_ev(1);
+    clear();
+    goto_sm_move_started(&S, T, 500, 1.0);
+    for (double x = 1.35; x <= 2.65; x += 0.05)          /* the guard's temp blocks seal the gap */
+        for (double z = 1.95; z <= 2.25; z += 0.05) nav_temp_block(N, (float)x, (float)z);
+    S.block_since = T;                                   /* as block_ahead() stamps them */
+    EV[0] = 0;
+    drive_until_idle(80);
+    grab_events();
+    CHECK(had_event("unblock trash can #1", EV), "temp blocks sealing the only gap -> unblock, plan again (%.240s)", EV);
+    CHECK(strcmp(S.result, "failed:unreachable") != 0, "temp blocks alone never make it unreachable (%s %s)",
+          goto_state_name(S.st), S.result);
+    goto_sm_cancel(&S, T, "stop");
+    advance(1.0);
+
+    seal_room(1);                                        /* a real wall in the gap: unreachable, no unblock */
+    EV[0] = 0;
+    start("trash can");
+    drive_until_idle(50);
+    grab_events();
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:unreachable") && !had_event("unblock", EV),
+          "a real wall in the gap -> unreachable (%s, %.200s)", S.result, EV);
+}
+
+/* Sticky re-planning (nav_sticky). A known room, the goal 4.5 m to +x behind a wall (x 2.8..3.2)
+ * with a way round each end. A map-change re-plan:
+ *  - keeps the route it was following while it still fits and the fresh one is only a bit cheaper,
+ *  - switches when the old route is blocked,
+ *  - switches when a fresh route is clearly cheaper.
+ * mode: 0 keep, 1 blocked, 2 clearly better. Returns 1 if the route after the re-plan is the old one. */
+static int sticky_run(int sticky, int mode, char *why, size_t whylen)
+{
+    map_setup();
+    S.cfg.nav_sticky = sticky;
+    S.cfg.nav_turn_cost_m = S.cfg.nav_start_turn_cost_m = 0;
+    S.cfg.nav_optimistic = 0;
+    set_free_rect(-2, -2, 9, 8, NAV_FREE);
+    set_free_rect(2.8, 1.2, 3.2, 5.0, NAV_OCC);        /* bottom end 1.8 m from the robot's z, top end 2.0 m */
+    put_robot(1.0, 3.0, M_PI / 2);                     /* facing +x */
+    add_inst(5.5, 3.0, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    nav_pt_t old[64];
+    int on = S.path_n;
+    memcpy(old, S.path, sizeof old);
+    int went_bottom = 0;
+    for (int i = 0; i < on; i++) went_bottom |= old[i].z < 1.2f;
+    if (!went_bottom) { snprintf(why, whylen, "first route not round the bottom"); return -1; }
+    clear();
+    /* the LiDAR maps something on the route's first leg ... */
+    double mx = (PX + old[0].x) / 2, mz = (PZ + old[0].z) / 2;
+    set_free_rect(mx - 0.05, mz - 0.05, mx + 0.05, mz + 0.05, NAV_OCC);
+    advance(0.1);
+    grab_events();
+    if (S.st != ST_PLAN) { snprintf(why, whylen, "no map-change re-plan (%s)", goto_state_name(S.st)); return -1; }
+    /* ... and before the re-plan runs: */
+    set_free_rect(mx - 0.05, mz - 0.05, mx + 0.05, mz + 0.05, NAV_FREE);   /* it was a ghost */
+    if (mode == 0) set_free_rect(2.8, 4.7, 3.2, 5.0, NAV_FREE);   /* top end 1.7 m: fresh route ~0.2 m cheaper */
+    if (mode == 1) set_free_rect(2.8, -2.0, 3.2, 1.2, NAV_OCC);   /* the bottom way is walled off */
+    if (mode == 2) set_free_rect(2.8, 3.4, 3.2, 5.0, NAV_FREE);   /* top end 0.4 m: much shorter */
+    advance(1.0);
+    grab_events();
+    snprintf(why, whylen, "%.300s", EV);
+    if (S.st != ST_FOLLOW_PATH) return -1;
+    int same = S.path_n == on;
+    for (int i = 0; same && i < on; i++) same = fabsf(S.path[i].x - old[i].x) < 1e-4f && fabsf(S.path[i].z - old[i].z) < 1e-4f;
+    return same;
+}
+
+static void test_map_sticky(void)
+{
+    char why[320];
+    int r = sticky_run(1, 0, why, sizeof why);
+    CHECK(r == 1 && strstr(why, "route_kept"), "sticky: route still fits, fresh one only ~0.2 m cheaper -> kept (%d: %s)", r, why);
+    CHECK(S.sticky_kept == 1, "sticky: STATUS route_kept counts it (%d)", S.sticky_kept);
+    r = sticky_run(0, 0, why, sizeof why);
+    CHECK(r == 0, "sticky off: the same re-plan flips to the other way round the wall (%d: %s)", r, why);
+    r = sticky_run(1, 1, why, sizeof why);
+    int top = 0;
+    for (int i = 0; i < S.path_n; i++) top |= S.path[i].z > 5.0f;
+    CHECK(r == 0 && top && (strstr(why, "route_switch") || strstr(why, "route_repair")),
+          "sticky: old route walled off -> a new route round the top (%d, top %d: %s)", r, top, why);
+    r = sticky_run(1, 2, why, sizeof why);
+    top = 0;
+    for (int i = 0; i < S.path_n; i++) top |= S.path[i].z > 3.3f;
+    CHECK(r == 0 && top && strstr(why, "route_switch"), "sticky: a clearly cheaper route -> switch (%d: %s)", r, why);
+    /* stop always wins: CANCEL right after a sticky re-plan is immediate */
+    clear();
+    goto_sm_cancel(&S, T, "stop");
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1, "sticky: CANCEL -> S, idle (%s)", goto_state_name(S.st));
+}
+
 static void test_map_no_route_fails(void)
 {
+    /* optimistic planning (default): the corner is walled in by KNOWN obstacles, so there's no
+     * route even through unknown floor: failed:unreachable at once, no spinning, no driving */
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(2.5, 2.5, 4.0, 4.0, NAV_OCC);
+    set_free_rect(3.2, 3.2, 3.3, 3.3, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.25, 3.25, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    drive_until_idle(50);
+    grab_events();
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:unreachable") && legs == 0,
+          "optimistic: enclosed by known walls -> failed:unreachable, no driving (%s, %d legs, %.200s)", S.result, legs, EV);
+    CHECK(!had_event("reveal", EV), "no reveal spin for an enclosed spot");
+
+    C.nav_optimistic = 0;                               /* the old path: reveal, explore, no_route */
     map_setup();
     C.search_max_deg = 60;                              /* short blind search at the end */
     goto_sm_init(&S, &C, &O); goto_sm_set_memory(&S, &MM, 1e6); goto_sm_set_nav(&S, N); goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
@@ -1248,16 +1504,379 @@ static void test_map_no_route_fails(void)
     while (S.st == ST_FOLLOW_PATH && S.leg == 3 && spins < 20) { run_legs_ev(1); spins++; }
     grab_events();
     CHECK(spins == 12, "a full 360 of reveal turns, re-planning after each (%d)", spins);
-    CHECK(had_event("no_route trash can #1", EV), "still none: PLAN NO_GOAL/NO_PATH -> NEXT_CANDIDATE (%s)", EV);
-    CHECK(S.st == ST_SEARCH_TURN && !S.map_mode, "no other instance -> blind search (%s)", goto_state_name(S.st));
-    for (int k = 0; k < 4 && S.st != ST_IDLE; k++) {
-        if (S.st == ST_SEARCH_TURN) ack_turn(300 + k);
+    /* still none: stand-off cell (none: walled in), explore hops toward it, then NO_ROUTE ->
+     * blind search -> memory fallback (same walled-in spot, explores again) -> failed:no_route */
+    drive_until_idle(400);
+    grab_events();
+    CHECK(had_event("no_route trash can #1", EV), "gave up with no_route only after exploring (%s)", EV + (strlen(EV) > 200 ? strlen(EV) - 200 : 0));
+    CHECK(crossed_occ == 0, "never through the solid corner");
+    CHECK(S.st == ST_IDLE && (!strcmp(S.result, "failed:no_route") || !strcmp(S.result, "failed:no_line_of_sight")),
+          "then FAILED, never a spin behind the wall (%s)", S.result);
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+}
+
+/* Regression (DC full-stack sim, obstacle with TURN x0.75): the reveal spin counted commanded
+ * degrees, so twelve 30 deg steps of a car that turns 75% covered 270 deg and part of the room
+ * stayed unmapped. With ARKit, the measured yaw counts. Also: a new GOTO may reveal again. */
+static int reveal_spins(double scale)
+{
+    map_setup();
+    C.search_max_deg = 60;
+    C.nav_optimistic = 0;                               /* reveal mechanics (non-optimistic path) */
+    goto_sm_init(&S, &C, &O); goto_sm_set_memory(&S, &MM, 1e6); goto_sm_set_nav(&S, N); goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(2.5, 2.5, 4.0, 4.0, NAV_OCC);
+    set_free_rect(3.2, 3.2, 3.3, 3.3, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.25, 3.25, MEM_FRESH);
+    TURN_SCALE = scale;
+    double yaw0 = PYAW;
+    start("trash can");
+    int spins = 0;
+    while (S.st == ST_FOLLOW_PATH && S.leg == 3 && spins < 40) { run_legs_ev(1); spins++; }
+    double turned = fabs((PYAW - yaw0) * 180 / M_PI);
+    CHECK(turned >= 359.0 && turned < 360.0 + 2.0 * 30 * scale, "TURN x%.2f: reveal really turned %.0f deg in %d steps", scale, turned, spins);
+    TURN_SCALE = 1.0;
+    return spins;
+}
+
+static void test_map_reveal_measured(void)
+{
+    CHECK(reveal_spins(1.0) == 12, "exact turns: 12 x 30 as before");
+    int n = reveal_spins(0.75);
+    CHECK(n == 16, "turns at 75%%: 16 steps to really cover 360 (%d)", n);
+    n = reveal_spins(1.25);
+    CHECK(n == 10, "turns at 125%%: 10 steps (%d)", n);
+    /* a second GOTO reveals again (revealed_deg used to carry over between GOTOs) */
+    reveal_spins(1.0);
+    goto_sm_cancel(&S, T, "x");
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(had_event("reveal trash can #1", EV) && S.st == ST_FOLLOW_PATH && S.leg == 3, "next GOTO: reveal again (%s)", EV);
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+}
+
+/* Regression (bench pocket_mouth, virtual SM11 turning ~50% of every TURN): goto started each
+ * leg's MOVE whatever the heading after the TURN, so 1 m legs ran 20-50 deg off the route and
+ * the car zig-zagged into walls / blocked:map. Now it re-measures after the TURN and turns again
+ * (nav_heading_tol_deg, nav_heading_retries) before it drives. Returns the worst heading error
+ * (deg) at the start of a path MOVE; *fixes = corrective TURNs, *dist = end distance to the bin. */
+/* mode 0: ARKit, 2 fresh poses after each leg; 1: ARKit lost, dead reckoning only (DR yaw =
+ * the commanded TURN, the truth turns `scale` of it); 2: ARKit ok but no pose after the leg
+ * (the settle wait times out on a stale yaw) */
+static double heading_run_m(double scale, int retries, int *fixes, double *dist, int mode)
+{
+    map_setup();
+    C.nav_heading_retries = retries;
+    goto_sm_init(&S, &C, &O); goto_sm_set_memory(&S, &MM, 1e6); goto_sm_set_nav(&S, N); goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
+    S.cfg.robot_radius_m = 0.35;
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(1.5, 0, 1.7, 2.6, NAV_OCC);           /* a wall between robot and bin: up, over, down */
+    double DX = 0.6, DZ = 0.6, DYAW = 0;
+    if (mode == 1) nav_note_dr(N, (float)DX, (float)DZ, (float)DYAW);   /* DR = nav frame (anchor) */
+    put_robot(0.6, 0.6, 0);
+    if (mode == 1) nav_set_pose(N, 0, 0, 0, 0);                    /* ARKit lost: DR from here */
+    add_inst(3.0, 0.6, MEM_FRESH);
+    TURN_SCALE = scale;
+    EV[0] = 0;
+    start("trash can");
+    double worst = 0;
+    int id = 700;
+    for (int n = 0; n < 80; n++) {
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (!a && !m) break;
+        grab_events();
+        if (a) { PYAW -= a->a * TURN_SCALE * M_PI / 180; DYAW -= a->a * M_PI / 180; }
+        else {
+            DX += m->a / 1000 * sin(DYAW); DZ += m->a / 1000 * cos(DYAW);
+            if (S.st == ST_FOLLOW_PATH && S.leg == 1 && S.path_i < S.path_n) {
+                double dx = S.path[S.path_i].x - PX, dz = S.path[S.path_i].z - PZ;
+                double e = fabs(remainder(atan2(dx, dz) - PYAW, 2 * M_PI)) * 180 / M_PI;
+                if (e > worst) worst = e;
+            }
+            double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            PX = nx; PZ = nz;
+        }
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        if (mode == 0) leg_done_phone_lags(id);
+        else {
+            if (mode == 1) nav_note_dr(N, (float)DX, (float)DZ, (float)DYAW);
+            else nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);   /* one pose, before DONE: then silence */
+            goto_sm_move_status(&S, T, id, "done", "-");
+            advance(0.6);                              /* > nav_pose_fresh_s: a stale settle ends */
+        }
+    }
+    grab_events();
+    *fixes = S.heading_fixes;
+    *dist = hypot(PX - 3.0, PZ - 0.6);
+    TURN_SCALE = 1.0;
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+    return worst;
+}
+
+static double heading_run(double scale, int retries, int *fixes, double *dist) { return heading_run_m(scale, retries, fixes, dist, 0); }
+
+static void test_map_heading_closed_loop(void)
+{
+    int fixes;
+    double dist;
+    double w = heading_run(1.0, 3, &fixes, &dist);
+    CHECK(fixes == 0 && w <= 6.0 && dist < 1.0 && crossed_occ == 0, "exact turns: no corrective TURN (%d), worst %.1f deg, ends %.2f m from the bin", fixes, w, dist);
+    w = heading_run(0.5, 0, &fixes, &dist);
+    CHECK(w > 20.0, "TURN x0.50, correction off: legs start %.0f deg off (the bug)", w);
+    w = heading_run(0.5, 3, &fixes, &dist);
+    CHECK(w <= 6.0 + 0.5, "TURN x0.50: every path MOVE starts within the tolerance (worst %.1f deg)", w);
+    CHECK(fixes > 0 && crossed_occ == 0 && dist < 1.0, "... after %d corrective TURNs, never through the wall, ends %.2f m from the bin", fixes, dist);
+    w = heading_run(1.4, 3, &fixes, &dist);
+    CHECK(w <= 6.0 + 0.5 && crossed_occ == 0 && dist < 1.0, "TURN x1.40 (over-rotates): worst %.1f deg, %d fixes, %.2f m", w, fixes, dist);
+    /* dead reckoning only: its yaw is the commanded TURN, so it can't see the error: no correction, logged */
+    heading_run_m(0.5, 3, &fixes, &dist, 1);
+    CHECK(fixes == 0 && had_event("heading_unchecked trash can #1 dr", EV) && S.heading_unchecked > 0,
+          "DR pose: no corrective TURN (%d), heading_unchecked dr logged once (%d legs)", fixes, S.heading_unchecked);
+    /* ARKit but no pose since the TURN ended (settle timed out): never re-turn on the stale yaw */
+    heading_run_m(0.5, 3, &fixes, &dist, 2);
+    CHECK(fixes == 0 && had_event("heading_unchecked trash can #1 stale", EV),
+          "stale ARKit yaw after the TURN: no corrective TURN (%d), heading_unchecked stale (%.300s)", fixes, EV);
+}
+
+/* the fake robot's lidar_guard (lidar_guard.cpp, no slack): an OCC cell centre at 0 < forward
+ * <= 0.6 m, |side| < 0.45 m, inside the phone's 60 deg cone -> BLOCKED */
+static int fake_guard_blocked(void)
+{
+    for (int ix = 0; ix < NAV_SIZE; ix++)
+        for (int iz = 0; iz < NAV_SIZE; iz++) {
+            if (nav_cell_at(N, ix, iz) != NAV_OCC) continue;
+            double dx = NAV_ORIGIN_X + (ix + 0.5) * NAV_RES - PX, dz = NAV_ORIGIN_Z + (iz + 0.5) * NAV_RES - PZ;
+            double f = sin(PYAW) * dx + cos(PYAW) * dz, side = fabs(cos(PYAW) * dx - sin(PYAW) * dz);
+            if (f > 0 && f <= 0.6 && side < 0.45 && side < f * tan(M_PI / 6)) return 1;
+        }
+    return 0;
+}
+
+/* run legs; a MOVE that starts with something in the guard's zone is refused like tars_motor
+ * does (ERR guard_blocked). Returns how many MOVEs were refused. */
+static int run_legs_guarded(int max, int *moves)
+{
+    int id = 900, refused = 0;
+    for (int n = 0; n < max; n++) {
+        grab_events();
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (!a && !m) break;
+        if (m && !a && fake_guard_blocked()) {
+            refused++;
+            clear();
+            goto_sm_move_refused(&S, T, "guard_blocked");
+            goto_sm_guard_reason(&S, "guard_blocked");
+            for (int k = 0; k < 10 && !find(ACT_TURN) && !find(ACT_MOVE); k++) {
+                advance(0.5);
+                nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
+            }
+            continue;
+        }
+        if (a) PYAW -= a->a * M_PI / 180;
+        else {
+            if (moves) (*moves)++;
+            double nx = PX + m->a / 1000 * sin(PYAW), nz = PZ + m->a / 1000 * cos(PYAW);
+            if (nav_line_clear_ex(N, (float)PX, (float)PZ, (float)nx, (float)nz, 0.0f) == 0) crossed_occ++;
+            PX = nx; PZ = nz;
+        }
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        leg_done_phone_lags(id);
+    }
+    grab_events();
+    return refused;
+}
+
+/* Regression (bench demo_detour with lidar_guard's real zone): the guard stopped the robot 0.6 m
+ * from a box across the route. A* hugs the box with short legs, each facing it, so every MOVE
+ * was refused (ERR guard_blocked) and 7 re-plans later: failed:blocked. Now goto pivots to a
+ * heading whose guard zone is clear and steps out first. */
+static void box_ahead_setup(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    set_free_rect(0.8, 1.6, 2.2, 1.9, NAV_OCC);        /* the box: face 0.6 m ahead, 1.4 m wide */
+    put_robot(1.45, 1.0, 0);
+    add_inst(1.45, 3.6, MEM_FRESH);
+}
+
+static void test_map_guard_escape(void)
+{
+    /* before: escape off and A* blind to the guard's box = the old behaviour */
+    C.nav_escape_mm = 0;
+    C.nav_guard_plan = 0;
+    C.nav_backtrack = 0;
+    box_ahead_setup();
+    EV[0] = 0;
+    start("trash can");
+    int moves = 0, refused = run_legs_guarded(40, &moves);
+    CHECK(refused >= 2, "escape off: MOVEs refused by the guard again and again (%d refused, events %.160s)", refused, EV);
+    goto_sm_cancel(&S, T, "x");
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+
+    /* the escape alone (A* still blind to the guard's box) */
+    C.nav_guard_plan = 0;
+    box_ahead_setup();
+    EV[0] = 0;
+    start("trash can");
+    moves = 0;
+    refused = run_legs_guarded(60, &moves);
+    CHECK(had_event("escape trash can #1", EV), "escape: pivot clear of the guard zone first (%.160s)", EV);
+    CHECK(refused == 0, "escape: no MOVE ever refused by the guard (%d)", refused);
+    CHECK(S.st == ST_LOOK && PZ > 2.4, "escape: got round the box (%s, z=%.2f)", goto_state_name(S.st), PZ);
+    goto_sm_cancel(&S, T, "x");
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+
+    /* after: the default, A* only plans legs the guard's box allows (no escape needed) */
+    box_ahead_setup();
+    EV[0] = 0;
+    start("trash can");
+    moves = 0;
+    refused = run_legs_guarded(60, &moves);
+    CHECK(refused == 0, "no MOVE ever refused by the guard (%d)", refused);
+    CHECK(crossed_occ == 0, "never drove through the box");
+    CHECK(S.st == ST_LOOK && PZ > 2.4, "got round the box and reached the spot (%s, z=%.2f)", goto_state_name(S.st), PZ);
+    CHECK(S.escapes <= 8, "escapes bounded (%d)", S.escapes);
+    goto_sm_cancel(&S, T, "x");
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+}
+
+/* tars_motor clamps MOVE to 1000 mm (wheels.h MOVE_MAX_MM) and reports DONE: a 2.5 m leg used to
+ * count as reached after 1 m, and the robot LOOKed from 1.5 m short */
+static void test_map_long_leg_in_pieces(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(1.0, 0.5, 0);
+    add_inst(1.0, 3.9, MEM_FRESH);
+    start("trash can");
+    int id = 950, big = 0, n = 0;
+    for (; n < 30; n++) {
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (!a && !m) break;
+        if (m && m->a > 1000.5) big++;
+        double amt = m ? fmin(m->a, 1000.0) : 0;          /* what tars_motor really drives */
+        if (a) PYAW -= a->a * M_PI / 180;
+        else { PX += amt / 1000 * sin(PYAW); PZ += amt / 1000 * cos(PYAW); }
+        clear();
+        goto_sm_move_started(&S, T, ++id, 0.5);
+        advance(0.3);
+        frame(NULL, 0, 0, 0);
+        leg_done_phone_lags(id);
+    }
+    CHECK(big == 0, "no MOVE over tars_motor's 1000 mm limit (%d)", big);
+    CHECK(S.st == ST_LOOK && fabs(PZ - 3.9) < 1.0 && PZ > 2.8, "LOOKs from the end of the route, not 1.5 m short (z=%.2f)", PZ);
+}
+
+/* run the blind search to its end (no camera hits) */
+static void search_to_end(int max_steps)
+{
+    for (int k = 0; k < max_steps && S.st != ST_IDLE && S.st != ST_FOLLOW_PATH && S.st != ST_RECALL; k++) {
+        const goto_act *a = find(ACT_TURN);
+        if (a) PYAW -= a->a * M_PI / 180;
+        if (S.st == ST_SEARCH_TURN) { clear(); goto_sm_move_started(&S, T, 400 + k, 0.5); leg_done_phone_lags(400 + k); }
+        advance(0.4);
+        nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1);
+        look_empty(4);
+    }
+}
+
+/* User's bench case: the bin was seen before (memory), then a wall was put between the robot and
+ * it. Memory is too old to try first, the 360 search sees nothing: instead of failed:not_found,
+ * route over the map to the remembered spot, around the wall, and look there. */
+static void test_map_search_fails_then_memory_route(void)
+{
+    map_setup();
+    set_free_rect(0, -1, 4, 4, NAV_FREE);
+    set_free_rect(1.2, 0.8, 2.8, 1.1, NAV_OCC);        /* the wall, between the robot and the bin */
+    put_robot(2.0, 0.0, 0);
+    int i = add_inst(2.0, 1.8, MEM_FRESH);             /* bin 0.7 m behind the wall */
+    MM.e[i].last_seen -= 10 * C.memory_max_age_s;       /* too old for the normal memory GOTO */
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(S.st == ST_LOOK && !had_event("remembered", EV), "old memory: search first (%s, %s)", goto_state_name(S.st), EV);
+    search_to_end(40);
+    grab_events();
+    CHECK(had_event("search_failed_memory trash can #1", EV) && S.map_mode, "search failed -> route to the remembered spot (%s)", EV);
+    run_legs_ev(60);
+    grab_events();
+    CHECK(crossed_occ == 0, "never through the wall");
+    CHECK(S.st == ST_LOOK && hypot(PX - 2.0, PZ - 1.8) < 1.0, "at the spot behind the wall, looking (%s, %.2f m)",
+          goto_state_name(S.st), hypot(PX - 2.0, PZ - 1.8));
+    /* the bin isn't there either: fail now (no second fallback loop) */
+    for (int k = 0; k < 80 && S.st != ST_IDLE; k++) {
+        const goto_act *a = find(ACT_TURN), *m = find(ACT_MOVE);
+        if (a || m) run_legs_ev(1);
         advance(0.4);
         look_empty(4);
     }
-    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found"), "then FAILED (%s)", S.result);
-    C = (goto_cfg){0};
-    goto_cfg_defaults(&C);
+    CHECK(S.st == ST_IDLE && !strncmp(S.result, "failed:", 7), "nothing there either: fails, no loop (%s)", S.result);
+
+    /* no memory at all: failed:not_found_no_memory */
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(2.0, 0.3, 0);
+    start("trash can");
+    search_to_end(40);
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:not_found_no_memory"), "no memory -> %s", S.result);
+
+    /* remembered spot walled in: failed:no_route */
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(1.0, 1.0, 3.0, 3.0, NAV_OCC);
+    put_robot(0.5, 0.5, 0);
+    i = add_inst(2.0, 2.0, MEM_GONE);
+    start("trash can");
+    drive_until_idle(400);
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:unreachable"), "remembered but unreachable -> %s", S.result);
+}
+
+/* Two remembered bins: A is nearer in a straight line but behind a long wall, B is further but in
+ * the open. The fallback picks the shorter ROUTE (B). Also: a bin 0.3 m from a wall (target cell
+ * inside the wall's inflation) still gets a route, to the approach ring on its open side. */
+static void test_map_memory_route_by_route_length(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 5, 5, NAV_FREE);
+    set_free_rect(0, 1.5, 4.4, 1.8, NAV_OCC);          /* long wall, gap only at the far right */
+    put_robot(0.5, 0.5, 0);
+    int a = add_inst(0.6, 2.6, MEM_GONE);               /* A: 2.1 m straight, ~8 m by route */
+    int b = add_inst(3.2, 0.6, MEM_GONE);               /* B: 2.7 m straight and by route */
+    EV[0] = 0;
+    start("trash can");
+    search_to_end(40);
+    grab_events();
+    char want[64];
+    snprintf(want, sizeof want, "search_failed_memory trash can #%d ", MM.e[b].id);
+    CHECK(had_event(want, EV), "picked B, the shorter route, not A (ids A=%d B=%d: %s)", MM.e[a].id, MM.e[b].id, EV);
+
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    set_free_rect(1.25, 1.2, 1.55, 2.4, NAV_OCC);       /* wall; the bin 0.3 m past its face */
+    put_robot(0.5, 1.8, M_PI / 2);
+    add_inst(1.85, 1.8, MEM_GONE);
+    EV[0] = 0;
+    start("trash can");
+    search_to_end(40);
+    run_legs_ev(60);
+    grab_events();
+    CHECK(had_event("route trash can", EV) && crossed_occ == 0 && S.st == ST_LOOK,
+          "bin hugging the wall: routed round to its open side (%s, %s)", goto_state_name(S.st), EV);
 }
 
 static void test_map_stop_mid_path(void)
@@ -1282,6 +1901,170 @@ static void test_map_stop_mid_path(void)
     CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1 && !find(ACT_TURN) && !find(ACT_MOVE), "CANCEL mid-path: S, nothing else");
 }
 
+/* Regression (maze sim at 4x, 3/9 runs failed:turn_timed_out on 4-10 deg TURNs): goto's TURN
+ * deadline (2*est + move_timeout_pad_s) passed during a host stall, and the tick failed the GOTO
+ * before the STATUS poll that would have said done / aborted. Past the deadline, judge only on a
+ * STATUS read after it; a leg tars_motor still calls running then gets S + one re-plan per GOTO. */
+static void map_route_start(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(0.55, 0.55, 0);
+    add_inst(3.0, 3.0, MEM_FRESH);
+    start("trash can");
+}
+static void stall(double dt) { T += dt; goto_sm_tick(&S, T); }   /* one late tick, like a stalled process */
+static void test_map_move_deadline_after_stall(void)
+{
+    map_route_start();
+    CHECK(S.st == ST_FOLLOW_PATH && (find(ACT_TURN) || find(ACT_MOVE)), "following, first leg queued");
+    clear();
+    goto_sm_move_started(&S, T, 41, 0.08);                     /* a 4.7 deg slow pivot */
+    stall(0.16 + C.move_timeout_pad_s + 0.5);                  /* woke up past the deadline */
+    CHECK(S.st == ST_FOLLOW_PATH && !count(ACT_STOP), "stall past the deadline: wait for a fresh STATUS (%s %s)",
+          goto_state_name(S.st), S.result);
+    goto_sm_move_status(&S, T, 41, "done", "-");                /* that poll: it finished long ago */
+    leg_done_phone_lags(41);
+    CHECK(S.st == ST_FOLLOW_PATH && !strcmp(S.result, "running") && (find(ACT_TURN) || find(ACT_MOVE) || S.leg_settle),
+          "STATUS done after the stall: the route carries on (%s %s)", goto_state_name(S.st), S.result);
+
+    /* aborted (guard hiccup) seen only after the deadline: the normal guard-stop path, no failure */
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 42, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.5);
+    goto_sm_move_status(&S, T, 42, "aborted", "lidar_guard");
+    CHECK(S.st != ST_IDLE && !strstr(S.result, "timed_out"), "late lidar_guard abort: re-plan, not a failure (%s %s)",
+          goto_state_name(S.st), S.result);
+
+    /* tars_motor still says running after the deadline: S, one re-plan; the 2nd time fails */
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 43, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.1);
+    goto_sm_move_status(&S, T, 43, "running", "-");
+    goto_sm_tick(&S, T + 0.02);
+    T += 0.02;
+    CHECK(count(ACT_STOP) == 1 && has_event("move_timeout") && S.st == ST_PLAN,
+          "overdue + still running: S, move_timeout, re-plan (%s %s)", goto_state_name(S.st), S.result);
+    for (int k = 0; k < 400 && !find(ACT_TURN) && !find(ACT_MOVE) && S.st != ST_IDLE; k++) {
+        T += 0.05; nav_set_pose(N, (float)PX, (float)PZ, (float)PYAW, 1); frame(NULL, 0, 0, 0); goto_sm_tick(&S, T);
+    }
+    CHECK(find(ACT_TURN) || find(ACT_MOVE), "re-planned leg issued (%s %s)", goto_state_name(S.st), S.result);
+    clear();
+    goto_sm_move_started(&S, T, 44, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.1);
+    goto_sm_move_status(&S, T, 44, "running", "-");
+    goto_sm_tick(&S, T + 0.02);
+    CHECK(S.st == ST_IDLE && strstr(S.result, "timed_out") && count(ACT_STOP) >= 1, "2nd overdue leg this GOTO fails (%s)", S.result);
+
+    /* no STATUS at all (motor gone): the grace is bounded, then it acts */
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 45, 0.08);
+    stall(0.16 + 2 * C.move_timeout_pad_s + 0.1);
+    CHECK(count(ACT_STOP) == 1 && S.st != ST_FOLLOW_PATH, "no STATUS for a whole extra pad: stops (%s)", goto_state_name(S.st));
+
+    /* stop wins during the grace: S from another client and CANCEL end it at once */
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 46, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.5);
+    goto_sm_move_status(&S, T, 46, "aborted", "stop");
+    CHECK(S.st == ST_IDLE && !strncmp(S.result, "cancelled", 9), "S during the grace cancels (%s)", S.result);
+    map_route_start();
+    clear();
+    goto_sm_move_started(&S, T, 47, 0.08);
+    stall(0.16 + C.move_timeout_pad_s + 0.5);
+    goto_sm_cancel(&S, T, "cancel");
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) == 1, "CANCEL during the grace: S, idle (%s)", S.result);
+}
+
+/* guard stop of a path MOVE on something the map doesn't hold: re-plan in place on the cost-to-go
+ * field (pivot + a new forward leg), no reversing; repeated stops try the next cheapest up to 3,
+ * then the ladder; CANCEL mid-recovery wins */
+static int abort_next_move(int id)
+{
+    for (int k = 0; k < 6 && !find(ACT_MOVE) && find(ACT_TURN); k++) run_legs_ev(1);
+    const goto_act *m = find(ACT_MOVE);
+    if (!m || m->a <= 0) return 0;
+    clear();
+    goto_sm_move_started(&S, T, id, 1.0);
+    goto_sm_guard_reason(&S, "guard_blocked");
+    goto_sm_move_status(&S, T, id, "aborted", "lidar_guard");
+    grab_events();
+    goto_sm_guard_reason(&S, "clear");
+    return 1;
+}
+
+static void test_map_replan_here(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(2.0, 0.8, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    CHECK(S.st == ST_FOLLOW_PATH, "route (%s)", goto_state_name(S.st));
+    CHECK(abort_next_move(700), "a forward path MOVE to stop");
+    CHECK(had_event("blocked_cells", EV) && had_event("replan_here trash can #1 1 ", EV),
+          "guard stop -> marks + replan_here (%.300s)", EV);
+    CHECK(S.backtracks == 0 && S.replans_here == 1 && S.st == ST_FOLLOW_PATH, "no backtrack, following the new route (bt %d)", S.backtracks);
+    const goto_act *tn = find(ACT_TURN);
+    CHECK(tn && fabs(tn->a) >= 20.0 && fabs(tn->a) <= 180.0, "pivots off the refused heading (%.0f deg)", tn ? tn->a : 0.0);
+    CHECK(!find(ACT_MOVE) || find(ACT_MOVE)->a > 0, "no reverse MOVE");
+    run_legs_ev(40);
+    grab_events();
+    CHECK(S.backtracks == 0 && reverse_moves == 0, "reached it with zero backtracks / reverses (%d, %d)", S.backtracks, reverse_moves);
+    CHECK(S.st == ST_LOOK || S.st == ST_IDLE, "drove on to the target (%s, %.200s)", goto_state_name(S.st), S.result);
+    char d[512];
+    goto_sm_describe(&S, d, sizeof d);
+    CHECK(strstr(d, "replans_here=1") != NULL, "STATUS replans_here= (%s)", d);
+    goto_sm_cancel(&S, T, "x");
+
+    /* every in-place leg stopped too: 3 tries (next cheapest each time), then the ladder */
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(2.0, 0.8, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    int k = 0;
+    while (k < 5 && S.st == ST_FOLLOW_PATH && abort_next_move(710 + k)) k++;
+    CHECK(S.replans_here >= 2 && S.replans_here <= 3 &&
+          (had_event("replan_here_no trash can #1 tries", EV) || had_event("replan_here_no trash can #1 too_costly", EV)),
+          "next cheapest each time, then (3 tries or > 2x the route) the ladder (%d, %.400s)", S.replans_here, EV);
+    CHECK(S.st != ST_FOLLOW_PATH || S.leg == 6 || S.leg == 7 || S.st == ST_PLAN, "no further in-place leg after the cap");
+    CHECK(reverse_moves == 0 && crossed_occ == 0, "no reversing during the in-place tries");
+    goto_sm_cancel(&S, T, "x");
+
+    /* CANCEL right after an in-place re-plan: S, idle, nothing more */
+    map_setup();
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(2.0, 0.8, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+    start("trash can");
+    CHECK(abort_next_move(730) && S.replans_here == 1, "in-place re-plan");
+    clear();
+    goto_sm_cancel(&S, T, "stop");
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) >= 1 && !find(ACT_MOVE) && !find(ACT_TURN), "CANCEL mid-recovery: S, idle (%s)", goto_state_name(S.st));
+    for (int i = 0; i < 5; i++) advance(0.2);
+    CHECK(!find(ACT_MOVE) && !find(ACT_TURN), "and stays stopped");
+
+    /* nav_replan_here 0: the old ladder straight away */
+    map_setup();
+    S.cfg.nav_replan_here = 0;
+    set_free_rect(0, 0, 4, 4.4, NAV_FREE);
+    put_robot(2.0, 0.8, 0);
+    add_inst(2.0, 3.6, MEM_FRESH);
+    start("trash can");
+    abort_next_move(740);
+    CHECK(S.replans_here == 0, "off: no in-place re-plan");
+    goto_sm_cancel(&S, T, "x");
+}
+
 static void test_map_guard_and_replan(void)
 {
     map_setup();
@@ -1294,6 +2077,7 @@ static void test_map_guard_and_replan(void)
     CHECK(S.st == ST_FOLLOW_PATH, "following");
     clear();
     goto_sm_move_started(&S, T, 900, 2.0);
+    goto_sm_guard_reason(&S, "guard_stale");            /* a guard hiccup, not an obstacle (that backtracks) */
     goto_sm_guard(&S, T, 0, 6);                         /* lidar_guard denies ... */
     goto_sm_move_status(&S, T, 900, "aborted", "lidar_guard");   /* ... and tars_motor aborts the leg */
     CHECK(S.st == ST_PLAN && S.replans == 1, "guard-aborted leg -> PLAN, waiting (%s)", goto_state_name(S.st));
@@ -1346,6 +2130,73 @@ static void test_leased_approach(void)
     clear();
     goto_sm_drive_refused(&S, T, "guard epoch changed");
     CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "guard stop at a big centred target = docked (%s)", S.result);
+    /* Regression (full-stack visual-only): a STALE guard during the final approach counted as
+     * docked short of the bin. Only a fresh guard_blocked may; stale/missing/invalid -> S, LOOK
+     * again, approach again, bounded by nav_max_replans -> failed:blocked. */
+    static const char *not_obstacle[] = {"guard_stale", "guard_missing", "guard_invalid", "clear"};
+    for (int k = 0; k < 4; k++) {
+        reset_sm();
+        goto_sm_guard_reason(&S, "clear");
+        goto_sm_guard(&S, T, 1, 50);
+        start("trash can");
+        advance(0.1);
+        for (int i = 0; i < 2; i++) { advance(0.12); frame("trash can", 0.5, 0.2, 0.6); }
+        for (int i = 0; i < 3; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+        CHECK(S.st == ST_APPROACH, "approach, close + centred");
+        clear();
+        if (k < 3) {                                     /* DL refused naming the reason */
+            char why[64];
+            snprintf(why, sizeof why, "%s", not_obstacle[k]);
+            goto_sm_drive_refused(&S, T, why);
+        } else {                                         /* epoch moved on; STATUS now says clear */
+            goto_sm_guard_reason(&S, "clear");
+            goto_sm_guard(&S, T, 1, 51);
+        }
+        CHECK(count(ACT_STOP) >= 1 && S.st == ST_LOOK && strcmp(S.result, "arrived") && S.replans == 1,
+              "%s guard stop at the target is NOT docked: S, look again (%s, %s)", not_obstacle[k],
+              goto_state_name(S.st), S.result);
+        goto_sm_guard(&S, T, 1, 51);
+        for (int i = 0; i < 12 && S.st != ST_APPROACH; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+        CHECK(S.st == ST_APPROACH, "... and approaches again (%s)", goto_state_name(S.st));
+    }
+    /* a stale guard every time: bounded, then failed:blocked */
+    reset_sm();
+    goto_sm_guard_reason(&S, "clear");
+    goto_sm_guard(&S, T, 1, 60);
+    start("trash can");
+    for (int r = 0; r < 12 && S.st != ST_IDLE; r++) {
+        for (int i = 0; i < 12 && S.st != ST_APPROACH && S.st != ST_IDLE; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+        clear();
+        goto_sm_drive_refused(&S, T, "guard_stale");
+    }
+    CHECK(S.st == ST_IDLE && !strcmp(S.result, "failed:blocked"), "stale guard every time -> failed:blocked (%s)", S.result);
+    /* a fresh guard_blocked (DL refused, or STATUS behind an epoch change) is still docked */
+    for (int k = 0; k < 2; k++) {
+        reset_sm();
+        goto_sm_guard_reason(&S, "clear");
+        goto_sm_guard(&S, T, 1, 70);
+        start("trash can");
+        advance(0.1);
+        for (int i = 0; i < 2; i++) { advance(0.12); frame("trash can", 0.5, 0.2, 0.6); }
+        for (int i = 0; i < 3; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+        clear();
+        if (k == 0) goto_sm_drive_refused(&S, T, "guard_blocked");
+        else { goto_sm_guard_reason(&S, "guard_blocked"); goto_sm_guard(&S, T, 0, 71); }
+        CHECK(S.st == ST_IDLE && !strcmp(S.result, "arrived"), "fresh guard_blocked at the target = docked (%s)", S.result);
+    }
+    /* stop still wins mid-retry */
+    reset_sm();
+    goto_sm_guard_reason(&S, "clear");
+    goto_sm_guard(&S, T, 1, 80);
+    start("trash can");
+    advance(0.1);
+    for (int i = 0; i < 5; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+    goto_sm_drive_refused(&S, T, "guard_stale");
+    clear();
+    goto_sm_cancel(&S, T, "stop");
+    advance(1.0);
+    for (int i = 0; i < 6; i++) { advance(0.12); frame("trash can", 0.5, 0.5, 0.9); }
+    CHECK(S.st == ST_IDLE && count(ACT_STOP) >= 1 && !find(ACT_DRIVE), "CANCEL during the stale-guard wait: idle, S, no drive");
     /* no guard on the server: plain D */
     reset_sm();
     start("trash can");
@@ -1389,6 +2240,66 @@ static void test_map_fallbacks(void)
     goto_mem L;
     CHECK(goto_mem_load(&L, "build/test_mem_nav.txt") == 0 && L.n == 1 && L.e[0].has_w && fabs(L.e[0].wx - 3.0) < 1e-3,
           "navw map position round-trips");
+}
+
+/* Regression (DC full-stack sim, "old spot A downgraded" failed): sightings were merged by
+ * tars_motor's dead-reckoned x/y. On a DC car that was ~2 m off, so a bin that moved from A to B
+ * refreshed A's instance. With a fresh ARKit pose, the map position decides. */
+static void test_memory_merge_by_map(void)
+{
+    map_setup();
+    put_robot(0, 0, 0);                                  /* phone: at the origin, facing +z */
+    goto_sm_pose(&S, T, 1, 0, 0, 0, 0);                  /* DR: also 0,0,0 ... */
+    /* #1 = spot A: on the map 2 m to the robot's LEFT-side x (2, 0); but DR believes it is 2 m
+     * straight ahead (DR was 90 deg off when it was seen). STALE: GOTO already looked there. */
+    int a = goto_mem_sight(&MM, &C, "trash can", 2000, 0, 0, 2000, 0.8, S.wall_base + T);
+    MM.e[a].has_w = 1; MM.e[a].wx = 2.0; MM.e[a].wz = 0.0; MM.e[a].status = MEM_STALE;
+    /* the bin, now at B = 2 m straight ahead on the map (0, 2) */
+    advance(0.1);
+    frame("trash can", 0.5, 0.25, 0.569);
+    a = goto_mem_find_id(&MM, "trash can", 1);
+    CHECK(goto_mem_count(&MM, "trash can") == 2, "a bin at B is a new instance, not A refreshed by DR (%d instances)",
+          goto_mem_count(&MM, "trash can"));
+    CHECK(a >= 0 && MM.e[a].status == MEM_STALE && fabs(MM.e[a].wx - 2.0) < 1e-6 && fabs(MM.e[a].wz) < 1e-6,
+          "A keeps its map spot and stays stale (%s, %.2f,%.2f)", a >= 0 ? goto_mem_status_name(MM.e[a].status) : "-",
+          a >= 0 ? MM.e[a].wx : 0, a >= 0 ? MM.e[a].wz : 0);
+    int b = goto_mem_find_id(&MM, "trash can", 2);
+    CHECK(b >= 0 && MM.e[b].has_w && fabs(MM.e[b].wx) < 0.2 && fabs(MM.e[b].wz - 2.0) < 0.4,
+          "B's map spot is ahead (%.2f,%.2f)", b >= 0 ? MM.e[b].wx : 0, b >= 0 ? MM.e[b].wz : 0);
+    /* the other way round: same map spot, DR far off -> still the same instance */
+    put_robot(0, 0, M_PI / 2);                           /* phone: facing +x, i.e. at A */
+    goto_sm_pose(&S, T, 1, 0, 0, 180, 0);                /* DR: facing the other way */
+    advance(0.1);
+    frame("trash can", 0.5, 0.25, 0.569);
+    CHECK(goto_mem_count(&MM, "trash can") == 2 && MM.e[a].status == MEM_FRESH,
+          "seen again at A on the map (DR says elsewhere) -> A refreshed, no third instance (%d)",
+          goto_mem_count(&MM, "trash can"));
+    /* without the phone: DR decides, as before */
+    goto_mem_init(&MM);
+    goto_sm_set_nav(&S, NULL);
+    goto_sm_pose(&S, T, 1, 0, 0, 0, 0);
+    a = goto_mem_sight(&MM, &C, "trash can", 2000, 0, 0, 2000, 0.8, S.wall_base + T);
+    MM.e[a].status = MEM_STALE;
+    advance(0.1);
+    frame("trash can", 0.5, 0.25, 0.569);
+    CHECK(goto_mem_count(&MM, "trash can") == 1 && MM.e[a].status == MEM_FRESH, "no phone: DR merge as before");
+    goto_sm_set_nav(&S, N);
+
+    /* arrival: docking at B after looking for A must not rewrite A (DR 1.45 m from B's dock) */
+    map_setup();
+    put_robot(0, 0, 0);
+    a = goto_mem_sight(&MM, &C, "trash can", 2000, 0, 0, 2000, 0.8, S.wall_base + T);
+    MM.e[a].has_w = 1; MM.e[a].wx = 2.0; MM.e[a].wz = 0.0; MM.e[a].status = MEM_STALE;
+    start("trash can");                                  /* empty map -> visual memory turn to #1 */
+    CHECK(S.mem_id == 1, "GOTO tries #1 (%d)", S.mem_id);
+    for (int i = 0; i < 40 && S.st != ST_LOOK && S.st != ST_IDLE; i++) { ack_turn(300 + i); advance(0.3); }
+    advance(0.5);
+    for (int i = 0; i < 6 && S.st != ST_IDLE; i++) { advance(0.12); frame("trash can", 0.5, 0.75, 0.95); }
+    a = goto_mem_find_id(&MM, "trash can", 1);
+    CHECK(!strcmp(S.result, "arrived"), "docked (%s)", S.result);
+    CHECK(a >= 0 && MM.e[a].status == MEM_STALE && fabs(MM.e[a].wx - 2.0) < 1e-6,
+          "arrival at B didn't overwrite A (%s, map %.2f,%.2f)", a >= 0 ? goto_mem_status_name(MM.e[a].status) : "-",
+          a >= 0 ? MM.e[a].wx : 0, a >= 0 ? MM.e[a].wz : 0);
 }
 
 static void test_memory_say(void)
@@ -1450,12 +2361,26 @@ int main(void)
     test_map_explore_sees_the_goal();
     test_map_gone_then_check_others();
     test_map_occluded_detour();
+    test_map_detour_guard_stop();
+    test_map_optimistic();
+    test_map_search_needs_line_of_sight();
     test_map_occluder_inside_footprint();
     test_map_no_route_fails();
+    test_map_temp_blocks_not_unreachable();
+    test_map_sticky();
+    test_map_reveal_measured();
+    test_map_heading_closed_loop();
+    test_map_guard_escape();
+    test_map_long_leg_in_pieces();
+    test_map_search_fails_then_memory_route();
+    test_map_memory_route_by_route_length();
     test_map_stop_mid_path();
+    test_map_move_deadline_after_stall();
     test_map_guard_and_replan();
+    test_map_replan_here();
     test_leased_approach();
     test_map_fallbacks();
+    test_memory_merge_by_map();
     test_memory_say();
     printf("%d/%d checks passed\n", passed, passed + failed);
     return failed ? 1 : 0;

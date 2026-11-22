@@ -177,7 +177,7 @@ The floor lives in `tars_motor`'s 50 Hz loop and pre-empts every `goto` state. `
 | Trigger | What `tars_motor` does | What `goto` does |
 |---|---|---|
 | `S` from any client (voice "stop", teleop, phone) | zero wheels, abort MOVE/TURN, hold others' `D` 1.5 s | sees `stops=` rise → IDLE |
-| guard deny (BLOCKED in 0.6 m corridor, UNKNOWN, STALE > 150 ms, gate heartbeat > 100 ms) | zero wheels, abort MOVE (`ABORT lidar_guard`), `guard_epoch++`. **As built:** an in-place `TURN` still runs/is accepted while the reason is a fresh `guard_blocked` (never when stale/missing/invalid), limited to speed ≤ 0.40 (higher is clamped; on the DC car speed < 0.99 selects the Uno's slow turn, `DC_SLOW_TURN_DUTY` timed at `deg_s_slow`) and |deg| ≤ 180 (more → `ERR guard_blocked pivot>180`); a TURN already running when the guard turns BLOCKED continues only if it fits both, else it aborts (`lidar_guard`) | FOLLOW_PATH: re-plan once CLEAR (or after 3× the wait while BLOCKED: the new route starts with a pivot). Face turn refused → LOOK. APPROACH: the leg ends; target centred and big → arrived, else LOOK again. Old `DL` refused. |
+| guard deny (BLOCKED in 0.6 m corridor, UNKNOWN, STALE > 150 ms, gate heartbeat > 100 ms) | zero wheels, abort MOVE (`ABORT lidar_guard`), `guard_epoch++`. **As built:** an in-place `TURN` still runs/is accepted while the reason is a fresh `guard_blocked` (never when stale/missing/invalid), limited to speed ≤ 0.40 (higher is clamped; on the DC car speed < 0.99 selects the Uno's slow turn, `DC_SLOW_TURN_DUTY` timed at `deg_s_slow`) and |deg| ≤ 180 (more → `ERR guard_blocked pivot>180`); a TURN already running when the guard turns BLOCKED continues only if it fits both, else it aborts (`lidar_guard`) | FOLLOW_PATH: re-plan once CLEAR (or after 3× the wait while BLOCKED: the new route starts with a pivot). Face turn refused → LOOK. APPROACH: the leg ends; target centred and big **and a fresh `guard_blocked`** → arrived, else (stale/missing/invalid, or another target) LOOK again, bounded by the re-plan budget. Old `DL` refused. |
 | 500 ms watchdog | zero, abort exact move | `goto` keeps feeding it (`D` at 10 Hz, `PING` during exact moves) |
 | tip latch | zero, latched until `RESET` | FAILED, `BEEP 3` |
 | bump | zero, refuse drive 1 s | FAILED, `BEEP 3` |
@@ -237,6 +237,7 @@ The phone-to-robot extrinsics (mount offset, forward axis) are uncalibrated. Unt
 | 5574 | new | laptop (via the relay) → `tars_voice` on 127.0.0.1: `HEAR <text>`, `AUDIO <bytes>`, `WATCH` events. Same classifier + stop-first path as the mic. |
 | 5575 | new | `mission_relay`, the laptop's only port (all interfaces): `HELLO MOTOR\|GOTO\|VOICE\|WATCH\|CAM <key>`, key required (`-k` / `MISSION_KEY`). Optional; normal priority. |
 | 5576 | new | phone status tee → relay (127.0.0.1), from `headless.py` only when `TARS_MISSION_TEE_PORT` is set. |
+| 5577 | new | phone mic → `tars_voice` (iproxy; the phone listens, `tars_voice` dials): `MIC1 16000 1 s16le` header, then `A` audio / `M` mute / `U` unmute / `K` keepalive packets. The robot has no mic; the phone streams the AirPods and mutes itself while it speaks (half duplex). `voice.conf` `input = phone`. |
 
 *5574–5576 pending Andrew's sign-off too.* Mission control (`iter2-autonomy/mission/README.md`) is display + commands only; the robot never needs it.
 
@@ -267,7 +268,7 @@ ML at normal priority means a stop can never be starved, whatever the fps.
 
 - **`iter2-autonomy/goto/detect` (YOLO-World, ONNX Runtime) is the only object detector that feeds `goto`.** It's the one that knows "trash can"; COCO/YOLOX doesn't.
 - Andrew's **YOLOX** (5565) and **MiDaS** (5567) serve the phone dashboard, depth fusion and the guard's inferred-obstacle veto (5569) only. In GOTO mode they're off (§5).
-- Proposed, **not agreed or built**: `detect` reading frames from Andrew's latest-frame broker (5566). As built, `detect` keeps its own camera source (C270 via camapi). Either way the output is the same JSON on 5571.
+- **Built, not yet run on QNX:** `detect --camera broker:5566` reads the iPhone camera from Andrew's latest-frame broker (5566), turns it upright (`--rotate`) and decodes it with libjpeg. `service.py` starts it when `TARS_ENABLE_GOTO=1` and turns YOLOX off then (table above). The C270 (camapi) source is still there. Either way the output is the same JSON on 5571.
 - **`iter2-autonomy/dashboard/mapping.py` and the Python dashboard are visualization**, not robot runtime. The planner that moves the wheels is `iter2-autonomy/goto/nav.c` (C, same grid, same A*, parity-tested against `mapping.py`).
 
 ## 7. Honest status (2026-11-21)

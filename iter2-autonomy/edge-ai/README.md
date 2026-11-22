@@ -48,6 +48,16 @@ waiting for data. No inferred points enter the measured LiDAR binary protocol.
 A separate short-lived inferred-obstacle message can veto CLEAR; it cannot
 override a measured stop, establish free space, or compensate for missing LiDAR.
 
+**Corridor size flags.** `--half-width <m>` (0.05–1.0, default 0.45) and
+`--stop-distance <m>` (>0.15–2.0, default 0.6) set the envelope above. The
+three floor bands are thirds of the corridor and the map-supported floor cells
+span 0.15 m..stop distance, so both shrink with it. The inferred-obstacle stop
+uses the same stop distance. The status JSON reports `half_width_m` and
+`stop_distance_m`. Without the flags behaviour is unchanged. The values are meant
+to come from the car size in `iter2-autonomy/goto/goto.conf` (`car_length_m`,
+`car_width_m`, `safety_margin_m`, `guard_stop_m`), so the planner and the guard
+agree. `goto -c goto.conf --guard-flags` prints the matching flags.
+
 These dimensions and coverage rules are prototype values. Mounting extrinsics,
 robot footprint, blind spots, slopes, drop-offs and stopping dynamics still need
 validation before hardware motion can use a clearance decision.
@@ -196,6 +206,7 @@ All Pi listeners/proxies bind localhost.
 | 5568 | Native guard → native motor gate, independent of dashboard/AI |
 | 5569 | Mapping → native guard, optional inferred-obstacle veto |
 | 5573 | TARS speech (goto/voice → phone): `SAY <text>` lines, phone speaks them; see `iter2-autonomy/iphone/README.md` |
+| 5577 | Robot mic (phone → `tars_voice`): AirPods audio as MIC1 packets; the phone listens, `tars_voice` dials; see `iter2-autonomy/iphone/README.md` |
 
 5562 uses a four-byte big-endian length, then `LDR1`, sequence u32, source uptime
 microseconds u64, flags u32, count u32, pose `[x,y,z,yaw]` f32, floor_y f32 and

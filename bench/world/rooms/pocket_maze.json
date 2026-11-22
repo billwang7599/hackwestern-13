@@ -1,0 +1,176 @@
+{
+ "name": "pocket_maze",
+ "about": "pocket_mouth plus the walls Bill drew live (demo run, room rev 9): the bin sits in the '<' pocket; from outside, enter the gap at x~5.9 (y -0.54..0.72), up the corridor between x~4.9 and x~5.7, over the top of the x~4.9 wall (ends y~1.27), down between x~4.0 and x~4.9, then left under the x~4.0 partition (gap y -0.515..0.27) into the pocket. goto starts out remembering the bin where it really is.",
+ "start": {
+  "x": -0.67,
+  "y": 0.0,
+  "th": 0.0
+ },
+ "wall_h": 2.0,
+ "walls": [
+  [
+   -3.0,
+   -4.0,
+   7.0,
+   -4.0
+  ],
+  [
+   7.0,
+   -4.0,
+   7.0,
+   4.0
+  ],
+  [
+   7.0,
+   4.0,
+   -3.0,
+   4.0
+  ],
+  [
+   -3.0,
+   4.0,
+   -3.0,
+   -4.0
+  ],
+  [
+   0.7758,
+   0.9152,
+   1.0909,
+   -0.5152
+  ],
+  [
+   1.0909,
+   -0.5152,
+   4.5333,
+   -0.5152
+  ],
+  [
+   0.8,
+   0.8909,
+   1.9152,
+   1.9576
+  ],
+  [
+   1.9636,
+   1.9333,
+   3.9515,
+   1.9818
+  ],
+  [
+   3.9301,
+   1.9395,
+   5.5497,
+   2.8303
+  ],
+  [
+   4.6319,
+   -0.5439,
+   2.7153,
+   -2.0556
+  ],
+  [
+   5.5497,
+   -1.5157,
+   2.9313,
+   -3.9452
+  ],
+  [
+   4.6049,
+   -0.5439,
+   6.0356,
+   -0.5439
+  ],
+  [
+   4.9018,
+   -2.1096,
+   4.9288,
+   -3.2433
+  ],
+  [
+   5.5767,
+   2.7763,
+   5.8196,
+   0.7248
+  ],
+  [
+   4.9018,
+   1.2647,
+   4.9288,
+   -0.5709
+  ],
+  [
+   4.011,
+   1.8855,
+   4.011,
+   0.2659
+  ]
+ ],
+ "objects": [
+  {
+   "id": "bin",
+   "label": "trash can",
+   "x": 2.0,
+   "y": 0.3,
+   "r": 0.15,
+   "h": 0.4,
+   "yaw": 0.0,
+   "solid": true
+  },
+  {
+   "id": "bottle",
+   "label": "water bottle",
+   "x": 1.2,
+   "y": -1.2,
+   "r": 0.04,
+   "h": 0.25,
+   "yaw": 0.0,
+   "solid": true
+  }
+ ],
+ "memory": [
+  {
+   "id": "bin"
+  }
+ ],
+ "labels": [
+  "trash can",
+  "chair",
+  "person",
+  "backpack",
+  "water bottle",
+  "door",
+  "table",
+  "laptop",
+  "cup",
+  "box"
+ ],
+ "hfov_deg": 59.99999999999999,
+ "params": {
+  "pose_noise_m": 0.01,
+  "pose_noise_deg": 0.5,
+  "pose_latency_ms": 60,
+  "dropout_per_min": 0.0,
+  "dropout_s": 1.0,
+  "reloc_m": 0.25,
+  "reloc_deg": 8.0,
+  "phone_hz": 20,
+  "phone_h": 0.25,
+  "lidar_hfov_deg": 60,
+  "lidar_range_m": 5.0,
+  "lidar_rays": 25,
+  "depth_noise_m": 0.01,
+  "guard_hz": 100,
+  "guard_stop_m": 0.3,
+  "guard_half_w": 0.17,
+  "guard_gob1": true,
+  "cam_hz": 8,
+  "cam_latency_ms": 120,
+  "cam_h": 0.12,
+  "det_range_m": 6.0,
+  "conf_near": 0.85,
+  "conf_far": 0.35,
+  "miss_rate": 0.05,
+  "fp_rate": 0.0,
+  "det_jitter_px": 2.0
+ }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "empty",
+  "about": "A 6 x 6 m empty room with no objects: drive tests, calibration, guard checks, or a blank canvas to build a course in.",
+  "start": {"x": 0.0, "y": 0.0, "th": 0.0},
+  "wall_h": 2.0,
+  "walls": [[-3.0, -3.0, 3.0, -3.0], [3.0, -3.0, 3.0, 3.0], [3.0, 3.0, -3.0, 3.0], [-3.0, 3.0, -3.0, -3.0]],
+  "objects": []
+}

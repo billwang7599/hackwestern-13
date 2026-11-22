@@ -10,7 +10,12 @@
  *                      A TURN already running when the guard turns BLOCKED continues only if
  *                      it fits both limits, else it aborts (move_why=lidar_guard). The guard
  *                      can't see the sideways/behind sweep: that relies on goto's 0.35 m map
- *                      inflation. Pending Andrew's sign-off.)
+ *                      inflation. A reverse MOVE (mm < 0) is also allowed under a fresh
+ *                      guard_blocked, speed clamped to REVERSE_BLOCKED_MAX_SPEED (0.50; on DC
+ *                      wheels MOVE speed is ignored), so goto can back out the way it came;
+ *                      a forward MOVE or a running reverse MOVE faster than 0.50 aborts.
+ *                      Stale/missing/invalid guard data still refuses both. Pending
+ *                      Andrew's sign-off.)
  *   S                    stop driving NOW (no slew), cancel any gesture, halt both arms
  *   G <name>             gesture: wave point shrug nod stance fold
  *   A <arm> <deg> [dps]  arm 0=left 1=right to an absolute angle -> "OK <deg>"
@@ -128,6 +133,9 @@
  * blind to the pivot's sideways sweep): keep that pivot slow and at most a half turn. */
 #define PIVOT_BLOCKED_MAX_SPEED 0.40f
 #define PIVOT_BLOCKED_MAX_DEG   180.0f
+/* Reverse MOVE allowed under a fresh BLOCKED (the guard looks forward; goto backs out along
+ * the trail it drove in on). Tip, bump, S, the watchdog and the deadman still stop it. */
+#define REVERSE_BLOCKED_MAX_SPEED 0.50f
 
 static const motor_backend_t *motor_backends[] = { &motor_uno_serial, &motor_stub, &motor_pico_uart };
 
@@ -387,6 +395,7 @@ static void ctl_arm_model(float dt)
 static void ctl_move_abort_locked(const char *why);
 static int guard_pivot_ok(void);
 static int pivot_fits(float deg, float speed);
+static int blocked_exempt_fits(char kind, float req, float speed);
 
 static void ctl_event(const motor_event_t *ev, long long now)
 {
@@ -562,8 +571,9 @@ static void *control_thread(void *arg)
              * guards: while it reports a fresh BLOCKED (not stale/missing/invalid) an exact TURN
              * may run, so the robot can turn away from what's ahead, if it fits the pivot
              * limits (speed <= 0.40, |deg| <= 180; no mid-move speed change on the Uno, so a
-             * faster or longer TURN aborts). Drives and MOVE stop. */
-            if (!(mv_kind == 'R' && guard_pivot_ok() && pivot_fits(mv_req, mv_speed))) {
+             * faster or longer TURN aborts). Likewise a reverse MOVE at speed <= 0.50 keeps
+             * running. Drives and forward MOVE stop. */
+            if (!(guard_pivot_ok() && blocked_exempt_fits(mv_kind, mv_req, mv_speed))) {
                 req_move = 0;
                 ctl_move_abort_locked("lidar_guard");
             }
@@ -701,6 +711,14 @@ static int guard_pivot_ok(void)
 static int pivot_fits(float deg, float speed)
 {
     return fabsf(deg) <= PIVOT_BLOCKED_MAX_DEG + 1e-3f && speed <= PIVOT_BLOCKED_MAX_SPEED + 1e-6f;
+}
+
+/* a running/requested exact move that may continue under a fresh guard_blocked */
+static int blocked_exempt_fits(char kind, float req, float speed)
+{
+    if (kind == 'R') return pivot_fits(req, speed);
+    if (kind == 'M') return req < 0.0f && speed <= REVERSE_BLOCKED_MAX_SPEED + 1e-6f;
+    return 0;
 }
 
 static const char *motion_refused(void)
@@ -885,9 +903,12 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
         pthread_mutex_lock(&lock);
         feed_watchdog();
         long long left = bump_until_ms - now_ms();
-        /* pivot = this TURN runs only because of the fresh-BLOCKED exception: limit it */
-        int pivot = (why = motion_refused()) != NULL && link_up && kind == 'R' && !tipped && guard_pivot_ok();
-        if (why && !pivot) {
+        /* pivot = this TURN runs only because of the fresh-BLOCKED exception: limit it.
+         * reverse = the same exception for a MOVE with mm < 0 (back out the way we came). */
+        int exempt = (why = motion_refused()) != NULL && link_up && !tipped && guard_pivot_ok();
+        int pivot = exempt && kind == 'R';
+        int reverse = exempt && kind == 'M' && amt < 0.0f;
+        if (why && !pivot && !reverse) {
             snprintf(reply, rlen, "ERR %s\n", why);
         } else if (pivot && fabsf(amt) > PIVOT_BLOCKED_MAX_DEG + 1e-3f) {
             snprintf(reply, rlen, "ERR guard_blocked pivot>%.0f\n", PIVOT_BLOCKED_MAX_DEG);
@@ -898,6 +919,11 @@ static void handle_line(int cid, char *line, char *reply, size_t rlen)
                 fprintf(stderr, "[net] client %d: TURN %.1f under guard_blocked: speed %.2f clamped to %.2f\n",
                         cid, amt, spd, PIVOT_BLOCKED_MAX_SPEED);
                 spd = PIVOT_BLOCKED_MAX_SPEED;
+            }
+            if (reverse && spd > REVERSE_BLOCKED_MAX_SPEED) {
+                fprintf(stderr, "[net] client %d: MOVE %.0f under guard_blocked: speed %.2f clamped to %.2f\n",
+                        cid, amt, spd, REVERSE_BLOCKED_MAX_SPEED);
+                spd = REVERSE_BLOCKED_MAX_SPEED;
             }
             target_l = target_r = 0.0f;       /* the D stream becomes keepalives */
             mv_id++;

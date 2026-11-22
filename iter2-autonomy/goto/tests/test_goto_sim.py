@@ -447,8 +447,16 @@ def test_protocol(exe: str) -> None:
         check(wait_for(lambda: len(m.beeps) > n_beeps and m.beeps[-1] == 3, 1), "unknown object -> BEEP 3 on the robot")
         check(g.status()["state"] == "idle", "still idle")
         check(g.cmd("BOGUS").startswith("ERR"), "unknown command -> ERR")
+        # CANCEL while idle must not send S: voice sends CANCEL right before a manual MOVE/TURN,
+        # and a late S from goto aborted it. STOP / S still always send S.
         n = m.stops
-        check(g.cmd("CANCEL") == "OK" and m.stops == n + 1, "CANCEL when idle still sends S")
+        r = g.cmd("CANCEL")
+        time.sleep(0.2)
+        check(r.startswith("OK") and m.stops == n, f"CANCEL when idle: {r}, no S to tars_motor ({m.stops - n} sent)")
+        for word in ("STOP", "S"):
+            n = m.stops
+            r = g.cmd(word)
+            check(r == "OK" and wait_for(lambda: m.stops == n + 1, 1), f"{word} when idle still sends S")
         check(g.cmd("GOTO the trash can") == "OK goto trash can", "GOTO the trash can")
         st = g.status()
         check(st["state"] == "look" and st["target"] == "trash_can", f"STATUS {st['state']} {st['target']}")
@@ -569,7 +577,7 @@ def test_scenarios(exe: str, scale: float) -> None:
 
     r = drive_scene(exe, scale, 3, 1.5, 0.0, label="trash can", say="door", distractor=False, timeout=120)
     turns = [l for _, l in r["log"] if l.startswith("TURN")]
-    check(r["result"] == "failed:not_found" and len(turns) == 12 and 3 in r["beeps"],
+    check(r["result"] in ("failed:not_found", "failed:not_found_no_memory") and len(turns) == 12 and 3 in r["beeps"],
           f"object not in the room: 12 x 30 deg then give up + BEEP 3 ({r['result']}, {len(turns)} turns)")
 
     r = drive_scene(exe, scale, 4, 2.5, 20.0, obj_h=1.7, obj_r=0.2, label="person", say="me")

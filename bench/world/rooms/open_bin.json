@@ -1,0 +1,54 @@
+{
+  "name": "open_bin",
+  "about": "A 10 x 8 m room with a bin in plain view 2 m ahead and a little left, no memory: the visual-only GOTO path (search, align, approach, dock). Plenty of floor to draw walls and courses.",
+  "start": {
+    "x": 0.0,
+    "y": 0.0,
+    "th": 0.0
+  },
+  "wall_h": 2.0,
+  "walls": [
+    [
+      -3.0,
+      -4.0,
+      7.0,
+      -4.0
+    ],
+    [
+      7.0,
+      -4.0,
+      7.0,
+      4.0
+    ],
+    [
+      7.0,
+      4.0,
+      -3.0,
+      4.0
+    ],
+    [
+      -3.0,
+      4.0,
+      -3.0,
+      -4.0
+    ]
+  ],
+  "objects": [
+    {
+      "id": "bin",
+      "label": "trash can",
+      "x": 2.0,
+      "y": 0.3,
+      "r": 0.15,
+      "h": 0.4
+    },
+    {
+      "id": "bottle",
+      "label": "water bottle",
+      "x": 1.2,
+      "y": -1.2,
+      "r": 0.04,
+      "h": 0.25
+    }
+  ]
+}

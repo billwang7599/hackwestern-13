@@ -48,7 +48,6 @@ forward	step forward
 forward	walk forward
 forward	go on
 forward	proceed
-forward	move it
 forward	let's go
 forward	get going
 forward	move forward {d}
@@ -285,6 +284,20 @@ goto	hunt down the {o}
 goto	locate the {o}
 goto	go to that {o} over there
 goto	the {o} go there
+# articles are often dropped ("go to bottle"); gen_data.py also drops the/a/an from
+# 40% of every template's samples, these make the short forms explicit
+goto	drive to {o}
+goto	head to {o}
+goto	find {o}
+goto	go find {o}
+goto	get to {o}
+# "backpack" starts with "back": without these, "go to backpack" scored as BACK
+goto	go to backpack
+goto	go to the backpack
+goto	find backpack
+goto	find the backpack
+goto	drive to backpack
+goto	head to my backpack
 
 # ---------------------------------------------------------------- retired intents -> unknown
 # follow / gestures / teach were dropped as voice intents (MediaPipe is on the
@@ -542,6 +555,21 @@ unknown	thank you
 unknown	thanks for watching
 unknown	you
 unknown	that's so cool
+# talking ABOUT an object is not a go-to ("that's my backpack", "the bin is full")
+unknown	that's my {o}
+unknown	this is my {o}
+unknown	that's the {o}
+unknown	the {o} is full
+unknown	the {o} is over there
+unknown	the {o} is broken
+unknown	i like the {o}
+unknown	nice {o}
+unknown	is that a {o}
+unknown	thanks for the {o}
+unknown	who left this {o} here
+unknown	i need a new {o}
+unknown	that's my backpack
+unknown	this is my backpack
 unknown	what is that
 unknown	where's the bathroom
 unknown	i'm hungry
@@ -582,6 +610,8 @@ unknown	good morning
 unknown	i like your robot
 unknown	is that a raspberry pi
 unknown	what language is this
+# bare turn/rotate/move: no direction -> also rejected by rule (intent_is_bare). Bare "go"/"drive" = forward.
+unknown	move it
 unknown	turn
 unknown	turn turn
 unknown	turn the

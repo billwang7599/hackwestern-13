@@ -30,6 +30,7 @@ def packet(seq=1, source_us=None, flags=7, points=None, pose=(0, 0.5, 0, 0), flo
 class GuardFixture(unittest.TestCase):
     fusion_enabled = False
     require_clear = False
+    extra_args = []
     @classmethod
     def setUpClass(cls):
         if 'GUARD_BINARY' not in os.environ:
@@ -50,7 +51,8 @@ class GuardFixture(unittest.TestCase):
         self.proc = subprocess.Popen([str(BINARY), '--port', str(self.server.getsockname()[1]),
                                       '--status-port', str(self.status.getsockname()[1]),
                                       '--fusion-port', str(self.fusion_port if self.fusion_enabled else 0),
-                                      '--require-clear', '1' if self.require_clear else '0'],
+                                      '--require-clear', '1' if self.require_clear else '0',
+                                      *self.extra_args],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
         self.client, _ = self.server.accept()
@@ -329,6 +331,55 @@ class FusionTests(GuardFixture):
 class StrictCoverageTests(GuardTests):
     # All guard/disconnect/invalid-data checks also run under autonomous policy.
     require_clear = True
+
+
+class DefaultCorridorTests(GuardFixture):
+    def test_status_reports_default_corridor(self):
+        self.send_packet(packet())
+        result = self.wait_status(lambda s: s['permit'])
+        self.assertAlmostEqual(result['stop_distance_m'], .6, places=3)
+        self.assertAlmostEqual(result['half_width_m'], .45, places=3)
+
+    def test_default_corridor_blocks_point_off_to_the_side(self):
+        self.send_packet(packet(points=floor_points() + [[.3, .2, .5]]))
+        self.assertEqual(self.wait_status(lambda s: s.get('frames') == 1)['verdict'], 'BLOCKED')
+
+
+class CorridorFlagTests(GuardFixture):
+    """--half-width / --stop-distance (set from goto.conf's car size)."""
+    extra_args = ['--half-width', '0.17', '--stop-distance', '0.3']
+
+    @staticmethod
+    def narrow_floor():
+        return [[x, 0.0, z] for x in (-0.12, 0.0, 0.12) for z in (0.2, 0.3, 0.5, 0.8, 1.0)]
+
+    def test_status_reports_flags(self):
+        self.send_packet(packet(points=self.narrow_floor()))
+        result = self.wait_status(lambda s: s['permit'])
+        self.assertEqual(result['verdict'], 'CLEAR')
+        self.assertEqual(result['floor_hits'], [5, 5, 5])
+        self.assertAlmostEqual(result['stop_distance_m'], .3, places=3)
+        self.assertAlmostEqual(result['half_width_m'], .17, places=3)
+
+    def test_side_point_outside_narrow_corridor_does_not_block(self):
+        self.send_packet(packet(points=self.narrow_floor() + [[.3, .2, .25]]))
+        self.assertEqual(self.wait_status(lambda s: s.get('frames') == 1)['verdict'], 'CLEAR')
+
+    def test_point_beyond_stop_distance_does_not_block(self):
+        self.send_packet(packet(points=self.narrow_floor() + [[0, .2, .45]]))
+        result = self.wait_status(lambda s: s.get('frames') == 1)
+        self.assertEqual(result['verdict'], 'CLEAR')
+        self.assertAlmostEqual(result['nearest_m'], .45, places=3)
+
+    def test_point_inside_narrow_corridor_blocks(self):
+        self.send_packet(packet(points=self.narrow_floor() + [[.1, .2, .28]]))
+        self.assertEqual(self.wait_status(lambda s: s.get('frames') == 1)['verdict'], 'BLOCKED')
+
+    def test_invalid_values_refused(self):
+        for args in (['--half-width', 'x'], ['--half-width', '0'], ['--half-width', '2'],
+                     ['--stop-distance', '0.1'], ['--stop-distance', 'nan'], ['--stop-distance', '']):
+            r = subprocess.run([str(BINARY), *args, '--seconds', '1'], capture_output=True, timeout=5)
+            self.assertEqual(r.returncode, 2, args)
 
 
 if __name__ == '__main__':

@@ -90,6 +90,45 @@ nav_t *nav_new(void);                     /* ~2.2 MiB, all scratch preallocated;
 void   nav_free(nav_t *n);
 void   nav_reset(nav_t *n);               /* all cells UNKNOWN, pose/anchor/floor forgotten */
 void   nav_set_robot_radius(nav_t *n, float metres);  /* footprint for inflation (default 0.35) */
+float  nav_robot_radius(const nav_t *n);
+/* the footprint square's half-size in cells: by default ceil(radius / 0.1) (mapping.py parity). With 0.1 m
+ * cells that rounds a 0.27 m radius up to 3 cells (0.35 m to a wall cell's edge); cells > 0 sets it
+ * directly (goto.conf nav_foot_cells; 0 = back to the radius). */
+void   nav_set_foot_cells(nav_t *n, int cells);
+int    nav_foot_cells(const nav_t *n);
+
+/* Guard-aware planning (off by default, so plans match mapping.py exactly).
+ * lidar_guard refuses a forward move while an obstacle is within stop_m ahead and
+ * |side| < half_w (inside the phone LiDAR's hfov cone). With a box set, an A* step from a cell
+ * in one of the 8 grid directions is only allowed if that box, from the cell centre along that
+ * direction and stretched by the step length, holds no OCC (or temporarily blocked) cell, with
+ * half a cell of slack. Corners are kept, so every route leg is a grid direction, and the route
+ * is one the guard lets through as far as the map knows. For object goals (ring_min >= 0.3)
+ * obstacles within NAV_GUARD_IGNORE_R of the target are ignored: stopping in front of the
+ * target is docking. stop_m <= 0 turns it off. nav_set_guard_active() switches it off/on for
+ * one plan (goto's relaxed fallback) without forgetting the box. */
+#define NAV_GUARD_IGNORE_R 0.35
+void   nav_set_guard_box(nav_t *n, float stop_m, float half_w, float hfov_deg);
+void   nav_set_guard_active(nav_t *n, int on);
+int    nav_guard_active(const nav_t *n);
+/* The same box test for one pose (x, z, yaw; forward = (sin yaw, cos yaw)): 1 clear, 0 an
+ * OCC/temporarily blocked cell in it. ignore_r > 0: cells within ignore_r of (ix, iz) don't count. */
+int    nav_guard_clear(const nav_t *n, float x, float z, float yaw, float ix, float iz, float ignore_r);
+
+/* Optimistic planning (off by default): UNKNOWN floor is traversable. Only known OCC (and
+ * temporarily blocked) cells are inflated; a step onto a cell whose footprint isn't all observed
+ * FREE costs (1 + penalty) x the step. The start may stand on unknown floor. A plan that fails
+ * even so means the goal is enclosed by known walls (or too tight for the footprint). */
+void   nav_set_optimistic(nav_t *n, int on, float penalty);
+int    nav_optimistic(const nav_t *n);
+/* 1 if the footprint square at (x, z) holds an OCC or temporarily blocked cell */
+int    nav_footprint_blocked(const nav_t *n, float x, float z);
+
+/* Temporarily blocked cells (a guard refusal the map can't explain): planned around like OCC
+ * (inflation and guard box) but never written into the map. The caller decays them. */
+void   nav_temp_block(nav_t *n, float x, float z);
+void   nav_temp_clear(nav_t *n);
+int    nav_temp_count(const nav_t *n);
 
 void nav_set_pose(nav_t *n, float x, float z, float yaw_rad, int tracking_ok);
 void nav_note_dr(nav_t *n, float dr_x, float dr_z, float dr_yaw_rad);   /* dead reckoning, its own frame, same yaw convention */
@@ -127,6 +166,34 @@ int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, in
  * ring 0..0.11 = "the cell at (tx,tz) itself": goto's DETOUR uses it to reach a vantage cell. */
 int nav_plan_ring(nav_t *n, float sx, float sz, float tx, float tz, float ring_min, float ring_max,
                   nav_pt_t *out, int max_out);
+
+/* Cost-to-go field for recovery (goto's in-place re-plan after a guard stop): Dijkstra from the
+ * approach ring [ring_min, ring_max] around (tx,tz), with the same rules as A* (footprint
+ * inflation, temp blocks, guard box if active, unknown floor at its penalty if optimistic).
+ * Costs are in cells (0.1 m). Returns the number of cells that can reach the goal, or NAV_ERR_*.
+ * Valid until the next nav_plan / nav_plan_ring / nav_field_build. */
+int    nav_field_build(nav_t *n, float tx, float tz, float ring_min, float ring_max);
+double nav_field_cost(const nav_t *n, float x, float z);    /* INFINITY = can't reach the goal */
+int    nav_field_clear(const nav_t *n, float x, float z);   /* 1 observed clear, 2 unknown-clear, 0 no */
+/* steepest descent from (sx,sz) to the ring: corners like nav_plan (start excluded). *unknown = 1
+ * if it crosses unknown floor. */
+int    nav_field_path(nav_t *n, float sx, float sz, nav_pt_t *out, int max_out, int *unknown);
+
+/* Heading-aware planning (off by default: 0, 0 keeps plans identical to mapping.py).
+ * turn_m: metres of route a 90 deg turn along the route costs (45 deg = half), so equal-length
+ * routes with fewer corners win (no 0/45 deg grid zigzag: every corner is a TURN + heading check).
+ * start_m: metres per 90 deg between the car's heading yaw (have_yaw) and the route's first step,
+ * so a U-turn (180 deg) costs 2 x start_m. A* stays one entry per cell (the turn is charged from the
+ * cell's parent), so it is a good route, not a proven optimum. Applies to nav_plan/nav_plan_ring
+ * and nav_route_cost, not to the cost-to-go field. */
+void   nav_set_turn_cost(nav_t *n, float turn_m, float start_m, float yaw, int have_yaw);
+int    nav_turn_cost_on(const nav_t *n);
+/* Cost (in cells, 0.1 m) of driving from (sx, sz) through pts[0..count) with the planner's rules:
+ * leg length, x (1 + penalty) on unknown floor in optimistic mode, plus the turn costs above.
+ * INFINITY if any point on a leg (every 0.05 m) has the footprint blocked (as A* would see it:
+ * guard-box legality is the caller's check). Rebuilds the footprint grid: call it with the same
+ * optimistic setting as the plan it is compared with. Start cell itself isn't checked. */
+double nav_route_cost(nav_t *n, float sx, float sz, const nav_pt_t *pts, int count);
 
 /* Line of sight over the grid, ignoring the start cell and cells within
  * NAV_LOS_END_MARGIN of the end (the object itself is occupied).

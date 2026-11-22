@@ -36,6 +36,7 @@ import gen_data  # noqa: E402
 import intent as I  # noqa: E402
 
 K = len(I.INTENTS)
+THRESHOLD_FLOOR = 0.52            # never accept below this (see main())
 
 
 def featurize(texts: list[str]):
@@ -164,12 +165,14 @@ def main():
     Xva = featurize([t for t, _ in val]); yva = np.array([c for _, c in val])
     W, b = train(Xtr, ytr)
     Pva = softmax(logits(Xva, W, b))
-    thr = pick_threshold(Pva, yva)
+    # floor: when the auto pick went below ~0.52 (more unknown phrases), held-out chatter
+    # started turning into TURN 180 / spin; 0.52 keeps wrong motions at or under the old model's
+    thr = max(pick_threshold(Pva, yva), THRESHOLD_FLOOR)
     stop_thr = 0.30
     acc_va = float(np.mean(Pva.argmax(1) == yva))
     info = (f"{len(tr)} train sentences (phrases.txt via gen_data.py, seed 13), {nval} validation.\n"
             f"Features: hashed char 2-4 grams + words, {I.N_FEAT} bins. Softmax regression, Adam, L2 1e-4.\n"
-            f"Validation accuracy {acc_va:.4f}. threshold {thr:.2f} (picked on validation), stop_threshold {stop_thr:.2f}.")
+            f"Validation accuracy {acc_va:.4f}. threshold {thr:.2f} (picked on validation, floor {THRESHOLD_FLOOR}), stop_threshold {stop_thr:.2f}.")
     out = os.path.join(HERE, "intent_model.h")
     export_header(out, W, b, thr, stop_thr, info)
     print(info)

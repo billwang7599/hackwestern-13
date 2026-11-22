@@ -4,6 +4,7 @@
     make -C iter2-autonomy/voice test-intent        # builds build/intent_cli, then runs this
 
   1. normalisation, wake word, safety words, number/slot parser (unit tests)
+     1b. regressions found by the bench voice lab (bare "turn", "the left one", ...)
   2. held-out accuracy on TEST templates (phrasings never seen in training),
      per-class precision/recall, confusion matrix, accept/reject rates
   3. hand-written realistic whisper transcripts (data/realistic.tsv)
@@ -125,6 +126,100 @@ def test_units(m: I.Model) -> None:
         d = I.decide(m, text)
         check(first_line(d) == want, f"slot {text!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f})")
     return list(slot_cases)
+
+
+# ------------------------------------------------------------------ 1b. regressions (bench voice lab)
+MOTION = ("MOVE", "TURN", I.GOTO_PREFIX + "GOTO", I.GOTO_PREFIX + "RECALL")
+
+
+def test_regressions(m: I.Model) -> list[str]:
+    """Bugs found by the laptop bench voice lab. Each must stay fixed, in Python and C (parity)."""
+    print("regressions: bare fragments")
+    texts = []
+    # 1. a motion verb with no direction must never move ("TARS, turn." used to give TURN 180)
+    bare = ["TARS, turn.", "tars turn", "Tars, turn!", "tars turn turn", "tars turn turn turn",
+            "tars turn the", "tars turn it", "tars turn now", "tars uh turn", "tars turning",
+            "tars move", "tars move it", "tars move it move it", "tars just move", "tars move now please",
+            "tars rotate", "tars rotate it", "tars, tern.", "tars go to", "tars go to the"]
+    for t in bare:
+        d = I.decide(m, t)
+        check(d.action == "reject" and d.lines == ["LED no", "BEEP 3"] and not any(l.startswith(MOTION) for l in d.lines),
+              f"bare fragment rejected {t!r}: {d}")
+    check(I.decide(m, "tars turn").why == "bare", "bare turn: why=bare")
+    # ...but a stop inside one still stops, and real commands with the same verbs still work
+    for t in ("tars turn stop", "turn turn stop", "tars move no", "tars rotate wait"):
+        check(I.decide(m, t).lines == ["S", I.CANCEL], f"stop wins over bare {t!r}")
+    still = {"tars turn left": "TURN -30", "tars turn right": "TURN 30", "tars turn around": "TURN 180",
+             "tars move forward": "MOVE 300", "tars move back": "MOVE -300", "tars rotate left": "TURN -30",
+             "tars spin": "TURN 360", "TARS. Go!": "MOVE 300", "tars back up a bit": "MOVE -100",
+             "tars move to the chair": "GOTO chair", "tars turn to the left": "TURN -30"}
+    for t, want in still.items():
+        d = I.decide(m, t)
+        check(first_line(d) == want, f"not bare {t!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f})")
+    # 2. "one" as a pronoun is not 1 degree/step ("tars the left one" used to give TURN -1), and a
+    #    bare turn amount under 10 with no unit isn't degrees either; real numbers still parse
+    print("regressions: number words")
+    for t in ("tars the left one", "tars the right one", "tars that one", "tars which one",
+              "tars the big one", "tars go to the left one"):
+        d = I.decide(m, t)
+        check(not any(l.startswith("TURN") and abs(int(l.split()[1])) < 10 for l in d.lines)
+              and not any(l.startswith("MOVE") and abs(int(l.split()[1])) < 100 for l in d.lines),
+              f"pronoun one is not an amount {t!r}: {d.lines}")
+    check(I.parse_amount(I.normalize("the left one")) == (None, None), "parse_amount: the left one")
+    check(I.parse_amount(I.normalize("that big one")) == (None, None), "parse_amount: that big one")
+    check(I.feature_tokens(I.normalize("the left one")) == ["the", "left", "one"], "features keep pronoun one")
+    check(I.feature_tokens(I.normalize("turn left one")) == ["turn", "left", "num"], "features: bare one is num")
+    nums = {
+        "tars turn left one": "TURN -30", "tars right one": "TURN 30", "tars turn right two": "TURN 30",
+        "tars turn left five": "TURN -30", "tars turn left five degrees": "TURN -5",
+        "tars turn right one degree": "TURN 1", "tars turn right ten": "TURN 10",
+        "tars turn right ninety": "TURN 90", "tars turn right one eighty": "TURN 180",
+        "tars do the one eighty": "TURN 180", "tars turn left half a turn": "TURN -180",
+        "tars turn to the left": "TURN -30", "tars turn right to degrees": "TURN 2",
+        "tars go forward for a bit": "MOVE 100", "tars go forward for two meters": "MOVE 1000",
+        "tars go forward a meter": "MOVE 1000", "tars go forward one": "MOVE 100",
+        "tars go forward one step": "MOVE 100", "tars go back one meter": "MOVE -1000",
+        "tars go forward to steps": "MOVE 200", "tars go forward for steps": "MOVE 400",
+        "tars move forward the one meter": "MOVE 1000", "tars turn left a bit": "TURN -15",
+    }
+    for t, want in nums.items():
+        d = I.decide(m, t)
+        check(first_line(d) == want, f"number {t!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f})")
+    # 3. a dropped article must not kill a go-to ("go to bottle" was 0.48 -> rejected, "go to water
+    #    bottle" 0.42, "go to backpack" -> back). Punctuation never reaches the model (normalize).
+    print("regressions: articles / punctuation in go-to")
+    check(I.normalize("TARS, Go to bottle.") == I.normalize("tars go to bottle"), "punctuation + capitals dropped")
+    check(I.normalize("go to the bottle?!") == ["go", "to", "the", "bottle"], "trailing ?! dropped")
+    goto_cases = {}
+    for verb in ("go to", "drive to", "head to", "find"):
+        for art in ("the ", ""):
+            for obj, canon in (("bottle", "water bottle"), ("water bottle", "water bottle"),
+                               ("trash can", "trash can"), ("trash", "trash can"), ("bin", "trash can"),
+                               ("chair", "chair"), ("backpack", "backpack"), ("laptop", "laptop"), ("box", "box")):
+                for punct in ("", "."):
+                    goto_cases[f"tars {verb} {art}{obj}{punct}"] = f"GOTO {canon}"
+    goto_cases.update({"Tars, go to bottle.": "GOTO water bottle", "TARS. Go to the bottle.": "GOTO water bottle",
+                       "tars go to kitchen": "LED no", "tars go to the kitchen": "LED no",
+                       "tars go to giraffe": "LED no", "tars go back to the bin": "RECALL trash can",
+                       "tars go back to bin": "RECALL trash can", "tars turn to left": "TURN -30",
+                       "tars go back to the chair": "RECALL chair"})
+    for t, want in goto_cases.items():
+        d = I.decide(m, t)
+        check(first_line(d) == want, f"article {t!r}: want {want}, got {d.lines} ({d.intent} {d.prob:.2f} {d.why})")
+    # the goto safety net (goto on top + a known object, under the threshold) must not let chatter
+    # that mentions an object move the robot, and stop still wins
+    chatter = ["tars the coffee is cold", "tars nice laptop", "tars I need water", "tars that's my backpack",
+               "tars hello judges this is our robot", "tars the bin is full", "tars who left this box here",
+               "tars the chair is broken", "tars thanks for the water", "tars where did I put my laptop yesterday lol",
+               "the trash can is over there", "go to the bottle", "bottle"]
+    for t in chatter:
+        d = I.decide(m, t)
+        check(not any(l.startswith(MOTION) for l in d.lines), f"chatter does not move {t!r}: {d.lines} ({d.intent} {d.prob:.2f})")
+    stops = ["tars go to bottle stop", "tars stop go to the bottle", "stop. go to water bottle",
+             "tars go to backpack no", "tars, go to bin. Wait!", "tars freeze go to trash"]
+    for t in stops:
+        check(I.decide(m, t).lines == ["S", I.CANCEL], f"stop wins over go-to {t!r}")
+    return texts + bare + list(still) + list(nums) + list(goto_cases) + chatter + stops
 
 
 # ------------------------------------------------------------------ 2. held-out accuracy
@@ -273,7 +368,7 @@ if __name__ == "__main__":
         sys.exit(f"{CLI} missing: run make -C iter2-autonomy/voice intent_cli")
     model = I.load_model()
     print(f"model: threshold {model.threshold}, stop_threshold {model.stop_threshold}")
-    slot_texts = test_units(model)
+    slot_texts = test_units(model) + test_regressions(model)
     gen = gen_data.generate(30, seed=13)
     test_rows = [r for r in gen if r[2] == "test"]
     acc, okr, wr, rj = evaluate(model, test_rows)

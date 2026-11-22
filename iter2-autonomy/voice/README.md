@@ -4,7 +4,7 @@
 **on the Pi 5 under QNX 8.0, in C/C++ built with `qcc`**. No laptop, no internet, no Python on the robot.
 
 ```
-USB mic ─► io-audio (libasound snd_pcm, 16 kHz mono)          src/audio.c
+phone mic (AirPods, TCP 5577) or USB mic ─► 16 kHz mono         src/audio.c
         ─► energy VAD, 20 ms frames, segments ≤ 3 s           src/vad.c
         ─► whisper.cpp tiny.en-q5_1, 2 threads                src/stt.c
         ─► text → intent (generated C header, ~2 µs)           intent/intent.c + intent_model.h
@@ -35,6 +35,19 @@ Python is only used off the robot: training (`intent/train.py`), `intent/try.py`
 
 **Exact-move keepalive:** `tars_motor` on main aborts a `MOVE`/`TURN` after 500 ms without a
 command, so a small thread in `tars_voice` PINGs (on its own connection) while a voice move runs.
+**Phone mic (the default, `input = phone`):** the robot has no microphone, so the iPhone on the car
+streams the user's AirPods to `tars_voice` (iPhone app: controls → "Robot mic (AirPods)"). The phone
+listens on 5577 (forwarded to the Pi by iproxy, `service.py`), `tars_voice` dials it and redials with a
+0.5–5 s backoff. Protocol `MIC1` (spec in `src/audio.h`): header line `MIC1 16000 1 s16le`, then packets
+`A` audio / `M` mute / `U` unmute / `K` keepalive. It's hands-free: the same VAD, whisper, "TARS" wake word
+and stop-first path as a wired mic. While TARS speaks a `SAY` from the phone speaker the phone sends `M`
+(half duplex): what it hears then is dropped, and the segment in progress is finished at the mute. Link
+down / muted: `audio_read` returns within 100 ms with nothing, so the loop (LED off, talk button) keeps
+running. Bad data or 3 s of silence (no `K`) drops the link. `phone:PORT` / `phone:HOST:PORT` for other
+addresses; `input = qnx` for a USB mic. Fake phone for the Pi or a Mac:
+`python3 iter2-autonomy/iphone/tools/mic_stream.py cmd.wav` (or `-` for raw stdin). Test:
+`make test-phone` (38 checks, fake phone + real `tars_motor`). **Not yet run on the Pi/QNX or with the
+real phone.** Caveat: a spoken "stop" while TARS is talking is not heard; the other stops are unaffected.
 **Speech link:** `say_host`/`say_port`/`say_ms` in `voice.conf` (127.0.0.1:5573, 150 ms connect
 timeout, `say_port = 0` = off). Failures are ignored.
 **Network input (laptop mission control, `iter2-autonomy/mission/`):** `net_host`/`net_port`
@@ -45,8 +58,13 @@ timeout, `say_port = 0` = off). Failures are ignored.
 working at the same time. Tests: `make test-net` (25 checks). `build/stt_cli MODEL FILE.wav` (host only)
 prints just the transcript, for the laptop's `--laptop-stt`.
 
-Defaults: 30° and 300 mm. A manual move (`MOVE`/`TURN`) first sends `CANCEL` to the go-to
-controller, so its steering doesn't fight the move. A recognised command gets `BEEP 1`.
+Defaults: 30° and 300 mm. Before a manual move (`MOVE`/`TURN`) voice asks the go-to controller
+`STATUS`: if it's not `state=idle`, it sends `CANCEL` and waits up to 1.5 s for the `OK` (goto sends
+its `S` to `tars_motor` before replying), so its steering doesn't fight the move. An idle go-to gets no
+`CANCEL`, because goto answers every `CANCEL` with an `S` that could land after the move and abort it.
+Any go-to reply that misses `goto_reply_ms` drops and reopens the link, so a late reply is never read as
+the answer to the next line. A recognised command gets `BEEP 1`. Test: `make test-goto-link` (the real
+goto + `tars_motor`, including a goto stalled for 0.8 s).
 
 ## Quick start
 
@@ -59,6 +77,22 @@ make -C iter2-autonomy/voice test                # classifier tests + end-to-end
 python3 iter2-autonomy/voice/intent/try.py       # type sentences, see intent / confidence / command
 ```
 For the Pi, follow **docs/PI_TEST.md → Step 7: voice**. Run **`mic_test` first**: if the mic doesn't work under QNX, nothing else here matters.
+
+**On the Pi itself (no SDP, no Docker, no cmake):** the robot builds its own `tars_voice` with its clang.
+whisper.cpp/ggml is compiled straight from the pinned sources (CPU backend only, static, Armv8.2-A +
+dotprod + fp16):
+```sh
+iter2-autonomy/voice/fetch_whisper.sh && iter2-autonomy/voice/get_model.sh   # or copy third_party/ + models/ from the laptop
+make -C iter2-autonomy/voice native -j4          # -> build/native/tars_voice, build/native/mic_test (a few minutes)
+cd iter2-autonomy/voice && ./build/native/tars_voice -c voice.conf --dry     # prints what it hears, sends nothing
+TARS_ENABLE_VOICE=1 TARS_ENABLE_GOTO=1 python3 iter2-autonomy/dashboard/service.py start   # the real thing
+```
+`service.py` picks up `build/native/tars_voice` and runs it from `iter2-autonomy/voice/`, so `voice.conf`
+and `models/` are used in place. The default input is the phone (AirPods, or the phone's own mic when none
+are connected) on 5577. The laptop (bench `--target pi`) only relays text or a recorded clip to 5574 via
+`mission_relay`.
+
+Cross-build from a laptop with the SDP (the older route):
 ```sh
 make -C iter2-autonomy/voice mic_test            # QNX build in docker/run.sh (needs ~/qnx800), small: no whisper
 make -C iter2-autonomy/voice                     # QNX: build/qnx/tars_voice (+ mic_test)
@@ -99,7 +133,7 @@ Live mic on a Mac (dev only): `ffmpeg -f avfoundation -i ":0" -ac 1 -ar 16000 -f
   `n180`, `n360`), so "turn right one hundred and eighty degrees" looks like "turn right n180 degrees".
   The amount is the slot parser's job. Weights go into `intent_model.h` (~450 KB of `float`s);
   `intent.py` parses that same header, so Python and C use identical weights.
-- **Confidence cutoff:** picked automatically on validation data (currently 0.60): +1 per correct
+- **Confidence cutoff:** picked automatically on validation data, never below 0.52 (currently 0.52): +1 per correct
   command, −4 per wrong one. Below it: nothing moves, `LED no` + `BEEP 3`.
 - **Slots (C, `intent_parse_amount` / `intent_find_object`):** digits, number words, "one eighty",
   "one hundred and twenty", "half a metre", "one and a half feet", "a bit", "two steps" (100 mm each),
@@ -111,47 +145,58 @@ Live mic on a Mac (dev only): `ffmpeg -f avfoundation -i ":0" -ac 1 -ar 16000 -f
 ### Accuracy (Mac, `make -C iter2-autonomy/voice test-intent`)
 
 **Held-out phrasings**: test templates hashed out of training, so the model has **never seen these
-phrasings**, only the vocabulary. 2250 sentences with simulated whisper errors:
+phrasings**, only the vocabulary. 3090 sentences with simulated whisper errors (about 40% with their
+articles dropped, "go to bottle"):
 
 | intent | test sentences | precision | recall |
 |---|---|---|---|
-| forward | 210 | 0.83 | 0.85 |
-| back | 300 | 0.92 | 0.98 |
-| left | 120 | 0.98 | 0.98 |
-| right | 210 | 0.99 | 0.99 |
-| turn_around | 150 | 0.94 | 0.99 |
-| stop | 150 | 0.98 | 1.00 |
-| goto | 210 | 0.92 | 0.99 |
-| spin | 120 | 0.89 | 0.98 |
-| status | 210 | 0.87 | 0.55 |
-| unknown | 570 | 0.78 | 0.79 |
-| **all** | **2250** | | **accuracy 0.885** |
+| forward | 210 | 0.99 | 0.94 |
+| back | 360 | 0.96 | 0.89 |
+| left | 120 | 0.92 | 1.00 |
+| right | 210 | 0.96 | 0.99 |
+| turn_around | 150 | 0.90 | 1.00 |
+| stop | 150 | 0.82 | 1.00 |
+| goto | 270 | 0.82 | 0.99 |
+| spin | 120 | 0.86 | 0.86 |
+| status | 210 | 0.78 | 0.81 |
+| scan | 180 | 0.94 | 0.64 |
+| forget | 150 | 0.96 | 0.77 |
+| memory | 240 | 0.84 | 0.96 |
+| recall | 90 | 0.72 | 0.87 |
+| unknown | 630 | 0.90 | 0.82 |
+| **all** | **3090** | | **accuracy 0.887** |
 
-Confusion matrix (classifier only, before the threshold):
+Confusion matrix (classifier only, before thresholds):
 
-| true \ predicted | fwd | back | left | right | around | stop | goto | spin | status | unk |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **fwd** | 178 | 1 | · | · | · | · | · | · | · | 31 |
-| **back** | 4 | 295 | · | · | · | · | · | · | · | 1 |
-| **left** | · | · | 118 | · | 1 | · | · | · | · | 1 |
-| **right** | · | · | 2 | 208 | · | · | · | · | · | · |
-| **around** | · | · | · | · | 149 | · | 1 | · | · | · |
-| **stop** | · | · | · | · | · | 150 | · | · | · | · |
-| **goto** | 2 | · | · | · | · | · | 208 | · | · | · |
-| **spin** | · | · | · | · | · | · | · | 118 | · | 2 |
-| **status** | · | · | · | · | · | · | · | · | 116 | 94 |
-| **unk** | 31 | 24 | · | 3 | 8 | 3 | 17 | 15 | 17 | 452 |
+| true \ predicted | fwd | back | left | right | around | stop | goto | spin | status | scan | forget | mem | recall | unk |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **fwd** | 198 | 2 | 1 | · | · | · | · | · | · | · | · | · | · | 9 |
+| **back** | · | 319 | · | · | · | 1 | 2 | · | · | · | · | · | 29 | 9 |
+| **left** | · | · | 120 | · | · | · | · | · | · | · | · | · | · | · |
+| **right** | · | · | 1 | 208 | · | · | · | · | · | · | · | · | · | 1 |
+| **around** | · | · | · | · | 150 | · | · | · | · | · | · | · | · | · |
+| **stop** | · | · | · | · | · | 150 | · | · | · | · | · | · | · | · |
+| **goto** | 1 | 1 | · | · | · | · | 266 | 1 | · | · | · | · | 1 | · |
+| **spin** | · | · | · | · | · | · | · | 103 | · | · | · | · | · | 17 |
+| **status** | · | · | · | · | · | · | · | · | 171 | · | · | 26 | · | 13 |
+| **scan** | · | · | · | · | 3 | · | 21 | · | 28 | 116 | 3 | 3 | · | 6 |
+| **forget** | · | · | · | · | · | 30 | · | 1 | · | 2 | 116 | 1 | · | · |
+| **mem** | · | · | · | · | · | · | · | · | 3 | 3 | 1 | 230 | · | 3 |
+| **recall** | · | 2 | · | · | · | · | 10 | · | · | · | · | · | 78 | · |
+| **unk** | 2 | 8 | 9 | 8 | 14 | 1 | 24 | 15 | 16 | 3 | 1 | 14 | · | 515 |
 
-After the threshold, on the same set: **58.5% correct command, 1.3% wrong command, 40% rejected**
-(LED no, "say it again"). The model is deliberately cautious on new phrasings. Most misses are
+After the threshold, on the same set: **59.1% correct command, 2.2% wrong command, 39% rejected**
+(LED no, "say it again"). Most wrong commands are safe ones: "start fresh" (forget) heard as stop, goto/recall swaps (same
+object, live search vs map)
+or chatter read as `spin`. The model is deliberately cautious on new phrasings: most misses are
 status/unknown phrasings it has never seen, and they are rejected, not acted on.
 
 | Test | Result |
 |---|---|
-| Hand-written realistic whisper transcripts (`intent/data/realistic.tsv`, not used in training) | **107/109** exact, **0 wrong motions** (the 2 misses are safe rejections) |
+| Hand-written realistic whisper transcripts (`intent/data/realistic.tsv`, not used in training) | **112/114** exact, **0 wrong motions** (both misses are safe rejections: "go bag" 0.51, "where is the exit" 0.34) |
 | **Stop recall** (every stop sentence, generated + hand-written) | **1131/1131 = 100%** |
-| Python ↔ C parity (2863 sentences incl. fuzz, wake required and not) | **2863/2863 identical**, both modes |
-| Decision latency (normalise + safety + classifier + slots) | **C 1.8 µs**, Python 48 µs per sentence (M4 Pro). Pi 5 estimate ~5–10 µs |
+| Python ↔ C parity (3951 sentences incl. fuzz + regressions, wake required and not) | **3951/3951 identical**, both modes |
+| Decision latency (normalise + safety + classifier + slots) | **C 2.5 µs**, Python 63 µs per sentence (M4 Pro). Pi 5 estimate ~5–10 µs |
 
 ### End to end: speech → whisper → intent → real `tars_motor` (Mac, `make -C iter2-autonomy/voice e2e`)
 
@@ -186,9 +231,16 @@ talk button.**
 | model load / peak RAM | 30 ms / 120 MB RSS (measured) | < 1 s / ~120 MB (estimate) |
 
 `audio_ctx` (the encoder window) is sized to the segment, with a minimum of 512. That's about 3×
-faster than whisper's default 30 s window. Below about 384, tiny.en starts repeating the sentence. A
-small C filter (`stt_dedupe`) also cuts the "TARS, turn. TARS, turn. …" loops whisper produces on noisy
-audio. **Measure on the Pi:** the `[heard]` log line has `stt=…ms` for every segment.
+faster than whisper's default 30 s window. Below about 384, tiny.en starts repeating the sentence.
+tiny.en can still loop ("Tars, turn left, turn left, turn left, …"), which turns a clean command into a
+rejection. Two fixes in `src/stt.c`: whisper's **temperature fallback** (`temperature_inc 0.2`, entropy
+check 2.4) re-decodes only a decode that looks like a loop, and the **`stt_dedupe` filter** drops repeated
+sentences and collapses a 1–6-word run repeated back to back to one copy. The filter only deletes copies,
+so a stop word can't vanish (the old filter cut everything after the first repeated sentence, so
+"Turn left. Turn left. Stop!" lost the stop). On 1140 `say` clips (`realistic.tsv`, 5 voices, fast/slow
+speech, white noise 15 dB, babble 10 dB; Mac, load 6–10): loops **32 → 0**, correct 982 → 986, wrong
+motions 4 → 4, stops caught 177 → 179 of 210, whisper time +3%. Test: `make test-stt`.
+**Measure on the Pi:** the `[heard]` log line has `stt=…ms` for every segment.
 
 `tars_voice` runs at normal priority, and whisper never touches `tars_motor`'s SCHED_RR loop.
 If the Pi is too slow with YOLO running, try `threads = 3`, or `get_model.sh --base` for accuracy
@@ -205,7 +257,11 @@ If the Pi is too slow with YOLO running, try `threads = 3`, or `get_model.sh --b
 - **VAD noise floor:** minimum statistics (the quietest 20 ms frame of the last 1.5 s), so it follows
   fan and crowd noise. A fixed floor deadlocked in steady noise. Segments: ≥150 ms of speech (a short
   "Stop!"), ≤3 s, 300 ms pre-roll.
-- **Bare fragments are rejected:** "TARS, turn." / "go to" → LED no, never a 180° turn (tested).
+- **Bare fragments are rejected:** "TARS, turn." / "move it" / "rotate" / "go to" → LED no, never a 180°
+  turn. A rule (`intent_is_bare`), not the model: only verbs with no default direction (turn/rotate/move)
+  plus fillers. Bare "TARS, go!" still means forward. Tested in `test_intent.py` (regressions section).
+- **"one" is a word, not 1°:** "the left one" / "that one" aren't amounts, and a bare turn amount under 10
+  ("turn left two") gives the default 30°. "five degrees" still gives 5°.
 - **Link handling:** `tars_motor` and the go-to controller each reconnect every 1–2 s. `S` and
   `CANCEL` get one immediate retry. If the go-to controller is down, stops still reach `tars_motor`
   first. If `tars_voice` dies, `start_voice.sh` restarts it (1→10 s backoff), and `tars_motor`'s
@@ -227,6 +283,7 @@ If the Pi is too slow with YOLO running, try `threads = 3`, or `get_model.sh --b
 | `qnx/start_voice.sh`, `voice.conf` | supervisor/boot script, config |
 | `cmake/qnx-aarch64.cmake` | whisper.cpp cross-compile toolchain (qcc, Cortex-A76 `armv8.2-a+dotprod+fp16`) |
 | `tests/test_intent.py`, `tests/test_e2e.py` | classifier tests; end-to-end speech tests |
+| `tests/test_stt.py`, `tests/test_goto_link.py` | repeat-loop filter; voice moves vs the real goto + `tars_motor` |
 
 ## Not tested yet (be honest at the demo)
 

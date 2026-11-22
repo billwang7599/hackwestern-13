@@ -40,7 +40,9 @@ iPhone LiDAR/ARKit ──LDR1 packets (pose + world points), TCP/UDP 127.0.0.1:5
 
 ```
 GOTO <words>    -> OK goto trash can | ERR unknown object '...' (robot beeps 3)
-CANCEL|STOP|S   -> OK                 (S goes to tars_motor first, even when idle)
+STOP|S          -> OK                 (S goes to tars_motor first, even when idle)
+CANCEL          -> OK                 (S to tars_motor first only if a GOTO is running: an idle
+                                       CANCEL must not abort the manual MOVE/TURN voice sends next)
 STATUS          -> OK state=approach target=trash_can result=running seen=1 bearing=-3.2 h=0.31 searched=0 fps=7.9 ...
 OBJECTS         -> OK trash can,chair,person,...
 RESOLVE <words> -> OK trash can | ERR unknown object
@@ -69,7 +71,7 @@ PING            -> OK PONG
 `goto` remembers where it has seen things, so the next `GOTO` turns straight at the object instead of searching 30° at a time.
 
 - **Pose.** There are no encoders, but the 28BYJ-48 wheels move what they're told to. `tars_motor` integrates the motion that actually ran: the slewed `D` output every tick, plus each `MOVE`/`TURN` when the Uno reports `DONE`/`ABORT` with the amount done. That includes WASD teleop and voice moves. It's in `STATUS` as `pose=x,y,hdg pose_epoch=` and in `POSE`. Axes: x forward from where `tars_motor` started, y right, hdg + = clockwise. `goto` polls it at 4 Hz, even when idle. **Drift is unknown**: skipped steps, slip and being picked up are invisible to it.
-- **What's stored.** Every detection frame updates the memory, for every label, not just the target (`memory_min_conf` 0.40). Each entry is an **instance**: `label#id`, world x/y, the world bearing of the last sighting, an estimated distance, conf, times seen, last seen (wall clock), and a status of **fresh / stale / gone**. A sighting merges into an instance of the same label if it's within `memory_merge_mm` (500), or on the same ray within the range noise. Otherwise it becomes a new instance (`trash can#2`). Two boxes of one label in one frame are two instances. Nothing is remembered while an exact move runs or the robot is spinning (the pose lags then).
+- **What's stored.** Every detection frame updates the memory, for every label, not just the target (`memory_min_conf` 0.40). Each entry is an **instance**: `label#id`, world x/y, the world bearing of the last sighting, an estimated distance, conf, times seen, last seen (wall clock), and a status of **fresh / stale / gone**. A sighting merges into an instance of the same label if it's within `memory_merge_mm` (500), or on the same ray within the range noise. With a fresh ARKit pose and an instance that has a map position, that test runs in the **map** (`navw`), not on the dead-reckoned x/y (on a DC car DR can be metres off, and a bin moved from A to B refreshed A); otherwise, and for arrivals, the DR x/y as before. Otherwise it becomes a new instance (`trash can#2`). Two boxes of one label in one frame are two instances. Nothing is remembered while an exact move runs or the robot is spinning (the pose lags then).
 - **Distance** comes from where the box bottom meets the floor, for a level camera at `cam_height_mm` (120). If the bottom edge is cut off by the frame, it falls back to box height vs `arrive_dist_mm`. In the sim it reads 2.1 m for a can 2.0 m away. **It hasn't been checked with the real C270 mount.**
 - **GOTO with memory.** It picks the best usable instance: fresh before stale, then nearest. It skips gone instances and anything older than `memory_max_age_s` (30 min). It does one exact `TURN` to the instance's bearing from the current pose, then LOOKs. If it sees the target, it aligns and approaches as usual. If not, it optionally does `MOVE` up to `memory_drive_mm` toward the spot (default **0 = off**), then marks the instance (fresh → stale → gone), tries the next instance (up to `memory_tries`), and falls back to the normal 360° search starting toward the remembered side. Arriving rewrites the instance's position from 0.55 m in front of the robot.
 - **Saved** atomically (`.tmp` + fsync + rename) to `memory_path` (default `memory.txt` next to `goto.conf`, or `-M file`, or `-` for RAM only), at most every `memory_save_s` (2 s) when something changed, and on exit. It's loaded at startup. The file is text (`v 2`, one `pose` line, `inst` lines), and bad lines are skipped.
@@ -100,9 +102,71 @@ The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. Whe
   - Line clear (or no vantage) → **CHECK_OTHERS**: fresh → stale → gone, next same-label instance.
   - None left → **NEXT_CANDIDATE** → 360° search.
 - **Guard hiccup during a search / align / memory TURN** (aborted with `lidar_guard`, or refused with `guard_*`): tars_motor allows a pivot under a fresh BLOCKED, so this is a guard that went stale for a moment. → `S`, `EVENT guard_stop`, LOOK again after `nav_guard_wait_s` and carry on (the interrupted search step doesn't count toward the 360°). Shares the `nav_max_replans` budget → `failed:blocked`. Before, the whole GOTO ended `failed:turn_lidar_guard`.
-- **APPROACH** is the visual servo as before, but drives are **leased**: `DL <guard_epoch> l r` (epoch from `STATUS`, fixed per leg). A guard denial bumps the epoch, so the leg ends (`S`) and a new one starts only after a fresh LOOK. An old drive never resumes after the guard clears. If the guard stops us while the target is centred, tracked and at least half the arrive height, that's **arrived**: lidar_guard's ~0.6 m stop zone and our ~0.55 m docking distance overlap.
+- **APPROACH** is the visual servo as before, but drives are **leased**: `DL <guard_epoch> l r` (epoch from `STATUS`, fixed per leg). A guard denial bumps the epoch, so the leg ends (`S`) and a new one starts only after a fresh LOOK. An old drive never resumes after the guard clears. If the guard stops us while the target is centred, tracked and at least half the arrive height, **and the reason is a fresh `guard_blocked`** (the ERR text, or `STATUS guard_reason=` behind an epoch change), that's **arrived**: lidar_guard's ~0.6 m stop zone and our ~0.55 m docking distance overlap. A `guard_stale` / `guard_missing` / `guard_invalid` (or already `clear`) stop says nothing about what's ahead: `S`, LOOK again after `nav_guard_wait_s`, approach again, sharing the `nav_max_replans` budget → `failed:blocked` (it once counted as docked short of the bin in the visual-only full-stack sim). A server without `guard_reason=` keeps the old rule.
 - **Pose rule** (nav.h): ARKit while LDR1 packets say tracking + heading OK and the last one is < `nav_pose_fresh_s` (0.5 s) old. Otherwise dead reckoning: `tars_motor` STATUS `pose=` → `nav_note_dr(-y, x, -hdg)` in metres/radians, carried into the ARKit frame from the last tracked moment. Stale/none → no map driving.
 - **Stop wins**: `CANCEL`, or any `S` (the `stops=` counter), from any state including mid-leg and PLAN wait. Tip/bump/watchdog/guard live in `tars_motor` underneath all of it.
+
+### Car size, the guard's box and getting unstuck
+
+**One source of truth.** `goto.conf` holds the car's size: `car_length_m`, `car_width_m`,
+`safety_margin_m`, `guard_stop_m`. goto derives the nav inflation radius (half the diagonal + margin),
+the guard corridor half-width (width / 2 + margin) and the stop distance, and prints them at startup,
+in `NAV` (`robot_radius= guard_half_width= guard_stop= blocked_cells=`) and in `NAV SNAPSHOT`.
+`goto -c goto.conf --guard-flags` prints the lidar_guard flags that match, e.g.
+`--half-width 0.167 --stop-distance 0.300` for the SM11 guess (0.20 x 0.175 m, margin 0.08, stop 0.30).
+`iter2-autonomy/dashboard/service.py` passes them to `lidar_guard`. `car_* = 0` keeps the legacy
+0.35 / 0.45 / 0.6 (lidar_guard's own defaults). The SM11 values are guesses from a photo: measure the car.
+
+**The planner never plans a leg the guard would stop** (`nav_guard_plan = 1`). A* only takes a step in a
+grid direction if lidar_guard's box (stop distance x half-width, inside the phone's 60° cone, half a
+cell of slack) holds no mapped obstacle. Obstacles within 0.35 m of an object goal don't count:
+stopping in front of the target is docking. If the box leaves no route at all, the old plan
+(inflation only) is used and the event says `route ... relaxed`. A route that passed the check is
+re-planned the moment the map shows something new in its box. `STATUS` counts
+`guard_refusals=` (ERR when asked) and `guard_aborts=` (stopped while running) with a fresh
+guard_blocked on goto's own motions. On a known map both must be 0 (full-stack `check_no_refusals`).
+`guard_stops_other=` counts stale/missing guard stops (a sensor timing hiccup, not the planner).
+
+**Stuck recovery: backtracking** (`nav_backtrack = 1`). goto keeps a breadcrumb trail of where it drove
+(every ~0.1 m and at each leg start). "Stuck" means: a fresh guard_blocked refused or stopped a forward
+leg (its zone's far edge is then marked blocked for `nav_block_s`), the re-plan gives the same first leg
+again, two TURNs in a row are stopped by the guard, or there's no route. Each stuck event climbs one
+rung, and a finished path leg resets the ladder: (a) reverse ~0.25 m along the trail, then re-plan;
+(b) reverse to the previous leg start; (c) reverse along the rest of the trail; (d) the old wait,
+re-plan and `failed:blocked`. Reverses re-aim at each trail point (TURN so the back faces it, then
+`MOVE -mm` at speed 0.5). tars_motor allows a reverse MOVE under a fresh guard_blocked (*pending
+Andrew*). S, CANCEL, ✋, bump and tip stop it like any move. EVENT `backtrack <a|b|c> <mm>`.
+
+**Before backtracking: re-plan in place** (`nav_replan_here = 1`, default; needs `nav_backtrack`). When
+the guard stops a forward path leg, goto first marks the zone, then builds a Dijkstra cost-to-go field
+from the goal (`nav_field_build`: same footprint, temp marks, guard box and unknown-floor rules as A*).
+It ranks straight legs 0.5-1.0 m long in 24 headings from where the robot stands by leg cost +
+cost-to-go + turn cost (`nav_here_turn_cost`, metres per 90 deg, default 0.3). Headings within 20 deg of
+a refused one are skipped. It takes the cheapest legal leg: a pivot, then a forward MOVE, no reversing.
+The rest of the route is steepest descent on the field. If that leg is stopped too, it marks more
+cells and takes the next cheapest. Limits: 3 tries per stuck spot (reset by a finished path MOVE), 8
+per GOTO, and nothing over max(2x, +1 m) the refused route. Past those limits the ladder above runs
+unchanged. EVENT `replan_here <obj> #id <try> <turn deg> <leg mm> <cost m>` / `replan_here_no <obj> #id
+<why>` (why: tries, goto_cap, no_goal, no_field, no_leg, too_costly, no_descent). STATUS `replans_here=`.
+
+**Not there means seen-not-there.** A guard stop on a route or detour leg is never "not there": a failed
+re-plan to a vantage cell tries another stand-off cell or the approach ring first. A LOOK that fails
+while the map says a wall hides the spot reports `occluded` and leaves the memory alone. A search spin
+only starts from a cell with line of sight to the remembered spot, else goto first goes to a stand-off
+cell that has one (`standoff_search`).
+
+**No route over seen floor: optimistic planning** (`nav_optimistic = 1`). A* first plans over observed
+floor only. If that fails (the way in is round a wall's end the phone hasn't seen: bench
+`pocket_mouth`), it plans again with UNKNOWN floor passable at `1 + nav_unknown_penalty` times the
+cost, inflating only known walls. Such a route (`route ... optimistic`) is driven in legs of at most
+`nav_unknown_leg_mm` wherever they cross unseen floor. Whenever the LiDAR maps a wall where the
+footprint would go, the robot stops and re-plans (`blocked:map`, its own cap `nav_max_opt_replans`
+-> `failed:replan_cap`). Total driving is capped (`nav_travel_cap_m`, default 3 x the longest optimistic
+estimate this GOTO (driven so far + route left) + 2 m -> `failed:travel_cap`). If there's no route even through unknown floor, known walls
+enclose the spot: `failed:unreachable`, with no spinning and no driving. A search spin never starts
+where a mapped wall hides the remembered spot: it goes to a stand-off cell with a view, or to the
+spot itself, first (`failed:no_line_of_sight` if neither is possible). Guard stops on optimistic legs
+go through the same backtrack and re-plan path as above.
 
 ### Assumptions (made without asking; change them here if wrong)
 
@@ -111,13 +175,13 @@ The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. Whe
 3. **Pose freshness 0.5 s** (`nav_pose_fresh_s`), not the 150 ms in the design doc: LDR1 is ~20 Hz over USB/iproxy and 150 ms would flap. Tune on the robot.
 4. **Robot footprint is free**: before each plan, the 9×9 cells under the robot are marked FREE (never over OCC). Without it, A* could never start, because the phone doesn't see the floor under or beside itself.
 5. **Reveal + explore** (above) is our frontier-lite. Unknown stays blocked for A*, exactly as `mapping.py` (radius 0.35 m kept, per the lead).
-6. **Guard stop at the target = docked** (see APPROACH). The approach ring (0.6–0.85 m) sits at the edge of lidar_guard's stop zone, so a face TURN refused by the guard goes to LOOK.
+6. **Fresh guard_blocked at the target = docked** (see APPROACH); a stale/missing/invalid guard is a retry, never an arrival. The approach ring (0.6–0.85 m) sits at the edge of lidar_guard's stop zone, so a face TURN refused by the guard goes to LOOK.
 7. **tars_motor allows an in-place `TURN` while the guard reports a fresh `guard_blocked`** (not stale/missing/invalid). `D`/`DL`/`MOVE` stay refused. The guard watches a forward corridor only, so a pivot isn't what it guards. Without this, a robot facing a wall inside the zone could never turn away (found in the full-stack sim). The pivot is limited: speed ≤ 0.40 (clamped), |deg| ≤ 180 (`ERR guard_blocked pivot>180`, handled like any guard refusal), and a running TURN that's faster or longer aborts when the guard turns BLOCKED. So `goto` sends every TURN at `search_speed = 0.40` (was 1.0; on the DC car that's the Uno's slow turn at `deg_s_slow`, ~60°/s default guess, instead of D 1) and its turns are already shortest-way (≤ 180). The sweep beside/behind the robot is still unguarded and relies on the 0.35 m inflation; measure the SM11 + phone-mount swing radius on the floor. **This changes the safety floor: Andrew still needs to sign off.**
 8. **Exact moves need a keepalive** on Andrew's main (the 500 ms deadman aborts MOVE/TURN): `goto` PINGs at 10 Hz while it waits on a move, and `tars_voice` has a keepalive thread for voice moves.
 9. **MEMORY SAY** is one line, nearest first, at most 4 objects named ("and N more"), gone ones left out, directions relative to the current heading (ahead / ahead on my left / to my right / behind me …). Voice beeps `min(n, 4)` times (`LED no` for none) and sends `SAY <sentence>` (≤ 300 chars) to the phone on 5573. On a stop it sends the urgent JSON "Stopping." **after** `S` and `CANCEL`.
 10. Memory file gains `navw <id> <x> <z> <label>` lines (map position). Old files load unchanged; old loaders skip the new lines as bad lines.
 11. The full-stack sim speeds the stub up 4× (`WHEELCAL 260 400`): same turn rate, 4× linear speed. Not physical.
-12. **DC smart car (Kuman SM11):** `TURN`/`MOVE` are timed, not exact, and `tars_motor`'s POSE drifts. Nothing in goto changed: it re-plans from the iPhone pose after every leg. `tests/test_dc_car.py` (in `make test`) and `make test-fullstack-dc` check it with ±25% MOVE/TURN error + 15°/m drift at 150 mm/s. Known gaps: (a) with TURN really doing < ~85%, the 12 × 30° search leaves a blind wedge (calibrate `dc-spin`; or raise `search_max_deg` to ~420); (b) object memory merges sightings by the dead-reckoned x/y, so on a DC car a moved object can refresh its old entry instead of downgrading it. Merge by `navw` when both sides have one (goto_core.c).
+12. **DC smart car (Kuman SM11):** `TURN`/`MOVE` are timed, not exact, and `tars_motor`'s POSE drifts. Nothing in goto changed: it re-plans from the iPhone pose after every leg. `tests/test_dc_car.py` (in `make test`) and `make test-fullstack-dc` check it with ±25% MOVE/TURN error + 15°/m drift at 150 mm/s. Known gaps: (a) with TURN really doing < ~85%, the 12 × 30° search leaves a blind wedge (calibrate `dc-spin`; or raise `search_max_deg` to ~420); (b) fixed: object memory used to merge sightings by the dead-reckoned x/y, so a moved object refreshed its old entry; now it matches by map position (`navw`) whenever there's a fresh ARKit pose and the instance has one (`test_memory_merge_by_map`).
 
 ## Run order on the Pi
 
@@ -127,6 +191,45 @@ The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. Whe
 ./detect --camera camapi:1 --model models/yolo_world.onnx --labels models/labels.txt &   # 3. eyes
 printf 'GOTO trash can\n' | nc 127.0.0.1 5570                             # or the voice app
 ```
+
+### The demo, one command (everything real or nothing)
+
+```sh
+TARS_DEMO=1 TARS_MOTOR_BACKEND=uno TARS_MOTOR_DEVICE=/dev/<uno> TARS_BENCH_TOKEN=<12+ chars> \
+  python3 iter2-autonomy/dashboard/service.py start
+# laptop browser: http://<pi-ip>:8770/?token=<token>   (the live view)
+```
+
+`TARS_DEMO=1` turns on autonomy (`TARS_ENABLE_GOTO=1`), YOLO on the phone camera, voice and the live view.
+It **refuses to start** if the motors would be the stub, or if `detect`, the YOLO model, `tars_voice` or the
+token is missing, and lists what to fix. It also starts `goto` with no remembered objects: an old
+`memory.txt` from testing is moved to `memory.txt.before-demo-<time>`, not deleted. Test:
+`python3 iter2-autonomy/dashboard/test_demo_preflight.py`.
+
+### Real robot mode: what replaces each sim part
+
+`bench/run_sim.py` fakes the car, the phone and YOLO. On the Pi, `service.py` runs the real ones:
+
+| Sim (laptop) | Robot (Pi, `TARS_ENABLE_GOTO=1 python3 iter2-autonomy/dashboard/service.py start`) |
+|---|---|
+| virtual SM11 (`bench/car/vuno`) | the Uno: `TARS_MOTOR_BACKEND=uno TARS_MOTOR_DEVICE=/dev/...` |
+| `worldsim.py` guard verdicts → `tars_motor` 5568 | `lidar_guard` on the phone's LiDAR (5562) |
+| `worldsim.py` LDR1 pose + depth → `goto` 5572 | `lidar_guard --nav-port 5572` tees the phone's packets |
+| `worldsim.py` YOLO JSON → `goto` 5571 | **`detect --camera broker:5566`**: YOLO-World on the iPhone camera, via Andrew's `rgb_broker.py` (the YOLOX worker is turned off, per the CPU table in `docs/ARCHITECTURE.md`; `TARS_KEEP_YOLOX=1` keeps it) |
+| `tars_voice_host`, text box | `tars_voice` from `TARS_VOICE_DIR` with `TARS_ENABLE_VOICE=1` (AirPods via the phone, 5577) |
+| bench `--target sim` | `mission_relay` (started when `MISSION_KEY` is set), laptop: `bench.py --target pi --relay <pi-ip>` |
+
+The phone sends its camera in **sensor orientation** (landscape, ~640 px wide, ~5 fps). `detect` turns each
+frame upright with `--rotate` (`TARS_DETECT_ROTATE`, default 270 = a quarter turn counter-clockwise, matching
+the app's own `.left` preview). **Check it once on the Pi** before the first GOTO:
+
+```sh
+build/detect --camera broker --nomodel --frames 1 --rotate 270 --save-frame /tmp/up.ppm --no-udp
+```
+
+Open `/tmp/up.ppm` and make sure the room is the right way up. If it isn't, try 90. Also set `hfov_deg` in the
+**Pi's** `goto.conf` (the repo copy keeps the C270's 60 for the tests) to the upright frame's horizontal field
+of view. That isn't measured yet. Put an object at a known bearing and compare it with `goto STATUS`.
 
 ## Build
 
@@ -138,6 +241,11 @@ make -C iter2-autonomy/goto deploy PI_HOST=qnxuser@<pi-ip>
 ```
 
 `goto` uses only libc, BSD sockets (`-lsocket`) and `-lm`. `detect` also needs `-lonnxruntime` and `-lcamapi`.
+
+**On the Pi itself** (Andrew's route, no SDP): `sh iter2-autonomy/edge-ai/setup-qnx.sh` once (QNX's ONNX
+Runtime 1.24.4 + libjpeg-turbo packages), then `sh iter2-autonomy/goto/build-native.sh` builds `goto`,
+`loopback_bind.so` and `detect` (`-DHAVE_ORT -DHAVE_JPEG`: the iPhone broker source, no camapi). Copy
+`models/yolo_world.onnx` + `models/labels.txt` from the laptop (`get_model.sh`) into `iter2-autonomy/goto/models/`.
 
 ### Model (laptop)
 

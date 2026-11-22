@@ -18,6 +18,8 @@ struct MotionUSBApp: App {
     @StateObject private var camera = CameraServer()
     @StateObject private var pi = PiStatusServer()
     @StateObject private var speech = SpeechLink()
+    @StateObject private var mic = PhoneMic()
+    @AppStorage("robotMic") private var robotMic = false
     @State private var inspectionExpanded = false
     @State private var activeTab = isInspectionFixture && ProcessInfo.processInfo.arguments.contains("--map") ? "map" : "camera"
 
@@ -124,6 +126,7 @@ struct MotionUSBApp: App {
                     if !speech.lastSpoken.isEmpty {
                         Label(speech.lastSpoken, systemImage: "speaker.wave.2.fill").lineLimit(2)
                     }
+                    if mic.enabled || !mic.warning.isEmpty { MicStatusView(mic: mic) }
                     Text(camera.roomTagStatus).lineLimit(2)
                     if controls {
                         Text(camera.status)
@@ -134,6 +137,9 @@ struct MotionUSBApp: App {
                                         assumed ? "Mount estimate" : "Above floor", rgb.doubleValue * 100, lidar.doubleValue * 100))
                         }
                         Toggle("Speak actions", isOn: $speakActions)
+                        Toggle("Robot mic (AirPods)", isOn: Binding(get: { mic.enabled },
+                                                                     set: { robotMic = $0; mic.setEnabled($0) }))
+                            .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. TARS replies from the phone speaker.")
                         ManualDrivePanel(pi: pi)
                         Button("Reset scan") { camera.resetMap() }
                         ForEach(["start","stop"], id: \.self) { op in
@@ -184,7 +190,9 @@ struct MotionUSBApp: App {
                 }.allowsHitTesting(false)
             }.statusBarHidden().background { safetyBackground }
             .onAppear {
+                speech.mic = mic
                 speech.start()
+                if robotMic && !isInspectionFixture { mic.setEnabled(true) }
                 #if DEBUG
                 if isInspectionFixture { camera.loadInspectionFixture(); pi.loadTelemetryFixture(); return }
                 #endif
@@ -198,10 +206,10 @@ struct MotionUSBApp: App {
                 if let result = value["ai"] as? [String: Any], result["live"] as? Bool == true { if stereoMode { stereo.result(result) } else { camera.applyQNXResult(result) } }
                 if let result = value["depth"] as? [String: Any], result["live"] as? Bool == true { camera.applyQNXDepthResult(result) }
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in speech.start(); if !isInspectionFixture { pi.start() } }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in speech.start(); if !isInspectionFixture { pi.start(); mic.resume() } }
             .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in if !isInspectionFixture { pi.checkFreshness() } }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
-                server.stop(); camera.stop(); stereo.stop(); pi.stop(); speech.stop()
+                server.stop(); camera.stop(); stereo.stop(); pi.stop(); speech.stop(); mic.suspend()
             }
         }
     }

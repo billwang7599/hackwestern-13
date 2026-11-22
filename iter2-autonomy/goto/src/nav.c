@@ -9,6 +9,10 @@
  *    the stale copies have a larger key and are skipped there, so the pop order
  *    of live entries is the same.
  */
+/* clock_gettime/CLOCK_MONOTONIC under strict -std=c99 on glibc (macOS and QNX expose them anyway) */
+#if defined(__linux__) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "nav.h"
 
 #include <math.h>
@@ -35,6 +39,20 @@ struct nav {
     unsigned char frame[N_CELLS], clear_hits[N_CELLS];
     uint64_t clear_since[N_CELLS], clear_last[N_CELLS];
     double robot_radius;
+    int    foot_cells;          /* > 0: footprint half-size in cells (nav_set_foot_cells); 0 = ceil(radius / res) */
+    /* guard-aware planning (nav_set_guard_box) */
+    double guard_stop, guard_half_w, guard_hfov;
+    int    guard_on;
+    int    guard_n[8];
+    int16_t guard_off[8][640][2];
+    unsigned short gmemo[N_CELLS];  /* bit k: dir k computed, bit 8+k: dir k blocked */
+    unsigned char tblock[N_CELLS];
+    int    n_tblock;
+    int    ign_on;
+    int    optimistic;
+    double opt_penalty;
+    int32_t prefix_b[STRIDE * STRIDE];   /* OCC / temporarily blocked counts (optimistic mode) */
+    double ign_x, ign_z, ign_r;
     int    have_floor;
     double floor_y;
 
@@ -56,6 +74,13 @@ struct nav {
     int32_t heap[N_CELLS];
     int32_t pos[N_CELLS];       /* index in heap, -1 = not in heap */
     int32_t route[N_CELLS];
+    /* cost-to-go field (nav_field_build): goto's in-place recovery after a guard stop */
+    double  fcost[N_CELLS];
+    int     field_ok;
+    /* heading-aware A* (nav_set_turn_cost; off = 0, plans match mapping.py) */
+    double  turn_c, start_c;    /* cells of route per 90 deg: a turn along the route / car heading vs first step */
+    double  start_yaw;
+    int     have_yaw;
 };
 
 /* ---- basics ------------------------------------------------------------ */
@@ -106,6 +131,8 @@ void nav_reset(nav_t *n)
     n->generation++;
     n->have_floor = 0;
     n->ark_ok = n->have_ark = n->have_dr = n->have_anchor = n->have_lost = 0;
+    memset(n->tblock, 0, sizeof n->tblock);
+    n->n_tblock = 0;
     n->version++;
 }
 
@@ -116,6 +143,148 @@ void nav_set_robot_radius(nav_t *n, float metres)
      * ceil(r / 0.1) would be 3 cells where mapping.py's 0.2 gives 2 */
     double r = round((double)metres * 1e6) / 1e6;
     if (n->robot_radius != r) { n->robot_radius = r; n->version++; }
+}
+
+float nav_robot_radius(const nav_t *n) { return n ? (float)n->robot_radius : (float)NAV_DEFAULT_ROBOT_RADIUS; }
+
+void nav_set_foot_cells(nav_t *n, int cells)
+{
+    if (!n || cells < 0 || cells > 10) return;
+    if (n->foot_cells != cells) { n->foot_cells = cells; n->version++; }
+}
+
+int nav_foot_cells(const nav_t *n)
+{
+    if (!n) return (int)ceil(NAV_DEFAULT_ROBOT_RADIUS / NAV_RES);
+    if (n->foot_cells > 0) return n->foot_cells;
+    return (int)ceil(n->robot_radius / NAV_RES);
+}
+
+/* the 8 A* directions, same order as the planner */
+static const int GDX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
+static const int GDZ[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+
+/* Offsets (cells) of lidar_guard's box from a cell centre along grid direction k, stretched by
+ * one step: an obstacle in any of them stops a robot driving that step. Half a cell of slack on
+ * every test (an obstacle is anywhere inside its cell). */
+static void guard_offsets(nav_t *n)
+{
+    const double m = 0.5 * NAV_RES;
+    double ta = n->guard_hfov >= 180 ? 1e9 : tan(n->guard_hfov / 2 * M_PI / 180.0);
+    for (int k = 0; k < 8; k++) {
+        double L = hypot(GDX[k], GDZ[k]), ux = GDX[k] / L, uz = GDZ[k] / L;
+        double reach = n->guard_stop + L * NAV_RES + m;
+        int R = (int)ceil(reach / NAV_RES) + 1, c = 0;
+        for (int i = -R; i <= R; i++)
+            for (int j = -R; j <= R; j++) {
+                double dx = i * NAV_RES, dz = j * NAV_RES;
+                double f = ux * dx + uz * dz, side = fabs(uz * dx - ux * dz);
+                if (f <= 0 || f > reach || side >= n->guard_half_w + m || side >= f * ta + m) continue;
+                if (c < 640) { n->guard_off[k][c][0] = (int16_t)i; n->guard_off[k][c][1] = (int16_t)j; c++; }
+            }
+        n->guard_n[k] = c;
+    }
+}
+
+void nav_set_guard_box(nav_t *n, float stop_m, float half_w, float hfov_deg)
+{
+    if (!n) return;
+    if (!isfinite(stop_m) || !isfinite(half_w) || !isfinite(hfov_deg) || stop_m <= 0 || half_w <= 0 ||
+        stop_m > 1.5f || half_w > 1.0f) {
+        n->guard_stop = 0; n->guard_on = 0; return;
+    }
+    n->guard_stop = round((double)stop_m * 1e6) / 1e6;
+    n->guard_half_w = round((double)half_w * 1e6) / 1e6;
+    n->guard_hfov = hfov_deg > 0 ? hfov_deg : 180;
+    n->guard_on = 1;
+    guard_offsets(n);
+    n->version++;
+}
+
+void nav_set_guard_active(nav_t *n, int on) { if (n) n->guard_on = on && n->guard_stop > 0; }
+int  nav_guard_active(const nav_t *n) { return n && n->guard_on; }
+
+static int blocked_idx(const nav_t *n, int idx) { return n->grid[idx] == NAV_OCC || n->tblock[idx]; }
+
+/* 1 if stepping from (x, z) in direction k keeps the guard's box clear */
+static int guard_step_ok(nav_t *n, int x, int z, int k)
+{
+    int idx = z * NAV_SIZE + x;
+    unsigned short g = n->gmemo[idx];
+    if (g & (1u << k)) return !(g & (1u << (8 + k)));
+    int ok = 1;
+    for (int i = 0; i < n->guard_n[k] && ok; i++) {
+        int cx = x + n->guard_off[k][i][0], cz = z + n->guard_off[k][i][1];
+        if (cx < 0 || cz < 0 || cx >= NAV_SIZE || cz >= NAV_SIZE) continue;
+        if (!blocked_idx(n, cz * NAV_SIZE + cx)) continue;
+        if (n->ign_on) {
+            double wx = NAV_ORIGIN_X + (cx + 0.5) * NAV_RES, wz = NAV_ORIGIN_Z + (cz + 0.5) * NAV_RES;
+            if (hypot(wx - n->ign_x, wz - n->ign_z) <= n->ign_r) continue;
+        }
+        ok = 0;
+    }
+    n->gmemo[idx] = (unsigned short)(g | (1u << k) | (ok ? 0 : 1u << (8 + k)));
+    return ok;
+}
+
+int nav_guard_clear(const nav_t *n, float x, float z, float yaw, float ix, float iz, float ignore_r)
+{
+    int cx, cz;
+    if (!n || n->guard_stop <= 0 || !nav_world_to_cell(x, z, &cx, &cz)) return 1;
+    const double m = 0.5 * NAV_RES;
+    double ta = n->guard_hfov >= 180 ? 1e9 : tan(n->guard_hfov / 2 * M_PI / 180.0);
+    double fx = sin(yaw), fz = cos(yaw);
+    int r = (int)ceil((n->guard_stop + m) / NAV_RES) + 1;
+    for (int i = -r; i <= r; i++)
+        for (int k = -r; k <= r; k++) {
+            int ax = cx + i, az = cz + k;
+            if (ax < 0 || az < 0 || ax >= NAV_SIZE || az >= NAV_SIZE || !blocked_idx(n, az * NAV_SIZE + ax)) continue;
+            double wx = NAV_ORIGIN_X + (ax + 0.5) * NAV_RES, wz = NAV_ORIGIN_Z + (az + 0.5) * NAV_RES;
+            if (ignore_r > 0 && hypot(wx - ix, wz - iz) <= ignore_r) continue;
+            double dx = wx - x, dz = wz - z, f = fx * dx + fz * dz, side = fabs(fz * dx - fx * dz);
+            if (f > -m && f <= n->guard_stop + m && side < n->guard_half_w + m && side < f * ta + m) return 0;
+        }
+    return 1;
+}
+
+void nav_temp_block(nav_t *n, float x, float z)
+{
+    int ix, iz;
+    if (!n || !nav_world_to_cell(x, z, &ix, &iz)) return;
+    int idx = iz * NAV_SIZE + ix;
+    if (!n->tblock[idx]) { n->tblock[idx] = 1; n->n_tblock++; n->version++; }
+}
+
+void nav_temp_clear(nav_t *n)
+{
+    if (!n || !n->n_tblock) return;
+    memset(n->tblock, 0, sizeof n->tblock);
+    n->n_tblock = 0;
+    n->version++;
+}
+
+int nav_temp_count(const nav_t *n) { return n ? n->n_tblock : 0; }
+
+void nav_set_optimistic(nav_t *n, int on, float penalty)
+{
+    if (!n) return;
+    n->optimistic = on != 0;
+    n->opt_penalty = isfinite(penalty) && penalty >= 0 ? penalty : 1.0;
+}
+int nav_optimistic(const nav_t *n) { return n && n->optimistic; }
+
+int nav_footprint_blocked(const nav_t *n, float x, float z)
+{
+    int cx, cz;
+    if (!n || !nav_world_to_cell(x, z, &cx, &cz)) return 1;
+    int r = nav_foot_cells(n);
+    for (int i = -r; i <= r; i++)
+        for (int k = -r; k <= r; k++) {
+            int ax = cx + i, az = cz + k;
+            if (ax < 0 || az < 0 || ax >= NAV_SIZE || az >= NAV_SIZE) return 1;
+            if (blocked_idx(n, az * NAV_SIZE + ax)) return 1;
+        }
+    return 0;
 }
 
 int nav_cell_at(const nav_t *n, int ix, int iz)
@@ -459,6 +628,81 @@ static int is_clear(const nav_t *n, int x, int z)
 static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, double ring_min, double ring_max,
                            nav_pt_t *out, int max_out);
 
+/* ---- heading-aware cost (nav_set_turn_cost) ---------------------------- */
+
+void nav_set_turn_cost(nav_t *n, float turn_m, float start_m, float yaw, int have_yaw)
+{
+    if (!n) return;
+    n->turn_c = isfinite(turn_m) && turn_m > 0 ? turn_m / NAV_RES : 0.0;
+    n->start_c = isfinite(start_m) && start_m > 0 ? start_m / NAV_RES : 0.0;
+    n->have_yaw = have_yaw && isfinite(yaw);
+    n->start_yaw = n->have_yaw ? yaw : 0.0;
+}
+
+int nav_turn_cost_on(const nav_t *n) { return n && (n->turn_c > 0 || (n->start_c > 0 && n->have_yaw)); }
+
+static double ang_diff_deg(double a, double b)        /* |a - b| in degrees, 0..180 (radians in) */
+{
+    double d = fmod(fabs(a - b) * 180.0 / M_PI, 360.0);
+    return d > 180.0 ? 360.0 - d : d;
+}
+
+/* extra cost (cells) of a step in direction (dx, dz) from cell cur, given how cur was reached */
+static double turn_extra(const nav_t *n, int cur, int start, int dx, int dz)
+{
+    double h = atan2((double)dx, (double)dz);             /* forward = (sin yaw, cos yaw) */
+    if (cur == start) return n->have_yaw ? n->start_c * ang_diff_deg(h, n->start_yaw) / 90.0 : 0.0;
+    int p = n->parent[cur];
+    if (p < 0 || n->turn_c <= 0) return 0.0;
+    int px = cur % NAV_SIZE - p % NAV_SIZE, pz = cur / NAV_SIZE - p / NAV_SIZE;
+    if (px == dx && pz == dz) return 0.0;
+    return n->turn_c * ang_diff_deg(h, atan2((double)px, (double)pz)) / 90.0;
+}
+
+/* n->clear[]: 1 = the robot's (2r+1)^2 footprint square is all observed FREE, 2 = (optimistic
+ * mode) no known obstacle in it but some unknown, 0 = blocked */
+static void build_clear(nav_t *n)
+{
+    /* footprint inflation: the (2r+1)^2 square must be all observed FREE */
+    int radius = nav_foot_cells(n);
+    memset(n->clear, 0, sizeof n->clear);
+    memset(n->prefix, 0, sizeof n->prefix);
+    for (int z = 0; z < NAV_SIZE; z++) {
+        int32_t row = 0;
+        for (int x = 0; x < NAV_SIZE; x++) {
+            row += n->grid[z * NAV_SIZE + x] == NAV_FREE && !n->tblock[z * NAV_SIZE + x];
+            n->prefix[(z + 1) * STRIDE + x + 1] = n->prefix[z * STRIDE + x + 1] + row;
+        }
+    }
+    int32_t required = (2 * radius + 1) * (2 * radius + 1);
+    int opt = n->optimistic;
+    if (opt) {                                  /* blocked-cell counts: only known obstacles inflate */
+        memset(n->prefix_b, 0, sizeof n->prefix_b);
+        for (int z = 0; z < NAV_SIZE; z++) {
+            int32_t row = 0;
+            for (int x = 0; x < NAV_SIZE; x++) {
+                row += blocked_idx(n, z * NAV_SIZE + x);
+                n->prefix_b[(z + 1) * STRIDE + x + 1] = n->prefix_b[z * STRIDE + x + 1] + row;
+            }
+        }
+    }
+    for (int z = radius; z < NAV_SIZE - radius; z++) {
+        int top = (z - radius) * STRIDE, bottom = (z + radius + 1) * STRIDE;
+        for (int x = radius; x < NAV_SIZE - radius; x++) {
+            int left = x - radius, right = x + radius + 1;
+            int32_t c = n->prefix[bottom + right] - n->prefix[top + right]
+                      - n->prefix[bottom + left] + n->prefix[top + left];
+            if (c == required) n->clear[z * NAV_SIZE + x] = 1;
+            else if (opt) {
+                int32_t b = n->prefix_b[bottom + right] - n->prefix_b[top + right]
+                          - n->prefix_b[bottom + left] + n->prefix_b[top + left];
+                if (b == 0) n->clear[z * NAV_SIZE + x] = 2;     /* no known obstacle, some unknown */
+            }
+        }
+    }
+}
+
+
 int nav_plan(nav_t *n, float sx, float sz, float tx, float tz, nav_pt_t *out, int max_out)
 {
     return nav_plan_ring_d(n, sx, sz, tx, tz, NAV_RING_MIN, NAV_RING_MAX, out, max_out);
@@ -481,27 +725,8 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
     int span = ring_max >= NAV_RING_MAX - 1e-5 ? RING_SPAN : (int)ceil(ring_max / NAV_RES) + 1;
     if (nav_count(n, NAV_FREE) == 0) return NAV_ERR_NO_MAP;
 
-    /* footprint inflation: the (2r+1)^2 square must be all observed FREE */
-    int radius = (int)ceil(n->robot_radius / NAV_RES);
-    memset(n->clear, 0, sizeof n->clear);
-    memset(n->prefix, 0, sizeof n->prefix);
-    for (int z = 0; z < NAV_SIZE; z++) {
-        int32_t row = 0;
-        for (int x = 0; x < NAV_SIZE; x++) {
-            row += n->grid[z * NAV_SIZE + x] == NAV_FREE;
-            n->prefix[(z + 1) * STRIDE + x + 1] = n->prefix[z * STRIDE + x + 1] + row;
-        }
-    }
-    int32_t required = (2 * radius + 1) * (2 * radius + 1);
-    for (int z = radius; z < NAV_SIZE - radius; z++) {
-        int top = (z - radius) * STRIDE, bottom = (z + radius + 1) * STRIDE;
-        for (int x = radius; x < NAV_SIZE - radius; x++) {
-            int left = x - radius, right = x + radius + 1;
-            int32_t c = n->prefix[bottom + right] - n->prefix[top + right]
-                      - n->prefix[bottom + left] + n->prefix[top + left];
-            if (c == required) n->clear[z * NAV_SIZE + x] = 1;
-        }
-    }
+    n->field_ok = 0;                            /* clear[] / gmemo are about to change */
+    build_clear(n);
 
     int s_x, s_z, t_x, t_z;
     if (!nav_world_to_cell(sx, sz, &s_x, &s_z) || !is_clear(n, s_x, s_z)) return NAV_ERR_START_BLOCKED;
@@ -522,7 +747,14 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
     if (!n_goals) return NAV_ERR_NO_GOAL;
 
     for (int i = 0; i < N_CELLS; i++) { n->g[i] = INFINITY; n->pos[i] = -1; n->parent[i] = -1; }
+    int guard = n->guard_on && n->guard_stop > 0;
+    if (guard) {
+        memset(n->gmemo, 0, sizeof n->gmemo);
+        n->ign_on = ring_min >= 0.3;          /* an object goal: stopping in front of it is docking */
+        n->ign_x = tx; n->ign_z = tz; n->ign_r = NAV_GUARD_IGNORE_R;
+    }
     int start = s_z * NAV_SIZE + s_x, size = 0, end = -1;
+    int turning = nav_turn_cost_on(n);
     n->g[start] = 0.0;
     n->f[start] = heuristic(start, t_x, t_z, span);
     n->heap[0] = start; n->pos[start] = 0; size = 1;
@@ -539,7 +771,10 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
             if (!is_clear(n, nx, nz)) continue;
             /* never cut diagonally between blocked or unknown cells */
             if (DX[k] && DZ[k] && (!is_clear(n, x + DX[k], z) || !is_clear(n, x, z + DZ[k]))) continue;
-            double ng = n->g[cur] + (DX[k] && DZ[k] ? sqrt(2.0) : 1.0);
+            if (guard && !guard_step_ok(n, x, z, k)) continue;
+            double ng = n->g[cur] + (DX[k] && DZ[k] ? sqrt(2.0) : 1.0) *
+                        (n->clear[nz * NAV_SIZE + nx] == 2 ? 1.0 + n->opt_penalty : 1.0);
+            if (turning) ng += turn_extra(n, cur, start, DX[k], DZ[k]);
             int nxt = nz * NAV_SIZE + nx;
             if (ng < n->g[nxt]) {
                 n->g[nxt] = ng;
@@ -580,4 +815,164 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
         if (pass == 0 && (corners > NAV_MAX_PATH || n_out > max_out)) return NAV_ERR_TOO_LONG;
     }
     return n_out;
+}
+
+/* ---- cost-to-go field (Dijkstra from the goal) -------------------------- */
+
+static const int FDX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
+static const int FDZ[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+
+/* the step from (x, z) in direction k, exactly as A* allows it; its cost, or -1 */
+static double field_step(nav_t *n, int x, int z, int k, int guard)
+{
+    int nx = x + FDX[k], nz = z + FDZ[k];
+    if (!is_clear(n, x, z) || !is_clear(n, nx, nz)) return -1;
+    if (FDX[k] && FDZ[k] && (!is_clear(n, x + FDX[k], z) || !is_clear(n, x, z + FDZ[k]))) return -1;
+    if (guard && !guard_step_ok(n, x, z, k)) return -1;
+    return (FDX[k] && FDZ[k] ? sqrt(2.0) : 1.0) * (n->clear[nz * NAV_SIZE + nx] == 2 ? 1.0 + n->opt_penalty : 1.0);
+}
+
+int nav_field_build(nav_t *n, float tx, float tz, float ring_min, float ring_max)
+{
+    if (!n || !isfinite(tx) || !isfinite(tz) || !isfinite(ring_min) || !isfinite(ring_max) || ring_min < 0 ||
+        ring_max < ring_min || ring_max > NAV_RING_MAX + 1e-5)
+        return NAV_ERR_ARG;
+    n->field_ok = 0;
+    if (nav_count(n, NAV_FREE) == 0) return NAV_ERR_NO_MAP;
+    int span = ring_max >= NAV_RING_MAX - 1e-5 ? RING_SPAN : (int)ceil(ring_max / NAV_RES) + 1;
+    build_clear(n);
+    int t_x, t_z;
+    if (!nav_world_to_cell(tx, tz, &t_x, &t_z)) return NAV_ERR_TARGET_OUTSIDE;
+    int guard = n->guard_on && n->guard_stop > 0;
+    if (guard) {
+        memset(n->gmemo, 0, sizeof n->gmemo);
+        n->ign_on = ring_min >= 0.3;
+        n->ign_x = tx; n->ign_z = tz; n->ign_r = NAV_GUARD_IGNORE_R;
+    }
+    for (int i = 0; i < N_CELLS; i++) { n->fcost[i] = INFINITY; n->g[i] = INFINITY; n->pos[i] = -1; }
+    int size = 0, n_goals = 0;
+    for (int dx = -span; dx <= span; dx++)
+        for (int dz = -span; dz <= span; dz++) {
+            int cx = t_x + dx, cz = t_z + dz;
+            double d = hypot(centre_x(cx) - (double)tx, centre_z(cz) - (double)tz);
+            if (d < ring_min || d > ring_max || !is_clear(n, cx, cz)) continue;
+            int c = cz * NAV_SIZE + cx;
+            n->g[c] = n->f[c] = 0.0;
+            n->heap[size] = c; n->pos[c] = size; size++;
+            sift_up(n, size - 1);
+            n_goals++;
+        }
+    if (!n_goals) return NAV_ERR_NO_GOAL;
+    int reached = 0;
+    while (size > 0) {
+        int cur = n->heap[0];
+        n->pos[cur] = -1;
+        if (--size > 0) { n->heap[0] = n->heap[size]; n->pos[n->heap[0]] = 0; sift_down(n, 0, size); }
+        n->fcost[cur] = n->g[cur];
+        reached++;
+        int x = cur % NAV_SIZE, z = cur / NAV_SIZE;
+        for (int k = 0; k < 8; k++) {                /* predecessors: p steps in direction k onto cur */
+            int px = x - FDX[k], pz = z - FDZ[k];
+            if (px < 0 || pz < 0 || px >= NAV_SIZE || pz >= NAV_SIZE) continue;
+            int p = pz * NAV_SIZE + px;
+            if (isfinite(n->fcost[p])) continue;     /* settled */
+            double c = field_step(n, px, pz, k, guard);
+            if (c < 0) continue;
+            double ng = n->g[cur] + c;
+            if (ng < n->g[p]) {
+                n->g[p] = n->f[p] = ng;
+                if (n->pos[p] < 0) { n->heap[size] = p; n->pos[p] = size; size++; }
+                sift_up(n, n->pos[p]);
+            }
+        }
+    }
+    n->field_ok = 1;
+    return reached;
+}
+
+double nav_field_cost(const nav_t *n, float x, float z)
+{
+    int cx, cz;
+    if (!n || !n->field_ok || !nav_world_to_cell(x, z, &cx, &cz)) return INFINITY;
+    return n->fcost[cz * NAV_SIZE + cx];
+}
+
+int nav_field_clear(const nav_t *n, float x, float z)
+{
+    int cx, cz;
+    if (!n || !n->field_ok || !nav_world_to_cell(x, z, &cx, &cz)) return 0;
+    return n->clear[cz * NAV_SIZE + cx];
+}
+
+int nav_field_path(nav_t *n, float sx, float sz, nav_pt_t *out, int max_out, int *unknown)
+{
+    int cx, cz;
+    if (unknown) *unknown = 0;
+    if (!n || !n->field_ok || (max_out > 0 && !out) || max_out < 0) return NAV_ERR_ARG;
+    if (!nav_world_to_cell(sx, sz, &cx, &cz)) return NAV_ERR_START_BLOCKED;
+    int cur = cz * NAV_SIZE + cx;
+    if (!isfinite(n->fcost[cur])) return NAV_ERR_NO_PATH;
+    int guard = n->guard_on && n->guard_stop > 0, len = 0;
+    n->route[len++] = cur;
+    while (n->fcost[cur] > 1e-9 && len < N_CELLS) {        /* steepest descent: an optimal route */
+        int x = cur % NAV_SIZE, z = cur / NAV_SIZE, best = -1;
+        double bv = n->fcost[cur] + 1e-6;
+        for (int k = 0; k < 8; k++) {
+            double c = field_step(n, x, z, k, guard);
+            if (c < 0) continue;
+            int nb = (z + FDZ[k]) * NAV_SIZE + x + FDX[k];
+            if (c + n->fcost[nb] <= bv) { bv = c + n->fcost[nb]; best = nb; }
+        }
+        if (best < 0) return NAV_ERR_NO_PATH;
+        if (unknown && n->clear[best] == 2) *unknown = 1;
+        n->route[len++] = cur = best;
+    }
+    int n_out = 0;
+    for (int i = 1; i < len; i++) {
+        int keep = i == len - 1;
+        if (!keep) {
+            int a = n->route[i - 1], b = n->route[i], c = n->route[i + 1];
+            keep = b % NAV_SIZE - a % NAV_SIZE != c % NAV_SIZE - b % NAV_SIZE ||
+                   b / NAV_SIZE - a / NAV_SIZE != c / NAV_SIZE - b / NAV_SIZE;
+        }
+        if (!keep) continue;
+        if (n_out >= max_out) return NAV_ERR_TOO_LONG;
+        out[n_out].x = (float)centre_x(n->route[i] % NAV_SIZE);
+        out[n_out].z = (float)centre_z(n->route[i] / NAV_SIZE);
+        n_out++;
+    }
+    return n_out;
+}
+
+/* ---- route cost (sticky re-planning) ------------------------------------ */
+
+double nav_route_cost(nav_t *n, float sx, float sz, const nav_pt_t *pts, int count)
+{
+    if (!n || count < 0 || (count > 0 && !pts) || !isfinite(sx) || !isfinite(sz)) return INFINITY;
+    n->field_ok = 0;                            /* clear[] is rebuilt */
+    build_clear(n);
+    double cost = 0, ax = sx, az = sz, prev_h = n->start_yaw;
+    int have_prev = n->have_yaw, first = 1, s_x = -1, s_z = -1;
+    nav_world_to_cell(sx, sz, &s_x, &s_z);
+    for (int i = 0; i < count; i++) {
+        double bx = pts[i].x, bz = pts[i].z, L = hypot(bx - ax, bz - az);
+        if (!isfinite(L)) return INFINITY;
+        if (L < 1e-6) continue;
+        double h = atan2(bx - ax, bz - az);
+        if (have_prev) cost += (first ? n->start_c : n->turn_c) * ang_diff_deg(h, prev_h) / 90.0;
+        /* every 0.05 m along the leg: the footprint must fit (as A* sees it); unknown costs extra */
+        int steps = (int)ceil(L / 0.05);
+        for (int k = 1; k <= steps; k++) {
+            double q = (double)k / steps;
+            int cx, cz;
+            if (!nav_world_to_cell((float)(ax + (bx - ax) * q), (float)(az + (bz - az) * q), &cx, &cz)) return INFINITY;
+            int c = n->clear[cz * NAV_SIZE + cx];
+            if (cx == s_x && cz == s_z && !c) c = 1;   /* the robot's own cell: plan_from_robot's business */
+            if (!c) return INFINITY;
+            cost += (L / steps) / NAV_RES * (c == 2 ? 1.0 + n->opt_penalty : 1.0);
+        }
+        prev_h = h; have_prev = 1; first = 0;
+        ax = bx; az = bz;
+    }
+    return cost;
 }

@@ -179,8 +179,8 @@ unsaved observations. Estimated geometry is not saved as reliable structure.
 
 Run `python3 iter2-autonomy/dashboard/service.py start` on the Pi. It detaches from SSH and
 needs no monitor or laptop afterward, but must be restarted after a Pi reboot.
-The phone remains USB-connected to the Pi. The seven phone TCP listeners (including the
-speech link on 5573) have no application authentication; the intended transport is local USB forwarding.
+The phone remains USB-connected to the Pi. The eight phone TCP listeners (including the
+speech link on 5573 and the robot mic on 5577) have no application authentication; the intended transport is local USB forwarding.
 
 ## Speech link (5573)
 
@@ -223,6 +223,65 @@ python3 iter2-autonomy/iphone/tools/say.py --hush
 policy straight out of `SpeechLink.swift` and runs 47 checks on the Mac.
 Not yet verified: speech on a real iPhone, the silent-switch behaviour, and the
 USB forward from the Pi.
+
+## Robot mic (5577, AirPods)
+
+The robot has no microphone. `PhoneMic.swift` makes the phone on the car its
+ear, through your AirPods: their mic goes to the Pi's `tars_voice` (whisper,
+"TARS" wake word, intent classifier, stop-first), exactly like a wired mic.
+
+**Turn it on:** pair the AirPods with the phone, open the app, tap the
+controls button (sliders icon) and switch on **Robot mic (AirPods)**. The
+first time, allow microphone access. The switch is remembered. On the Pi,
+`voice.conf` has `input = phone` (the default) and `service.py` forwards
+`127.0.0.1:5577` to the phone. Then say "TARS, go to the trash can".
+
+**Status line** (under the TARS caption): listening / muted (TARS talking) /
+interrupted, the input device (e.g. "Bill's AirPods Pro"), Pi linked or
+waiting, a level meter, and two switch times: `→spk` (mute to speaker ready)
+and `→mic` (end of TARS's speech to the first AirPods audio again). An orange
+line warns when the AirPods aren't connected (the phone's own mic is used
+then), on a call/Siri interruption, or if permission was denied.
+
+**Half duplex:** iOS keeps a Bluetooth headset's mic and output together, and
+forcing the phone speaker also switches the input to the phone mic. So while
+TARS speaks a `SAY`, the stream is muted (`M`), the reply plays from the phone
+speaker (`overrideOutputAudioPort(.speaker)`), then the AirPods route and the
+stream (`U`) come back. A multi-sentence reply stays muted throughout. A
+spoken "stop" during TARS's speech is not heard; ✋, the STOP button, the Uno
+button and the watchdog still work. When the robot mic is off, the speech link
+behaves as before (`.playback` session).
+
+**Wire format** (the phone listens, `tars_voice` dials it, like 5573; one Pi at
+a time, the newest connection wins; the Pi never writes back):
+
+| Bytes | Meaning |
+|---|---|
+| `MIC1 16000 1 s16le\n` | once per connection, then the current state (`U` or `M`) |
+| `A` len16LE payload | audio: 16 kHz mono s16le, len even, 2–8192 bytes (the app sends 20 ms = 640) |
+| `M` 0 0 / `U` 0 0 | mute (TARS talking, ignore audio) / unmute |
+| `K` 0 0 | keepalive, at least once a second when no audio flows |
+
+The Pi drops the link on anything else, or after 3 s with no packet, and
+redials (0.5–5 s backoff). Capture: `AVAudioEngine` input tap at the hardware
+rate → `AVAudioConverter` (downmix) → 16 kHz s16 → 20 ms packets; a linear
+resampler is the fallback if no converter can be made. If the link backs up,
+audio past ~2 s in flight is dropped (counted as `drop` in the status).
+Session: `.playAndRecord`, `.allowBluetoothHFP` + `.defaultToSpeaker` +
+`.duckOthers`, preferred input = Bluetooth HFP. Like the other listeners it
+stops when the app backgrounds and restarts when it becomes active.
+
+Without the phone: `python3 iter2-autonomy/iphone/tools/mic_stream.py cmd.wav`
+pretends to be the phone (WAV or raw stdin; on the Pi stop the 5577 iproxy
+first or use `--port`).
+
+`python3 iter2-autonomy/iphone/test_phone_mic.py` compiles the framing, the
+Pi-parser mirror, the PCM/resampler/level math and the half-duplex state
+machine straight out of `PhoneMic.swift` and runs 66 checks on the Mac, plus a
+byte-for-byte cross-check against the encoder the C parser test uses
+(`make -C iter2-autonomy/voice test-phone`). **Not yet verified:** anything on
+a real iPhone (AirPods HFP capture, the speaker switch and its timing, route
+changes, interruptions, permission prompt) and the 5577 USB forward on the Pi.
 
 ## Visual checks
 

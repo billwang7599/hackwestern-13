@@ -2,12 +2,14 @@
 // CPU) -> one JSON line per frame (iter2-autonomy/goto/DETECTIONS.md) over UDP to goto.
 //
 //   detect --camera camapi:1 --model models/yolo_world.onnx --labels models/labels.txt
+//   detect --camera broker --rotate 270 ...   (the mounted iPhone, via Andrew's rgb_broker 5566)
 //
 // Built two ways:
 //   with -DHAVE_ORT    real inference (ONNX Runtime C++ API; QNX port:
 //                      github.com/qnx-ports/onnxruntime, branch qnx-v1.23.2)
 //   without            --nomodel only: camera + JSON plumbing, empty dets
 // -DHAVE_CAMAPI adds the QNX Camera library source (camapi:N).
+// -DHAVE_JPEG adds the iPhone source (broker[:PORT], libjpeg).
 //
 // It runs at normal priority on purpose: heavy ML must never starve
 // tars_motor (SCHED_RR 30) or goto (SCHED_RR 20).
@@ -42,7 +44,11 @@ static void usage(const char *a0)
 {
     fprintf(stderr,
             "usage: %s [options]\n"
-            "  --camera SPEC     camapi[:N] (QNX) | raw:WxH[:yuyv|rgb24][:path] | ppm:path\n"
+            "  --camera SPEC     camapi[:N] (QNX) | broker[:PORT] (iPhone via rgb_broker, default 5566)\n"
+            "                    | raw:WxH[:yuyv|rgb24][:path] | ppm:path\n"
+            "  --rotate DEG      turn every frame clockwise by 0/90/180/270 before YOLO (default 0);\n"
+            "                    boxes are in the turned frame, so x is the robot's left/right\n"
+            "  --save-frame PATH write the first (turned) frame as a PPM, to check the orientation\n"
             "  --model PATH      ONNX model (default models/yolo_world.onnx)\n"
             "  --labels PATH     class names, one per line (default models/labels.txt)\n"
             "  --nomodel         no inference: test the camera + JSON path (empty dets)\n"
@@ -68,7 +74,8 @@ int main(int argc, char **argv)
 #endif
     std::string model = "models/yolo_world.onnx", labels_path = "models/labels.txt", udp = "127.0.0.1:5571";
     bool nomodel = false, to_stdout = false, use_udp = true, quiet = false;
-    int imgsz = 320, threads = 2;
+    int imgsz = 320, threads = 2, rotate = 0;
+    std::string save_frame;
     long max_frames = 0;
     float conf = 0.30f, iou_th = 0.45f;
     double fps_cap = 8.0;
@@ -81,6 +88,8 @@ int main(int argc, char **argv)
         if (a == "--camera") cam = next();
         else if (a == "--model") model = next();
         else if (a == "--labels") labels_path = next();
+        else if (a == "--rotate") rotate = atoi(next().c_str());
+        else if (a == "--save-frame") save_frame = next();
         else if (a == "--nomodel") nomodel = true;
         else if (a == "--imgsz") imgsz = atoi(next().c_str());
         else if (a == "--conf") conf = (float)atof(next().c_str());
@@ -94,6 +103,7 @@ int main(int argc, char **argv)
         else if (a == "--quiet") quiet = true;
         else { usage(argv[0]); return a == "-h" || a == "--help" ? 0 : 2; }
     }
+    if (rotate % 90 != 0) { fprintf(stderr, "detect: --rotate must be 0, 90, 180 or 270\n"); return 2; }
     if (cam.empty()) { fprintf(stderr, "detect: --camera is required on this build (no camapi)\n"); return 2; }
 
     // labels
@@ -157,7 +167,7 @@ int main(int argc, char **argv)
         sock = socket(AF_INET, SOCK_DGRAM, 0);
     }
 
-    yolo::Image rgb;
+    yolo::Image rgb, grabbed;
     std::vector<float> chw;
     long frames = 0;
     double t_stats = mono_s(), infer_sum = 0, next_frame = 0;
@@ -169,7 +179,18 @@ int main(int argc, char **argv)
             if (now < next_frame) std::this_thread::sleep_for(std::chrono::duration<double>(next_frame - now));
             next_frame = std::max(next_frame + 1.0 / fps_cap, mono_s());
         }
-        if (!src->grab(rgb)) { fprintf(stderr, "detect: camera: %s\n", src->error.c_str()); break; }
+        if (!src->grab(rotate ? grabbed : rgb)) { fprintf(stderr, "detect: camera: %s\n", src->error.c_str()); break; }
+        if (rotate) yolo::rotate_cw(grabbed, rotate, rgb);
+        if (!save_frame.empty()) {
+            FILE *pf = fopen(save_frame.c_str(), "wb");
+            if (pf) {
+                fprintf(pf, "P6\n%d %d\n255\n", rgb.w, rgb.h);
+                fwrite(rgb.px.data(), 1, rgb.px.size(), pf);
+                fclose(pf);
+                fprintf(stderr, "detect: saved %dx%d frame to %s\n", rgb.w, rgb.h, save_frame.c_str());
+            } else fprintf(stderr, "detect: can't write %s\n", save_frame.c_str());
+            save_frame.clear();
+        }
         double t0 = mono_s();
         std::vector<yolo::Det> dets;
 #ifdef HAVE_ORT

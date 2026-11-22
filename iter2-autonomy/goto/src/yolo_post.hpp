@@ -71,6 +71,27 @@ static inline void rgbx_to_rgb(const uint8_t *src, int w, int h, int stride, boo
     }
 }
 
+// Rotate a frame clockwise by 0/90/180/270 degrees (anything else = copy). The mounted
+// iPhone sends sensor-orientation (landscape) frames; detect turns them upright first so
+// YOLO sees the room the right way up and box x is the robot's left/right.
+static inline void rotate_cw(const Image &in, int deg, Image &out)
+{
+    deg = ((deg % 360) + 360) % 360;
+    if (deg != 90 && deg != 180 && deg != 270) { out = in; return; }
+    const int W = in.w, H = in.h;
+    if (deg == 180) out.resize(W, H); else out.resize(H, W);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            int nx, ny;
+            if (deg == 90) { nx = H - 1 - y; ny = x; }
+            else if (deg == 270) { nx = y; ny = W - 1 - x; }
+            else { nx = W - 1 - x; ny = H - 1 - y; }
+            const uint8_t *s = &in.px[((size_t)y * W + x) * 3];
+            uint8_t *d = &out.px[((size_t)ny * out.w + nx) * 3];
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
+        }
+}
+
 struct Letterbox { float scale = 1, padx = 0, pady = 0; int size = 320; };
 
 // Bilinear letterbox into a planar CHW float tensor (RGB, 0..1).

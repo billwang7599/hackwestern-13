@@ -221,18 +221,31 @@ def with_wake(s: str, intent: str, rng: random.Random) -> str:
     return f"{rng.choice(WAKE)} {s}"
 
 
+ARTICLES = {"the", "a", "an"}
+ARTICLE_DROP = 0.4               # share of each template's samples with its articles dropped
+
+
+def drop_articles(t: str) -> str:
+    """'go to the {o}' -> 'go to {o}'. People (and whisper) drop articles all the time;
+    without this the model scored 'go to bottle' 0.48 vs 'go to the bottle' 0.79."""
+    words = [w for w in t.split() if w not in ARTICLES]
+    return " ".join(words) if len(words) >= 2 else t
+
+
 def generate(per_template: int = 30, seed: int = 13) -> list[tuple[str, str, str]]:
     rng = random.Random(seed)
     rows = []
     for intent, temps in load_phrases().items():
         for t in temps:
-            sp = split_of(intent, t)
+            sp = split_of(intent, t)       # the article-less variant keeps its template's split
+            bare_t = drop_articles(t)
             n = per_template if intent not in ("unknown",) else per_template // 2
             if len(t.split()) == 1 and intent == "unknown":
                 n *= 3                 # bare "turn", "move", "what": easily outvoted by "turn left" etc.
             for _ in range(n):
                 level = rng.choice([0.0, 0.5, 1.0, 1.0, 1.5])
-                s = damage(fill(t, rng), intent, rng, level)
+                tt = bare_t if bare_t != t and rng.random() < ARTICLE_DROP else t
+                s = damage(fill(tt, rng), intent, rng, level)
                 rows.append((with_wake(s, intent, rng), intent, sp))
     # word salad from non-command words -> unknown
     salad = ("the a robot is this that cool nice demo judges table pizza hackathon laptop phone "

@@ -425,6 +425,150 @@ static void test_big_map(void)
     if (k > 0) CHECK(legs_free(cw(8), cw(8), p, k), "serpentine legs free");
 }
 
+
+/* cost-to-go field (goto's in-place recovery): agrees with A*, descends to the ring, honours
+ * temp marks, the guard box and the error cases */
+static void test_field(void)
+{
+    room();
+    fill(99, 60, 101, 125, NAV_OCC);                /* wall, open at the top */
+    nav_pt_t p[NAV_MAX_PATH], q[NAV_MAX_PATH];
+    float sx = cw(75), sz = cw(100), tx = cw(125), tz = cw(100);
+    int k = nav_plan(N, sx, sz, tx, tz, p, NAV_MAX_PATH);
+    double alen = 0; float ax = sx, az = sz;
+    for (int i = 0; i < k; i++) { alen += hypot(p[i].x - ax, p[i].z - az); ax = p[i].x; az = p[i].z; }
+    int r = nav_field_build(N, tx, tz, (float)NAV_RING_MIN, (float)NAV_RING_MAX);
+    CHECK(r > 100, "field reaches many cells (%d)", r);
+    double c = nav_field_cost(N, sx, sz);
+    CHECK(isfinite(c) && fabs(c * NAV_RES - alen) < 0.05, "cost-to-go = A* length (%.2f vs %.2f m)", c * NAV_RES, alen);
+    int unk = -1, m = nav_field_path(N, sx, sz, q, NAV_MAX_PATH, &unk);
+    CHECK(m > 1 && unk == 0, "descent route (%d)", m);
+    if (m > 0) {
+        double d = hypot(q[m - 1].x - tx, q[m - 1].z - tz);
+        CHECK(d >= 0.6 - 1e-6 && d <= 0.85 + 1e-6, "descent ends on the ring (%.3f)", d);
+        CHECK(legs_free(sx, sz, q, m), "descent legs over observed free floor");
+        CHECK(fabs(nav_field_cost(N, q[m - 1].x, q[m - 1].z)) < 1e-9, "ring cost 0");
+    }
+    CHECK(nav_field_clear(N, sx, sz) == 1 && nav_field_clear(N, cw(100), cw(100)) == 0, "field clear flags");
+    CHECK(!isfinite(nav_field_cost(N, cw(100), cw(100))), "a wall cell can't reach the goal");
+    /* a plan invalidates the field */
+    nav_plan(N, sx, sz, tx, tz, p, NAV_MAX_PATH);
+    CHECK(!isfinite(nav_field_cost(N, sx, sz)) && nav_field_path(N, sx, sz, q, NAV_MAX_PATH, NULL) == NAV_ERR_ARG,
+          "nav_plan invalidates the field");
+    /* temp marks close the gap over the wall: no route; cleared: back */
+    for (int x = 95; x < 106; x++) for (int z = 125; z < 140; z++) nav_temp_block(N, cw(x), cw(z));
+    nav_field_build(N, tx, tz, (float)NAV_RING_MIN, (float)NAV_RING_MAX);
+    CHECK(!isfinite(nav_field_cost(N, sx, sz)), "marks block the only way: unreachable");
+    CHECK(nav_field_path(N, sx, sz, q, NAV_MAX_PATH, NULL) == NAV_ERR_NO_PATH, "no descent");
+    nav_temp_clear(N);
+    /* goal enclosed in a wall box: NO_GOAL */
+    fill(120, 95, 131, 106, NAV_OCC);
+    CHECK(nav_field_build(N, tx, tz, (float)NAV_RING_MIN, (float)NAV_RING_MAX) == NAV_ERR_NO_GOAL, "goal ring all inflated: NO_GOAL");
+    room();
+    /* guard box on: the field from right next to a wall facing it is never cheaper than A* */
+    nav_set_guard_box(N, 0.6f, 0.45f, 60.0f);
+    fill(99, 60, 101, 125, NAV_OCC);
+    k = nav_plan(N, sx, sz, tx, tz, p, NAV_MAX_PATH);
+    alen = 0; ax = sx; az = sz;
+    for (int i = 0; i < k; i++) { alen += hypot(p[i].x - ax, p[i].z - az); ax = p[i].x; az = p[i].z; }
+    nav_field_build(N, tx, tz, (float)NAV_RING_MIN, (float)NAV_RING_MAX);
+    c = nav_field_cost(N, sx, sz);
+    CHECK(k > 0 && isfinite(c) && fabs(c * NAV_RES - alen) < 0.05, "guard-aware: field = A* (%.2f vs %.2f)", c * NAV_RES, alen);
+    nav_set_guard_box(N, 0, 0, 0);
+    /* bad args */
+    CHECK(nav_field_build(NULL, 0, 0, 0.6f, 0.85f) == NAV_ERR_ARG && nav_field_build(N, NAN, 0, 0.6f, 0.85f) == NAV_ERR_ARG &&
+          nav_field_build(N, 0, 0, 0.9f, 0.6f) == NAV_ERR_ARG, "bad args");
+    nav_reset(N);
+    CHECK(nav_field_build(N, 0, 0, 0.6f, 0.85f) == NAV_ERR_NO_MAP, "empty map");
+}
+
+/* nav_foot_cells: a corridor 6 free cells wide (walls 2 cells thick, as noisy LiDAR draws them).
+ * Radius 0.27 -> ceil = 3 cells -> needs 7: closed. nav_set_foot_cells(2): open. 0: back to closed. */
+static void test_foot_cells(void)
+{
+    nav_t *n = nav_new();
+    nav_set_robot_radius(n, 0.27f);
+    CHECK(nav_foot_cells(n) == 3, "0.27 m -> 3 cells (%d)", nav_foot_cells(n));
+    for (int iz = 70; iz < 130; iz++)
+        for (int ix = 70; ix < 130; ix++) nav_set_cell(n, ix, iz, NAV_FREE);
+    /* a wall across z = 100..101 except a gap of 6 cells at x 97..102 */
+    for (int ix = 70; ix < 130; ix++)
+        if (ix < 97 || ix > 102) { nav_set_cell(n, ix, 100, NAV_OCC); nav_set_cell(n, ix, 101, NAV_OCC); }
+    nav_pt_t out[64];
+    float sx = -0.05f + 0.1f * 0, sz = -1.5f, tx = 0.0f, tz = 1.8f;   /* through the gap to past it */
+    int k = nav_plan(n, sx, sz, tx, tz, out, 64);
+    CHECK(k == NAV_ERR_NO_PATH, "6-cell gap closed at 3 cells (%d)", k);
+    unsigned v = nav_version(n);
+    nav_set_foot_cells(n, 2);
+    CHECK(nav_foot_cells(n) == 2 && nav_version(n) != v, "foot cells 2, version bumped");
+    k = nav_plan(n, sx, sz, tx, tz, out, 64);
+    CHECK(k > 0, "6-cell gap open at 2 cells (%d)", k);
+    nav_set_foot_cells(n, 0);
+    CHECK(nav_foot_cells(n) == 3, "0 = back to ceil(radius)");
+    CHECK(nav_plan(n, sx, sz, tx, tz, out, 64) == NAV_ERR_NO_PATH, "closed again");
+    nav_set_foot_cells(n, -1);
+    nav_set_foot_cells(n, 11);
+    CHECK(nav_foot_cells(n) == 3, "out-of-range values ignored");
+    nav_free(n);
+}
+
+/* Heading-aware A* (nav_set_turn_cost): fewer corners on an open diagonal, the forward route over a
+ * U-turn when the two are near-equal, nav_route_cost. Off (0, 0) must leave plans as they were. */
+static int count_corners(int k) { return k - 1; }   /* corners between legs (the last point is the goal) */
+static void test_turn_cost(void)
+{
+    nav_pt_t a[256], b[256];
+    /* open room, goal off-axis: 8-connected A* has many equal-length routes */
+    room();
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    int ka = nav_plan_ring(N, cw(70), cw(70), cw(100), cw(82), 0.0f, 0.11f, a, 256);
+    nav_set_turn_cost(N, 0.3f, 0.0f, 0, 0);
+    int kb = nav_plan_ring(N, cw(70), cw(70), cw(100), cw(82), 0.0f, 0.11f, b, 256);
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    double la = 0, lb = 0;
+    { float x = cw(70), z = cw(70); for (int i = 0; i < ka; i++) { la += hypot(a[i].x - x, a[i].z - z); x = a[i].x; z = a[i].z; } }
+    { float x = cw(70), z = cw(70); for (int i = 0; i < kb; i++) { lb += hypot(b[i].x - x, b[i].z - z); x = b[i].x; z = b[i].z; } }
+    CHECK(ka > 0 && kb > 0 && count_corners(kb) <= 1 && count_corners(kb) <= count_corners(ka),
+          "turn cost: open diagonal in <= 1 corner (off: %d corners, on: %d)", count_corners(ka), count_corners(kb));
+    CHECK(fabs(la - lb) < 0.01, "turn cost: same length (%.3f vs %.3f m)", la, lb);
+    CHECK(legs_free(cw(70), cw(70), b, kb), "turn cost: legs over free floor");
+
+    /* forward vs U-turn. Robot at x=100 facing +z (yaw 0), goal 3 m to +x, a wall between them from
+     * z=86 to z=114: around its top (+z, ahead) is 0.2 m longer than around its bottom (behind). */
+    room();
+    fill(108, 86, 111, 115, NAV_OCC);
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    int k0 = nav_plan(N, cw(100), cw(99), cw(130), cw(99), a, 256);
+    CHECK(k0 > 0 && a[0].z < cw(99), "turn cost off: the shorter way, behind the robot (first corner z %.2f)", k0 > 0 ? a[0].z : 0.0f);
+    nav_set_turn_cost(N, 0.3f, 0.5f, 0.0f, 1);
+    int k1 = nav_plan(N, cw(100), cw(99), cw(130), cw(99), b, 256);
+    CHECK(k1 > 0 && b[0].z > cw(99), "start turn cost: forward (+z) over a U-turn when near-equal (first corner z %.2f)",
+          k1 > 0 ? b[0].z : 0.0f);
+    nav_set_turn_cost(N, 0.3f, 0.5f, (float)M_PI, 1);       /* facing -z: the short way is ahead now */
+    k1 = nav_plan(N, cw(100), cw(99), cw(130), cw(99), b, 256);
+    CHECK(k1 > 0 && b[0].z < cw(99), "start turn cost, facing -z: the shorter way (first corner z %.2f)", k1 > 0 ? b[0].z : 0.0f);
+    /* a much shorter way behind still wins: the penalty is a tie-breaker, not a ban */
+    fill(108, 86, 111, 125, NAV_OCC);                        /* top end now 1.1 m further away */
+    nav_set_turn_cost(N, 0.3f, 0.5f, 0.0f, 1);
+    k1 = nav_plan(N, cw(100), cw(99), cw(130), cw(99), b, 256);
+    CHECK(k1 > 0 && b[0].z < cw(99), "start turn cost: a clearly shorter way behind still wins (first corner z %.2f)",
+          k1 > 0 ? b[0].z : 0.0f);
+
+    /* nav_route_cost */
+    room();
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    nav_pt_t r[2] = {{cw(90), cw(80)}, {cw(90), cw(90)}};
+    double c = nav_route_cost(N, cw(80), cw(80), r, 2);
+    CHECK(fabs(c - 20.0) < 0.2, "route cost: 2 x 1 m legs = 20 cells (%.2f)", c);
+    nav_set_turn_cost(N, 0.3f, 0.5f, 0.0f, 1);               /* facing +z: first leg is +x (90), then a 90 corner */
+    double ct = nav_route_cost(N, cw(80), cw(80), r, 2);
+    CHECK(fabs(ct - (20.0 + 5.0 + 3.0)) < 0.2, "route cost with turns: 20 + 5 (start 90) + 3 (corner) (%.2f)", ct);
+    fill(85, 75, 86, 86, NAV_OCC);
+    nav_set_turn_cost(N, 0, 0, 0, 0);
+    CHECK(isinf(nav_route_cost(N, cw(80), cw(80), r, 2)), "route cost: a wall on a leg = INFINITY");
+    nav_reset(N);
+}
+
 int main(int argc, char **argv)
 {
     int iters = argc > 1 ? atoi(argv[1]) : 200000;
@@ -440,7 +584,10 @@ int main(int argc, char **argv)
     test_pose();
     test_ldr1();
     test_recovery();
+    test_field();
     test_big_map();
+    test_foot_cells();
+    test_turn_cost();
     test_fuzz(iters);
     nav_free(N);
     printf("test_nav: %d/%d passed\n", passed, passed + failed);

@@ -130,6 +130,19 @@ def safety_stop(toks: list[str], wake: bool) -> bool:
         return True
     return wake and any(t in WEAK_STOP for t in toks)
 
+# ---------------------------------------------------------------- bare fragments
+# "TARS, turn." / "move" / "move it" / "turn turn": a motion verb with no direction, amount or
+# object. The linear model can't learn these (the words dominate left/right/turn_around), so
+# they're rejected by rule, after both stop checks (a stop is never removed).
+# verbs with no default direction ("go" / "drive" alone = forward, as in realistic.tsv)
+BARE_VERBS = {"turn", "turns", "turning", "tern", "move", "moving", "rotate", "rotating"}
+BARE_FILLER = {"the", "a", "an", "to", "it", "now", "please", "just", "again", "and", "then",
+               "uh", "um", "so", "on", "there"}
+
+
+def is_bare(toks: list[str]) -> bool:
+    return any(t in BARE_VERBS for t in toks) and all(t in BARE_VERBS or t in BARE_FILLER for t in toks)
+
 # ---------------------------------------------------------------- features
 def fnv1a(data: bytes) -> int:
     h = 2166136261
@@ -225,6 +238,20 @@ def whole_number(toks: list[str], i: int) -> tuple[float, int] | None:
     return None
 
 
+# "the left one", "that one", "which ones": a pronoun, not the number 1 ("tars the left one" gave
+# TURN -1). A determiner right before, or two before ("the big one"), unless a unit or a
+# tens/hundred word follows ("the chair one meter", "do the one eighty").
+DETS = {"the", "that", "this", "these", "those", "which", "other", "another", "each", "every", "any"}
+
+
+def pronoun_one(toks: list[str], i: int) -> bool:
+    if toks[i] not in ("one", "ones", "won"):
+        return False
+    if i + 1 < len(toks) and (toks[i + 1] in UNITS or toks[i + 1] in TENS or toks[i + 1] == "hundred"):
+        return False
+    return (i >= 1 and toks[i - 1] in DETS) or (i >= 2 and toks[i - 2] in DETS)
+
+
 def feature_tokens(toks: list[str]) -> list[str]:
     """Numbers -> one placeholder before featurising, so "turn right one hundred
     and eighty degrees" looks like "turn right n180 degrees" to the classifier
@@ -232,7 +259,7 @@ def feature_tokens(toks: list[str]) -> list[str]:
     because they mean turn-around / spin; "oh"/"zero" are left alone."""
     out, i, n = [], 0, len(toks)
     while i < n:
-        w = whole_number(toks, i) if toks[i] not in ("oh", "zero") else None
+        w = whole_number(toks, i) if toks[i] not in ("oh", "zero") and not pronoun_one(toks, i) else None
         if w is None:
             out.append(toks[i])
             i += 1
@@ -253,6 +280,9 @@ def parse_amount(toks: list[str]) -> tuple[float | None, str | None]:
         if t in ("bit", "little", "tad", "smidge") and i > 0 and toks[i - 1] in ("a", "little"):
             return 1.0, "small"
         val, j = None, i
+        if pronoun_one(toks, i):
+            i += 1
+            continue
         w = whole_number(toks, i)
         if w is not None:
             val, j = w
@@ -314,6 +344,8 @@ def turn_deg(val: float | None, unit: str | None) -> int:
     if unit == "small":
         return SMALL_DEG
     if unit not in (None, "deg"):
+        return DEFAULT_TURN_DEG
+    if unit is None and 1 <= val < 10:  # "turn left one/two": not plausibly degrees
         return DEFAULT_TURN_DEG
     if val < 1:                        # "half" -> half a turn, "quarter" -> 90
         val = val * 360
@@ -420,7 +452,7 @@ class Decision:
     intent: str = "-"
     prob: float = 0.0
     wake: bool = False
-    why: str = ""                  # safety | classifier | low_conf | unknown | no_object | no_wake | empty
+    why: str = ""                  # safety | classifier | low_conf | unknown | bare | no_object | no_wake | empty
     lines: list[str] = field(default_factory=list)    # to tars_motor, in order
 
 
@@ -463,6 +495,8 @@ def decide(model: Model, text: str, require_wake: bool = True) -> Decision:
     intent = INTENTS[k]
     if intent == "stop" and p[k] >= model.stop_threshold:
         return Decision("stop", intent, p[k], wake, "classifier", ["S", CANCEL])
+    if is_bare(rest):                   # "TARS, turn." never moves (README: bare fragments)
+        return Decision("reject", intent, p[k], wake, "bare", ["LED no", "BEEP 3"])
     if intent == "unknown" or p[k] < model.threshold:
         return Decision("reject", intent, p[k], wake, "unknown" if intent == "unknown" else "low_conf",
                         ["LED no", "BEEP 3"])
