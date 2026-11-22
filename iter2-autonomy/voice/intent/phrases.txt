@@ -1,4 +1,4 @@
-# TARS voice: training phrases for the intent classifier.
+# QNXplorer voice: training phrases for the intent classifier.
 #
 # Format: one phrase per line,   intent<TAB>phrase
 #   - intents: forward back left right turn_around stop goto spin status scan forget memory recall unknown

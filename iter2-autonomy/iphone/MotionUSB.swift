@@ -140,7 +140,7 @@ struct MotionUSBApp: App {
                         Toggle("Speak actions", isOn: $speakActions)
                         Toggle("Robot mic (AirPods)", isOn: Binding(get: { mic.enabled },
                                                                      set: { robotMic = $0; mic.setEnabled($0) }))
-                            .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. TARS replies from the phone speaker.")
+                            .accessibilityHint("Streams your AirPods mic to the robot's speech recognizer. QNXplorer replies from the phone speaker.")
                         VoiceCommandPanel(pi: pi, voice: voice, micBusy: mic.enabled)
                         ManualDrivePanel(pi: pi)
                         Button("Reset scan") { camera.resetMap() }

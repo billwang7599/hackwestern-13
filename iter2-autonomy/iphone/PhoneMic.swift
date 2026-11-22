@@ -12,14 +12,14 @@ import AVFoundation
 //   "MIC1 16000 1 s16le\n"                   once per connection
 //   <type:1><len:2 LE><payload>              packets:
 //     'A' audio  16 kHz mono s16le, len even 2...8192 (we send 20 ms = 640 bytes)
-//     'M' mute   len 0: TARS is talking (half duplex), ignore audio until 'U'
+//     'M' mute   len 0: QNXplorer is talking (half duplex), ignore audio until 'U'
 //     'U' unmute len 0
 //     'K' keepalive len 0, at least once a second when no audio flows
 // The Pi never writes back. Spec and parser: iter2-autonomy/voice/src/audio.h / audio.c.
 //
 // Half duplex: iOS keeps a Bluetooth headset's mic and output together, and
 // forcing the phone speaker (overrideOutputAudioPort(.speaker)) also switches
-// the input to the phone mic. So while TARS talks the mic stream is muted and
+// the input to the phone mic. So while QNXplorer talks the mic stream is muted and
 // the reply comes out of the phone speaker; when it finishes, the AirPods
 // route and the stream come back. SpeechLink drives this through
 // speechWillStart()/speechDidFinish(). The switch time is shown in the UI.
@@ -214,7 +214,7 @@ struct MicDuplex {
     enum Action: Equatable {
         case configureSession        // .playAndRecord + Bluetooth HFP + defaultToSpeaker, active
         case routeToHeadset          // no speaker override, prefer the Bluetooth HFP input
-        case routeToSpeaker          // overrideOutputAudioPort(.speaker): TARS talks out loud
+        case routeToSpeaker          // overrideOutputAudioPort(.speaker): QNXplorer talks out loud
         case startCapture, stopCapture
         case sendMute, sendUnmute
         case releaseSession          // mic off and quiet: hand the session back to SpeechLink
@@ -447,7 +447,7 @@ final class PhoneMic: ObservableObject {
     private func refreshSummary() {
         guard enabled else { summary = "Robot mic off"; return }
         let link = piConnected ? "Pi linked" : "waiting for Pi on \(MicStreamProtocol.port)"
-        let state = duplex.interrupted ? "interrupted" : duplex.phase == .talking ? "muted (TARS talking)" : "listening"
+        let state = duplex.interrupted ? "interrupted" : duplex.phase == .talking ? "muted (QNXplorer talking)" : "listening"
         summary = "Mic \(state) · \(inputName) · \(link)"
     }
 

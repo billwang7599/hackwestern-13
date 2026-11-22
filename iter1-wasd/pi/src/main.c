@@ -1,4 +1,4 @@
-/* tars_motor: QNX motor/arm server for TARS.
+/* tars_motor: QNX motor/arm server for QNXplorer.
  *
  * TCP line protocol (one command per line, reply "OK ..." or "ERR <why>"):
  *   D <left> <right>     drive, each in [-1, 1] (must be resent < watchdog ms)
@@ -725,7 +725,7 @@ static int blocked_exempt_fits(char kind, float req, float speed)
 static const char *motion_refused(void)
 {
     if (!link_up) return "uno_disconnected";
-    if (tipped) return "tipped over: stand TARS up, then send RESET";
+    if (tipped) return "tipped over: stand QNXplorer up, then send RESET";
     if (!guard_permit) return guard_reason;
     return NULL;
 }

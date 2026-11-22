@@ -13,7 +13,7 @@ gesture shrug: 1.5 s
 gesture stance: 0.8 s
 gesture fold: 0.8 s
 status: {'arm0': 0.0, 'arm1': 0.0, 'gesture': 'none'}
-drive while tipped -> tipped over: stand TARS up, then send RESET
+drive while tipped -> tipped over: stand QNXplorer up, then send RESET
 reset -> tipped = False
 
 ## server stderr (stub backend prints what it would send)

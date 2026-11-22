@@ -542,9 +542,9 @@ class Stack:
         w = max(len(r[0]) for r in self.rows)
         w2 = max(len(r[1]) for r in self.rows)
         car = "STUB CAR: tars_motor -b stub, no firmware, no physics" if self.car_kind == "stub" else "virtual SM11 (real firmware)"
-        out = [f"TARS sim stack (SIM, not the robot), car = {car}", ""]
+        out = [f"QNXplorer sim stack (SIM, not the robot), car = {car}", ""]
         if self.phone:
-            out = [f"TARS phone in the loop: REAL iPhone ({self.phone}) -> Mac goto/detect/lidar_guard, car = {car}", "",
+            out = [f"QNXplorer phone in the loop: REAL iPhone ({self.phone}) -> Mac goto/detect/lidar_guard, car = {car}", "",
                    "  On the phone: MotionUSB open, Start sensors, keep it in front. Carry it at car height (~14 cm)",
                    "  along the route goto draws; the virtual car only pretends to move.", ""]
         out += [f"  {a:<{w}}  {b:<{w2}}  {c}" for a, b, c in self.rows]
@@ -555,7 +555,7 @@ class Stack:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="TARS sim stack + bench (laptop only)")
+    ap = argparse.ArgumentParser(description="QNXplorer sim stack + bench (laptop only)")
     ap.add_argument("--room", default="default", help=f"rooms: {', '.join(C.list_rooms())}")
     ap.add_argument("--car", choices=["auto", "virtual", "stub"], default="auto")
     ap.add_argument("--profile", default="sm11_2wd",

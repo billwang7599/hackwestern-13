@@ -1,4 +1,4 @@
-# TARS gesture rules (the one place they're written down)
+# QNXplorer gesture rules (the one place they're written down)
 
 Three implementations follow these rules exactly:
 

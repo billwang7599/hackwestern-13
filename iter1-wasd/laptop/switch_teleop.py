@@ -1,4 +1,4 @@
-"""Drive TARS with a Nintendo Switch controller (Pro Controller or a Joy-Con pair).
+"""Drive QNXplorer with a Nintendo Switch controller (Pro Controller or a Joy-Con pair).
 
     pip install pygame            # once (SDL2 inside reads Switch controllers on macOS)
     python switch_teleop.py [host]

@@ -1,4 +1,4 @@
-# TARS architecture: voice + YOLO + iPhone LiDAR, QNX native
+# QNXplorer architecture: voice + YOLO + iPhone LiDAR, QNX native
 
 This is the design for the whole robot. It covers how the three sensing layers split the work, the feature list with honest status, the one behaviour state machine, pose, ports, CPU and what has actually run.
 Rules for changing code are in [AGENTS.md](../AGENTS.md). Status and priorities are in [PLAN.md](../PLAN.md).
@@ -233,7 +233,7 @@ The phone-to-robot extrinsics (mount offset, forward axis) are uncalibrated. Unt
 | 5570 | 5557 | clients → `goto` commands (`GOTO`, `RECALL`, `CANCEL`, `SCAN`, `MEMORY [SAY]`, `FORGET`, `NAV`, `STATUS`, `WATCH`, …) |
 | 5571 | 5558 | detector → `goto` detection JSON lines (`iter2-autonomy/goto/DETECTIONS.md`) |
 | 5572 | new | **as built: phone → `goto`**, LDR1 packets (the 5562 format, TCP length-prefixed or UDP); `goto` listens. A display feed back to the phone isn't built. |
-| 5573 | (Andrew) | TARS speech → phone (SpeechLink via iproxy): `SAY <text>` → `OK say`, urgent JSON form, `HUSH`. `tars_voice` is a client. |
+| 5573 | (Andrew) | QNXplorer speech → phone (SpeechLink via iproxy): `SAY <text>` → `OK say`, urgent JSON form, `HUSH`. `tars_voice` is a client. |
 | 5574 | new | laptop (via the relay) → `tars_voice` on 127.0.0.1: `HEAR <text>`, `AUDIO <bytes>`, `WATCH` events. Same classifier + stop-first path as the mic. |
 | 5575 | new | `mission_relay`, the laptop's only port (all interfaces): `HELLO MOTOR\|GOTO\|VOICE\|WATCH\|CAM <key>`, key required (`-k` / `MISSION_KEY`). Optional; normal priority. |
 | 5576 | new | phone status tee → relay (127.0.0.1), from `headless.py` only when `TARS_MISSION_TEE_PORT` is set. |

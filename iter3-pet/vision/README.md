@@ -1,4 +1,4 @@
-# iter3-pet/vision/: drive TARS with your hand (MediaPipe, on the Pi under QNX)
+# iter3-pet/vision/: drive QNXplorer with your hand (MediaPipe, on the Pi under QNX)
 
 Three modes, cycled with a held peace sign ✌️ (GESTURE → FOLLOW → PET):
 
@@ -131,13 +131,13 @@ codelab reports 25 fps on the Pi 5 with a lighter model. If it's under 8 fps:
 
 ## 2b. Teach demo (the judges' script)
 
-1. "TARS knows a few hand signals. Let's teach it one it's never seen. You make one up."
-2. The judge holds 🤙 for 2 s. TARS wiggles: "I'm listening." It nudges once a second
+1. "QNXplorer knows a few hand signals. Let's teach it one it's never seen. You make one up."
+2. The judge holds 🤙 for 2 s. QNXplorer wiggles: "I'm listening." It nudges once a second
    while counting down; the judge lowers the 🤙 and gets their pose ready.
 3. Beep-beep: the judge holds their invented pose (say 🤘, or three fingers) for ~2 s.
-   TARS does a double wiggle: "got it, what does it mean?"
-4. The judge shows ✌️ (= spin). TARS spins once to confirm.
-5. The judge makes their pose again and TARS spins. It works from any distance, any tilt, either hand.
+   QNXplorer does a double wiggle: "got it, what does it mean?"
+4. The judge shows ✌️ (= spin). QNXplorer spins once to confirm.
+5. The judge makes their pose again and QNXplorer spins. It works from any distance, any tilt, either hand.
 6. "Now a random hand": a half-curled claw, or a different made-up pose. **Nothing happens.**
    (Desktop overlay: red UNKNOWN bar.) It knows what it doesn't know.
 7. Try to teach it a fist: the "no" head-shake (`too_similar fist`). Built-ins are protected, and ✋ always stops it.

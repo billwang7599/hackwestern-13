@@ -1,4 +1,4 @@
-# TARS voice: whisper.cpp speech -> intent classifier -> tars_motor.
+# QNXplorer voice: whisper.cpp speech -> intent classifier -> tars_motor.
 #
 #   make host          Mac/Linux build: build/tars_voice_host, build/intent_cli, build/stt_cli (laptop)
 #   make test          intent tests + end-to-end (say -> WAV -> whisper -> fake tars_motor)

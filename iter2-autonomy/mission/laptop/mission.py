@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TARS mission control: a laptop-only dashboard + controls in your browser.
+"""QNXplorer mission control: a laptop-only dashboard + controls in your browser.
 
     MISSION_KEY=<key> python3 iter2-autonomy/mission/laptop/mission.py --relay <pi-ip>   # then open http://localhost:8765
     python3 .../mission.py --relay <pi-ip> --key <key> --laptop-stt     # whisper on the laptop, send text only
@@ -565,7 +565,7 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="TARS laptop mission control (browser UI on localhost)")
+    ap = argparse.ArgumentParser(description="QNXplorer laptop mission control (browser UI on localhost)")
     ap.add_argument("--relay", default=os.environ.get("TARS_HOST", "tars.local"),
                     help="Pi address (host or host:port, relay port 5575)")
     ap.add_argument("--key", default=os.environ.get("MISSION_KEY", ""),

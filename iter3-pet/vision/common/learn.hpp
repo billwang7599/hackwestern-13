@@ -1,4 +1,4 @@
-// Teach TARS a new hand pose on the spot. C++17, header-only, no dependencies.
+// Teach QNXplorer a new hand pose on the spot. C++17, header-only, no dependencies.
 // Line-for-line port of iter3-pet/vision/common/learn.py (features, few-shot k-NN, the
 // hands-only teach state machine, JSON save/load). tests/test_parity.py runs
 // both on the same sessions and diffs every line. Change one, change the other.

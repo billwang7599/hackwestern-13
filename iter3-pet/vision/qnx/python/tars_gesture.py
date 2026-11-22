@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TARS gesture / follow driving ON the Pi 5 under QNX (fast path).
+"""QNXplorer gesture / follow driving ON the Pi 5 under QNX (fast path).
 
 QNX's prebuilt MediaPipe (`sudo apk add mediapipe`) + the QNX Camera Library
 (libcamapi) + the shared gesture logic in iter3-pet/vision/common -> tars_motor on

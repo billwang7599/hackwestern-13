@@ -1,4 +1,4 @@
-"""Hold-to-drive WASD teleop for TARS (laptop -> Wi-Fi -> tars_motor on the Pi).
+"""Hold-to-drive WASD teleop for QNXplorer (laptop -> Wi-Fi -> tars_motor on the Pi).
 
     pip install -r requirements.txt          # pygame
     TARS_HOST=<pi-ip> python teleop.py       # or: python teleop.py <pi-ip>
@@ -169,7 +169,7 @@ def run_window(host: str, speed: float) -> None:
 
     pygame.init()
     screen = pygame.display.set_mode((460, 240))
-    pygame.display.set_caption(f"TARS teleop - {host}")
+    pygame.display.set_caption(f"QNXplorer teleop - {host}")
     font = pygame.font.SysFont("menlo,monospace", 16)
     big = pygame.font.SysFont("menlo,monospace", 26, bold=True)
     clock = pygame.time.Clock()

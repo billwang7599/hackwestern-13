@@ -114,7 +114,7 @@ show one panel at a time behind sub-tabs (the panels in `order`; the choice is r
 
 | Page (`#hash`, key) | Map | Panels |
 |---|---|---|
-| Drive `#drive` 1 (default) | yes | `demo` (Demo in 4 steps: room → Car to start → go to the trash can → watch; each step ticks itself off from live data), `command` (Talk to TARS), `drive` (WASD pad, speed, exact MOVE/TURN) |
+| Drive `#drive` 1 (default) | yes | `demo` (Demo in 4 steps: room → Car to start → go to the trash can → watch; each step ticks itself off from live data), `command` (Talk to QNXplorer), `drive` (WASD pad, speed, exact MOVE/TURN) |
 | Room `#room` 2 | yes, edit mode on, *sub* | `room-objects` (every object and wall, 🗑 per row, Delete selected, Undo), `world-tools` (faults, sensor noise), `maps` (map demos) |
 | Memory `#memory` 3 | yes, Robot's map | `mc-memory` (what goto remembers, Forget per row, Forget all with a confirm), `mc-goto` (goto status table, GOTO/RECALL/SCAN/CANCEL, events) |
 | Voice lab `#voice` 4 | | `voice` |
@@ -523,7 +523,7 @@ it, and the bench **imports** it:
 | goto table, GOTO/RECALL/FORGET/FORGET all/SCAN/CANCEL/MEMORY SAY, event log | Memory page: Go-to controller + memory table (Forget, Forget all), `POST /api/mission/goto`, `memory_say` |
 | object memory, phone table | Memory page (memory table), Mission page (Phone link) |
 | map (NAV GRID / phone grid, route, pose, objects) | Map (goto) panel |
-| voice: 🎤 hold / T, text box, voice log | **Talk to TARS** box (Drive page, via the voice lab + Send to robot; 🎤 / **T**), and the Robot voice log panel (Mission page: 🎤 hold / **V**, `text`, `audio`) |
+| voice: 🎤 hold / T, text box, voice log | **Talk to QNXplorer** box (Drive page, via the voice lab + Send to robot; 🎤 / **T**), and the Robot voice log panel (Mission page: 🎤 hold / **V**, `text`, `audio`) |
 | link pills, Pi service pills (relay R) | Pi panel |
 | `actions.command` (journals over SSH) | Pi panel "follow journals", `GET/POST /api/mission/journal`, topic `journal` |
 | `room-view.command` (SSH tunnel to 5580) | Pi panel "room view tunnel" + link / iframe, `GET/POST /api/mission/roomview` |

@@ -117,7 +117,7 @@ class Tars:
         self.send("LEVEL")
 
     def reset(self) -> None:
-        """Clear the tip-over latch once TARS is standing again."""
+        """Clear the tip-over latch once QNXplorer is standing again."""
         self.send("RESET")
 
     def gestures(self) -> list[str]:

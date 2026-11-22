@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TARS hand-gesture / follow driving on the Mac webcam (MediaPipe + OpenCV).
+"""QNXplorer hand-gesture / follow driving on the Mac webcam (MediaPipe + OpenCV).
 
 Same gesture logic as the QNX apps (iter3-pet/vision/common/gesture.py, mirrored in C++).
 Default is DRY RUN: commands are printed, nothing is sent.
@@ -215,7 +215,7 @@ def main() -> int:
             labels[res.label] = labels.get(res.label, 0) + 1
             n += 1
             if not a.headless:
-                cv2.imshow("TARS gesture (q quit, space stop, m mode, p pause, t teach, f forget)", draw(res.image, res, rt))
+                cv2.imshow("QNXplorer gesture (q quit, space stop, m mode, p pause, t teach, f forget)", draw(res.image, res, rt))
                 k = cv2.waitKey(1) & 0xFF
                 if k in (ord("q"), 27):
                     break

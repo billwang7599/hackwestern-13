@@ -30,7 +30,7 @@ static const keyframe_t nod[] = {
     {{15, 15}, 60, 100},
     {{0, 0},   60, 0},
 };
-/* The TARS "standing" pose: outer slabs split fore/aft. Stays there. */
+/* The QNXplorer "standing" pose: outer slabs split fore/aft. Stays there. */
 static const keyframe_t stance[] = {
     {{30, -30}, 45, 0},
 };
@@ -45,7 +45,7 @@ static const gesture_t gestures[] = {
     G("point",  "right arm straight forward for 1.5 s", point),
     G("shrug",  "both arms flick forward 25 deg", shrug),
     G("nod",    "small double dip of both arms", nod),
-    G("stance", "split outer slabs fore/aft (TARS pose), stays", stance),
+    G("stance", "split outer slabs fore/aft (QNXplorer pose), stays", stance),
     G("fold",   "all slabs flush (monolith), stays", fold),
 };
 

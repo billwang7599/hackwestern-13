@@ -1,4 +1,4 @@
-# iter2-autonomy/voice/: offline speech commands for TARS (QNX native)
+# iter2-autonomy/voice/: offline speech commands for QNXplorer (QNX native)
 
 "TARS, go to the trash can." → the robot drives there. "Stop!" → it stops. Everything runs
 **on the Pi 5 under QNX 8.0, in C/C++ built with `qcc`**. No laptop, no internet, no Python on the robot.
@@ -40,14 +40,14 @@ streams the user's AirPods to `tars_voice` (iPhone app: controls → "Robot mic 
 listens on 5577 (forwarded to the Pi by iproxy, `service.py`), `tars_voice` dials it and redials with a
 0.5–5 s backoff. Protocol `MIC1` (spec in `src/audio.h`): header line `MIC1 16000 1 s16le`, then packets
 `A` audio / `M` mute / `U` unmute / `K` keepalive. It's hands-free: the same VAD, whisper, "TARS" wake word
-and stop-first path as a wired mic. While TARS speaks a `SAY` from the phone speaker the phone sends `M`
+and stop-first path as a wired mic. While QNXplorer speaks a `SAY` from the phone speaker the phone sends `M`
 (half duplex): what it hears then is dropped, and the segment in progress is finished at the mute. Link
 down / muted: `audio_read` returns within 100 ms with nothing, so the loop (LED off, talk button) keeps
 running. Bad data or 3 s of silence (no `K`) drops the link. `phone:PORT` / `phone:HOST:PORT` for other
 addresses; `input = qnx` for a USB mic. Fake phone for the Pi or a Mac:
 `python3 iter2-autonomy/iphone/tools/mic_stream.py cmd.wav` (or `-` for raw stdin). Test:
 `make test-phone` (38 checks, fake phone + real `tars_motor`). **Not yet run on the Pi/QNX or with the
-real phone.** Caveat: a spoken "stop" while TARS is talking is not heard; the other stops are unaffected.
+real phone.** Caveat: a spoken "stop" while QNXplorer is talking is not heard; the other stops are unaffected.
 **Speech link:** `say_host`/`say_port`/`say_ms` in `voice.conf` (127.0.0.1:5573, 150 ms connect
 timeout, `say_port = 0` = off). Failures are ignored.
 **Network input (laptop mission control, `iter2-autonomy/mission/`):** `net_host`/`net_port`

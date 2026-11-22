@@ -205,7 +205,7 @@ All Pi listeners/proxies bind localhost.
 | 5567 | MiDaS worker → dashboard UDP result |
 | 5568 | Native guard → native motor gate, independent of dashboard/AI |
 | 5569 | Mapping → native guard, optional inferred-obstacle veto |
-| 5573 | TARS speech (goto/voice → phone): `SAY <text>` lines, phone speaks them; see `iter2-autonomy/iphone/README.md` |
+| 5573 | QNXplorer speech (goto/voice → phone): `SAY <text>` lines, phone speaks them; see `iter2-autonomy/iphone/README.md` |
 | 5577 | Robot mic (phone → `tars_voice`): AirPods audio as MIC1 packets; the phone listens, `tars_voice` dials; see `iter2-autonomy/iphone/README.md` |
 
 5562 uses a four-byte big-endian length, then `LDR1`, sequence u32, source uptime

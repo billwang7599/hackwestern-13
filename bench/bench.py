@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TARS digital test bench: a browser app (http://127.0.0.1:8770).
+"""QNXplorer digital test bench: a browser app (http://127.0.0.1:8770).
 
 Normally on the laptop against the sim. `--target robot` runs it ON the Pi itself against the real stack,
 and the 2D room view then shows the real robot (plugins/live.py); open it from a laptop with
@@ -188,7 +188,7 @@ def make_handler(bench: Bench):
             query = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query).items()}
             self._set_cookie = ""
             if not self._authorised(query):
-                return self._send(401, "TARS bench: add ?token=<the bench token> to the address "
+                return self._send(401, "QNXplorer bench: add ?token=<the bench token> to the address "
                                        "(bench.py --token / BENCH_TOKEN on the robot)")
             if method == "GET" and path == "/events":
                 return self._events()
@@ -259,7 +259,7 @@ def make_handler(bench: Bench):
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="TARS digital test bench (laptop, or --target robot on the Pi)")
+    ap = argparse.ArgumentParser(description="QNXplorer digital test bench (laptop, or --target robot on the Pi)")
     ap.add_argument("--port", type=int, default=8770, help="browser port (default 8770)")
     ap.add_argument("--bind", default="127.0.0.1", help="listen address (default localhost only; "
                     "anything else needs --token)")

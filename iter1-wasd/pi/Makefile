@@ -1,4 +1,4 @@
-# TARS motor server.
+# QNXplorer motor server.
 #
 #   make               cross-compile for QNX aarch64 (inside docker/run.sh; auto-
 #                      delegates to the container if qcc isn't on PATH)

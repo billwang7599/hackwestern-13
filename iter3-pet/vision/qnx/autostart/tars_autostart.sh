@@ -1,5 +1,5 @@
 #!/bin/sh
-# TARS on QNX, no laptop: start the camera service (optional), tars_motor and the
+# QNXplorer on QNX, no laptop: start the camera service (optional), tars_motor and the
 # gesture app, restart each if it crashes, log to $LOG_DIR. POSIX sh (QNX ksh ok).
 #
 #   sh tars_autostart.sh start      # (what the boot hook runs) returns immediately
@@ -93,7 +93,7 @@ case "${1:-start}" in
         fi
         log "boot start"
         start_all
-        echo "TARS started; logs in $LOG_DIR" ;;
+        echo "QNXplorer started; logs in $LOG_DIR" ;;
     run)
         trap 'stop_all; exit 0' INT TERM
         start_all

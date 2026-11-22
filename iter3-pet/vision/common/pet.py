@@ -1,4 +1,4 @@
-"""TARS pet mode: the rover reacts to your hand like a small pet.
+"""QNXplorer pet mode: the rover reacts to your hand like a small pet.
 
 Pure Python, no dependencies. iter3-pet/vision/common/pet.hpp is a line-for-line C++
 port; tests/test_parity.py runs both on the same sessions and diffs every

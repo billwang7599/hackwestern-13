@@ -89,7 +89,7 @@ mic path does it too, and the classifier handles it.
 | robot pose (ARKit or dead reckoning) | `goto` `NAV` | 5570 | text | WATCH `N` |
 | planned route | `goto` `NAV ROUTE` (new) | 5570 | `route=x,z;…` | WATCH `T` |
 | planner grid | `goto` `NAV GRID` (new) | 5570 | RLE over the known box | WATCH `K` (1 Hz) |
-| voice: transcript, intent, confidence, what it sent, what TARS said | `tars_voice` `WATCH` (new) | 5574, tars_voice (127.0.0.1) | JSON lines: heard/sent/memory/say | WATCH `V` |
+| voice: transcript, intent, confidence, what it sent, what QNXplorer said | `tars_voice` `WATCH` (new) | 5574, tars_voice (127.0.0.1) | JSON lines: heard/sent/memory/say | WATCH `V` |
 | SAY text to the phone | tars_voice `say` events | (5573 is the phone's) | JSON | WATCH `V` |
 | phone camera | Andrew's `rgb_broker.py` latest frame | 5566 (127.0.0.1), many readers allowed | `RGB1` + JPEG | relay CAM, ≤ 5 fps |
 | phone camera (raw) | phone → Pi | 5558 / 5563 via iproxy | JPEG | **no**: the phone takes one client per stream |

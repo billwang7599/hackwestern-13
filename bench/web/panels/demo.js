@@ -39,7 +39,7 @@
           <div class="demo-step" data-s="start">${n(2)}<span class="ds-h">Car at the start</span>
             <span class="ds-b"><button class="ds-start" title="Stop, then put only the car back at the room’s start (walls, goto’s map and memory stay)">🚗 Car to start</button></span></div>` : ''}
           <div class="demo-step" data-s="ask">${n(sim ? 3 : 1)}<span class="ds-h">Ask it</span>
-            <span class="ds-b"><button class="ds-ask primary" title="Same as saying it. Or type / hold T in “Talk to TARS” below.">🗣 go to the trash can</button></span></div>
+            <span class="ds-b"><button class="ds-ask primary" title="Same as saying it. Or type / hold T in “Talk to QNXplorer” below.">🗣 go to the trash can</button></span></div>
           <div class="demo-step" data-s="watch">${n(sim ? 4 : 2)}<span class="ds-h">Watch the route on the map</span>
             <span></span><span class="ds-watch dim">the blue line is its plan</span></div>
         </div>
@@ -109,7 +109,7 @@
         if (b) { b.disabled = !wOk; b.title = wOk ? 'Stop, then put only the car back at the room’s start (walls, goto’s map and memory stay)' : 'sim not connected'; }
         if (l) { l.disabled = !wOk; l.title = wOk ? 'Load this room: the car goes to its start and goto restarts' : 'sim not connected'; }
         const gOk = !!G;
-        a.disabled = !gOk; a.title = gOk ? 'Same as saying it. Or type / hold T in “Talk to TARS” below.' : 'go-to controller not connected';
+        a.disabled = !gOk; a.title = gOk ? 'Same as saying it. Or type / hold T in “Talk to QNXplorer” below.' : 'go-to controller not connected';
         const wt = $('.ds-watch');
         let txt, cls = 'dim';
         if (!gOk) txt = 'go-to not connected yet';

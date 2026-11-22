@@ -1,4 +1,4 @@
-// "Talk to TARS": the one obvious place to give the robot a command. Type, hold to talk, or click a
+// "Talk to QNXplorer": the one obvious place to give the robot a command. Type, hold to talk, or click a
 // suggestion. Goes through the voice lab plugin (the robot's real whisper + C classifier); with
 // "Send to robot" on, the robot's tars_voice gets HEAR <text> / AUDIO and decides itself.
 // History shows every voice result (from here, the Voice lab tab or its T key): heard -> intent -> sent.
@@ -34,7 +34,7 @@
   document.head.appendChild(Object.assign(document.createElement('style'), {textContent: css}));
 
   Bench.register({
-    id: 'command', title: '🗣 Talk to TARS', order: 1, area: 'drive',
+    id: 'command', title: '🗣 Talk to QNXplorer', order: 1, area: 'drive',
     help: 'Say or type what the robot should do. No “TARS” wake word needed here.',
     mount(el) {
       el.innerHTML = `

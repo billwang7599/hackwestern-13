@@ -311,7 +311,7 @@
         $('.vl').innerHTML = (S.voice || []).slice().reverse().map(e => {
           if (e.type === 'heard') return `<div class="${e.action === 'stop' ? 'mc-k-stop' : ''}">${fmtT(e.t)} [${esc(e.src)}] “${esc(e.text)}” → <b>${esc(e.action)}</b> ${esc(e.intent)} ${(+e.prob).toFixed(2)} (${esc(e.why)})${e.lines && e.lines.length ? ': ' + esc(e.lines.join(' | ')) : ''}${e.stt_ms ? ` · whisper ${e.stt_ms} ms` : ''}</div>`;
           if (e.type === 'sent') return `<div class="mc-note">${fmtT(e.t)} → ${esc(e.to)} ${esc(e.line)} : ${esc(e.reply)}</div>`;
-          if (e.type === 'say') return `<div class="mc-k-say">${fmtT(e.t)} TARS says: ${esc(e.text)}</div>`;
+          if (e.type === 'say') return `<div class="mc-k-say">${fmtT(e.t)} QNXplorer says: ${esc(e.text)}</div>`;
           if (e.type === 'memory') return `<div class="mc-k-say">${fmtT(e.t)} memory: ${esc(e.text)}</div>`;
           return `<div class="mc-k-goto">${fmtT(e.t)} laptop ${esc(e.src || '')}: ${esc(e.text)} → ${esc(e.reply)}</div>`;
         }).join('');

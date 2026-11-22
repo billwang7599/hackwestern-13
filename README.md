@@ -1,4 +1,4 @@
-# TARS: four slabs on wheels
+# QNXplorer: four slabs on wheels
 
 For the QNX self-balancing sensor prototype, see [Right Joy-Con IMU relay](archive/JOYCON.md).
 For the wired iPhone experiment, see [MotionUSB](iter2-autonomy/iphone/README.md) and
@@ -13,7 +13,7 @@ see [QNX edge AI](iter2-autonomy/edge-ai/README.md).
 > The wheels are now **two 28BYJ-48 steppers** (exact `MOVE`/`TURN`); the DC-motor build is still
 > available with `WHEEL_TYPE WHEELS_DC` in `iter1-wasd/uno/tars/tars.ino`.
 
-A TARS-inspired robot (from *Interstellar*) for Hack Western 13.
+A QNXplorer-inspired robot (from *Interstellar*) for Hack Western 13.
 
 Four 30 cm foam-board slabs. The middle two stand on a wheeled base (two DC
 gearmotors + a caster, no balancing). The outer two are arms swung by
@@ -263,7 +263,7 @@ The old Pi↔Pico UART + TB6612 wiring still works with `-b pico` (see `archive/
       right way, wheels spin the right way, `T`/`B` events appear
 - [ ] Chassis: middle slabs on the wheeled base + caster, arms pivot at mid-height,
       clear of the floor
-- [ ] Arms straight before power-up (that's 0°); TARS standing when the Uno boots
+- [ ] Arms straight before power-up (that's 0°); QNXplorer standing when the Uno boots
 - [ ] Voice on the Pi end to end (`make -C iter2-autonomy/voice native`, phone mic via AirPods)
 - [ ] Obstacle sensor wired into `obstacle.c` (or read by the Uno and sent as a line)
 - [ ] Demo script: "set humor to 0%" / "100%", "come here", "wave"

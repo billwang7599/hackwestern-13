@@ -2,7 +2,7 @@ import Foundation
 import Network
 import AVFoundation
 
-// TARS speech link: the robot has no speaker, so goto/voice on the Pi send
+// QNXplorer speech link: the robot has no speaker, so goto/voice on the Pi send
 // short sentences here (TCP 5573, forwarded over USB by iproxy) and the phone
 // says them with on-device AVSpeechSynthesizer voices. Additive and isolated:
 // it shares no state with the sensor/status listeners.
@@ -358,7 +358,7 @@ final class SpeechLink: NSObject, ObservableObject, AVSpeechSynthesizerDelegate 
     }
 
     /// Playback category so speech is heard with the ring/silent switch on; other
-    /// audio is ducked while TARS talks and restored afterwards.
+    /// audio is ducked while QNXplorer talks and restored afterwards.
     private func beginAudioSession() {
         guard !sessionActive else { return }
         if let mic, mic.ownsSession {

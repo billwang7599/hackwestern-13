@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TARS bench</title>
+<title>QNXplorer bench</title>
 <link rel="stylesheet" href="/bench.css">
 <script src="/shell.js"></script>
 </head>
 <body data-page="drive">
 <header id="topbar">
   <button id="stop" class="stop" title="Stop the robot now: S to tars_motor, then CANCEL to goto. Shortcuts: Space or Esc, on every page (not while typing in a text box for Space)">■ STOP <kbd>Space</kbd><kbd>Esc</kbd></button>
-  <h1>TARS <span class="brand-sub">mission control</span></h1>
+  <h1>QNXplorer <span class="brand-sub">mission control</span></h1>
   <span id="badge" class="badge" title="Where the robot stack is: SIM = everything simulated on this laptop; REAL = the actual robot">…</span>
   <span class="offline-note">lost connection to the bench, retrying…</span>
   <span class="spacer"></span>
@@ -38,7 +38,7 @@
 <footer id="ticker" title="Latest log line: click to open the full log (Tests page)"><span id="ticker-text" class="mono dim">log: nothing yet</span></footer>
 <div id="help" class="overlay" hidden>
   <div class="overlay-card" role="dialog" aria-labelledby="help-title">
-    <h2 id="help-title">How to use the TARS bench</h2>
+    <h2 id="help-title">How to use the QNXplorer bench</h2>
     <ol class="steps">
       <li><b>Demo in four steps</b> (Drive page, top): pick a room → <b>🚗 Car to start</b> → say or type <i>“go to the trash can”</i> → watch the route on the map. The strip under the header always says what go-to is doing (Idle, Planning, Searching, Driving, Arrived, Failed + why).</li>
       <li><b>Check the badge.</b> <span class="badge sim">SIM</span> means a simulated car on this laptop; <span class="badge real">REAL ROBOT</span> means the real one moves.</li>

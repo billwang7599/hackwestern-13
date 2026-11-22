@@ -1,4 +1,4 @@
-"""TARS gesture logic: hand landmarks -> gesture label -> motor commands.
+"""QNXplorer gesture logic: hand landmarks -> gesture label -> motor commands.
 
 Pure Python, no dependencies, so it runs on the Mac, on QNX, and in tests.
 iter3-pet/vision/common/gesture.hpp is a line-for-line C++ port; tests/test_parity.py

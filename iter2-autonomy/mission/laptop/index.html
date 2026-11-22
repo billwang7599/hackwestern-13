@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>TARS mission control</title>
+<title>QNXplorer mission control</title>
 <style>
   :root { --bg:#111418; --panel:#1b2027; --line:#2c333d; --fg:#e6e9ee; --dim:#8a93a0; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --info:#58a6ff; }
   * { box-sizing:border-box; }
@@ -178,7 +178,7 @@ function render() {
   $('voicelog').innerHTML = (S.voice || []).slice().reverse().map(e => {
     if (e.type === 'heard') return `<div class="${e.action === 'stop' ? 'k-stop' : ''}">${fmtT(e.t)} [${esc(e.src)}] “${esc(e.text)}” → <b>${esc(e.action)}</b> ${esc(e.intent)} ${(+e.prob).toFixed(2)} (${esc(e.why)})${e.lines && e.lines.length ? ': ' + esc(e.lines.join(' | ')) : ''}${e.stt_ms ? ` · whisper ${e.stt_ms} ms` : ''}</div>`;
     if (e.type === 'sent') return `<div class="note">${fmtT(e.t)} → ${esc(e.to)} ${esc(e.line)} : ${esc(e.reply)}</div>`;
-    if (e.type === 'say') return `<div class="k-say">${fmtT(e.t)} TARS says: ${esc(e.text)}</div>`;
+    if (e.type === 'say') return `<div class="k-say">${fmtT(e.t)} QNXplorer says: ${esc(e.text)}</div>`;
     if (e.type === 'memory') return `<div class="k-say">${fmtT(e.t)} memory: ${esc(e.text)}</div>`;
     return `<div class="k-goto">${fmtT(e.t)} laptop ${esc(e.src || '')}: ${esc(e.text)} → ${esc(e.reply)}</div>`;
   }).join('');

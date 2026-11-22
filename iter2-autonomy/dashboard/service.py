@@ -101,7 +101,7 @@ def serve():
     motor_dir = HERE.parent if flat_layout else HERE.parents[1] / 'iter1-wasd/pi'
     phone_ports = (5557, 5558, 5559, 5561, 5562, 5563)
     if not flat_layout or os.environ.get("TARS_ENABLE_VOICE") == "1":
-        phone_ports += (5573, 5577)    # 5573 TARS speech -> phone, 5577 phone mic (AirPods) -> tars_voice
+        phone_ports += (5573, 5577)    # 5573 QNXplorer speech -> phone, 5577 phone mic (AirPods) -> tars_voice
     motor_command = [str(motor_dir / 'build/tars_motor'), '-b', backend, '-l', '-g', '5568']
     if backend == 'gpio':
         # Pi GPIO straight into the L298N (no Uno). TARS_MOTOR_DEVICE = options, e.g. "invl,min=0.4".

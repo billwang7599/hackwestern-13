@@ -1,4 +1,4 @@
-// TARS bench shell: loads every panel in /panels.json, gives them a shared
+// QNXplorer bench shell: loads every panel in /panels.json, gives them a shared
 // event stream and API helper, and lays the page out as a navbar of pages (one job each).
 // A panel file only calls Bench.register({...}).
 //
@@ -34,7 +34,7 @@ const Bench = (() => {
 
   // pages, in navbar order: [id, title, help (navbar tooltip), map shown?, default map view, sub-tabs?]
   const PAGES = [
-    ['drive', '🕹 Drive', 'Talk to TARS or drive by hand, and watch the map.', true, null],
+    ['drive', '🕹 Drive', 'Talk to QNXplorer or drive by hand, and watch the map.', true, null],
     ['room', '🧱 Room', 'SIMULATION: edit the sim room (add, move, delete things), load or save rooms, break sensors on purpose, map demos.', true, 'world2d', true],
     ['memory', '🧠 Memory', 'What the robot’s go-to controller remembers and where. Forget one thing or everything; send GOTO / SCAN directly.', true, 'mc-map'],
     ['voice', '🎙 Voice lab', 'The speech pipeline in depth: what the classifier decides, which lines it sends, batch accuracy with noise.', false, null],
@@ -44,8 +44,8 @@ const Bench = (() => {
   ];
   // the "What's this page for?" box at the top of each page: what it's for, what you can do, one tip
   const ABOUT = {
-    drive: ['Drive the car: tell TARS what to do in words, or drive it by hand. The map on the right shows where it is.',
-      '<b>Talk to TARS</b>: type a command or hold <kbd>T</kbd> and speak, e.g. “go to the trash can”. Turn <b>Send to robot</b> off for a dry run.',
+    drive: ['Drive the car: tell QNXplorer what to do in words, or drive it by hand. The map on the right shows where it is.',
+      '<b>Talk to QNXplorer</b>: type a command or hold <kbd>T</kbd> and speak, e.g. “go to the trash can”. Turn <b>Send to robot</b> off for a dry run.',
       '<b>Drive by hand</b>: hold <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or press the pad. Exact distances and angles are under “Exact moves”.',
       'Tip: if Path says BLOCKED, <kbd>S</kbd> (reverse) still works. <kbd>Space</kbd>, <kbd>Esc</kbd> or STOP stops everything.'],
     room: ['Build the simulated room the car drives in. Sim only: nothing here touches a real robot.',
@@ -365,7 +365,7 @@ const Bench = (() => {
     badge.title += `\ntarget: ${t.name}` + (t.name === 'pi' ? ` (relay ${t.relay})` : ` (motor ${t.motor})`) +
       (info.hidden && info.hidden.length ? `\nsim-only panels hidden: ${info.hidden.join(', ')}` : '');
     document.body.classList.toggle('real-robot', real);
-    document.title = (real ? 'REAL ROBOT · ' : 'SIM · ') + 'TARS bench';
+    document.title = (real ? 'REAL ROBOT · ' : 'SIM · ') + 'QNXplorer bench';
     for (const [id] of PAGES) ensurePage(id);   // the navbar always lists the pages in PAGES order
     logPanel();
     connect();

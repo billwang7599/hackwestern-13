@@ -1,4 +1,4 @@
-"""Teach TARS a new hand pose on the spot: features, few-shot k-NN, teach flow.
+"""Teach QNXplorer a new hand pose on the spot: features, few-shot k-NN, teach flow.
 
 Pure Python, no dependencies. iter3-pet/vision/common/learn.hpp is a line-for-line C++
 port; tests/test_parity.py runs both on the same sessions (including teaching,

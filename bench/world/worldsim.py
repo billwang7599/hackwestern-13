@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TARS bench world sim (laptop only): a room, and the phone + webcam sensors in it.
+"""QNXplorer bench world sim (laptop only): a room, and the phone + webcam sensors in it.
 
     python3 bench/world/worldsim.py --room default \
         --truth 5590 --car-ctl 5591 --ctl 5592 --state-to 127.0.0.1:5593 \
@@ -881,7 +881,7 @@ def serve(args) -> int:
 
 
 def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="TARS bench world sim")
+    ap = argparse.ArgumentParser(description="QNXplorer bench world sim")
     ap.add_argument("--room", default="default", help="room name in bench/world/rooms, or a .json path")
     ap.add_argument("--truth", type=int, default=5590, help="UDP: car truth in")
     ap.add_argument("--truth-fwd", action="append", default=[], help="host:port to copy truth datagrams to")

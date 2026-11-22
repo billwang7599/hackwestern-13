@@ -207,7 +207,7 @@ may ignore it. Blank lines get no reply.
 - **Audio:** `AVSpeechSynthesizer`, `en-US` on-device voice, no network. The
   audio session is `.playback`/`.spokenAudio` with `.duckOthers`, so it should
   speak with the silent switch on; it is deactivated when the queue empties.
-- **UI:** the last spoken line shows as a `TARS: …` caption under the guard
+- **UI:** the last spoken line shows as a `QNXplorer: …` caption under the guard
   banner on every tab. Like the other listeners it stops when the app
   backgrounds and restarts when it becomes active.
 
@@ -236,19 +236,19 @@ first time, allow microphone access. The switch is remembered. On the Pi,
 `voice.conf` has `input = phone` (the default) and `service.py` forwards
 `127.0.0.1:5577` to the phone. Then say "TARS, go to the trash can".
 
-**Status line** (under the TARS caption): listening / muted (TARS talking) /
+**Status line** (under the QNXplorer caption): listening / muted (QNXplorer talking) /
 interrupted, the input device (e.g. "Bill's AirPods Pro"), Pi linked or
 waiting, a level meter, and two switch times: `→spk` (mute to speaker ready)
-and `→mic` (end of TARS's speech to the first AirPods audio again). An orange
+and `→mic` (end of QNXplorer's speech to the first AirPods audio again). An orange
 line warns when the AirPods aren't connected (the phone's own mic is used
 then), on a call/Siri interruption, or if permission was denied.
 
 **Half duplex:** iOS keeps a Bluetooth headset's mic and output together, and
 forcing the phone speaker also switches the input to the phone mic. So while
-TARS speaks a `SAY`, the stream is muted (`M`), the reply plays from the phone
+QNXplorer speaks a `SAY`, the stream is muted (`M`), the reply plays from the phone
 speaker (`overrideOutputAudioPort(.speaker)`), then the AirPods route and the
 stream (`U`) come back. A multi-sentence reply stays muted throughout. A
-spoken "stop" during TARS's speech is not heard; ✋, the STOP button, the Uno
+spoken "stop" during QNXplorer's speech is not heard; ✋, the STOP button, the Uno
 button and the watchdog still work. When the robot mic is off, the speech link
 behaves as before (`.playback` session).
 
@@ -259,7 +259,7 @@ a time, the newest connection wins; the Pi never writes back):
 |---|---|
 | `MIC1 16000 1 s16le\n` | once per connection, then the current state (`U` or `M`) |
 | `A` len16LE payload | audio: 16 kHz mono s16le, len even, 2–8192 bytes (the app sends 20 ms = 640) |
-| `M` 0 0 / `U` 0 0 | mute (TARS talking, ignore audio) / unmute |
+| `M` 0 0 / `U` 0 0 | mute (QNXplorer talking, ignore audio) / unmute |
 | `K` 0 0 | keepalive, at least once a second when no audio flows |
 
 The Pi drops the link on anything else, or after 3 s with no packet, and

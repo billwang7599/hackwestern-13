@@ -1,4 +1,4 @@
-# Objects TARS can "go to", shared by iter2-autonomy/goto/ (detector + controller) and iter2-autonomy/voice/.
+# Objects QNXplorer can "go to", shared by iter2-autonomy/goto/ (detector + controller) and iter2-autonomy/voice/.
 #
 #   canonical name: alias, alias, ...
 #

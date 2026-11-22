@@ -1,4 +1,4 @@
-# PLAN: TARS rover, Hack Western 13
+# PLAN: QNXplorer rover, Hack Western 13
 
 Shared plan for humans and coding agents. **Read [AGENTS.md](AGENTS.md) before changing code.**
 Update the status table when you finish something.
@@ -85,7 +85,7 @@ Switch modes with a gesture (✌️), a voice command ("follow me", "gestures") 
 
 ## Iteration 3: pet mode
 
-TARS reacts to your hand like a small pet, using MediaPipe on the Pi (QNX C++ app `iter3-pet/vision/qnx/cpp/tars_gesture.cc`
+QNXplorer reacts to your hand like a small pet, using MediaPipe on the Pi (QNX C++ app `iter3-pet/vision/qnx/cpp/tars_gesture.cc`
 is the robot path). 👋 wave → wiggle hello · ✋ stay (stop) · ☝️ come here · 👍 happy spin (zoomies when
 excited) · 👎 sad back-up · ✌️ flash = 360° trick, hold = leave · ✊ hold = play dead · no hand → bored
 look-arounds, then sleep. A mood (`energy`) rises with 👍/👋 and decays, and scales speed. Enter with `--pet`
@@ -109,7 +109,7 @@ or by cycling ✌️ GESTURE → FOLLOW → PET. Rules + bounds: `iter3-pet/visi
 
 ## Ports (all localhost on the Pi)
 
-Andrew's stack: 5555 (`tars_motor`) and 5557–5569 (`iter2-autonomy/edge-ai/README.md`). Ours: **5570** `goto` control (was 5557), **5571** detections → `goto` (was 5558), **5572** LDR1 nav feed → `goto`, **5573** TARS speech → phone (Andrew's SpeechLink; `tars_voice` is a client), **5574** laptop → `tars_voice` (HEAR/AUDIO), **5575** `mission_relay` (the only one on Wi-Fi), **5576** phone status tee → relay, **5577** phone mic (AirPods) → `tars_voice` (MIC1; phone listens, voice dials). 5570–5572 and 5574–5577 are pending Andrew's sign-off.
+Andrew's stack: 5555 (`tars_motor`) and 5557–5569 (`iter2-autonomy/edge-ai/README.md`). Ours: **5570** `goto` control (was 5557), **5571** detections → `goto` (was 5558), **5572** LDR1 nav feed → `goto`, **5573** QNXplorer speech → phone (Andrew's SpeechLink; `tars_voice` is a client), **5574** laptop → `tars_voice` (HEAR/AUDIO), **5575** `mission_relay` (the only one on Wi-Fi), **5576** phone status tee → relay, **5577** phone mic (AirPods) → `tars_voice` (MIC1; phone listens, voice dials). 5570–5572 and 5574–5577 are pending Andrew's sign-off.
 
 ## Next up
 

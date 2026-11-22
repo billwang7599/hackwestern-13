@@ -1,4 +1,4 @@
-# TARS on the Pi: hands-on test checklist
+# QNXplorer on the Pi: hands-on test checklist
 
 For someone at the robot with a fresh clone who hasn't seen this repo before.
 Work top to bottom and tick things off. Each step says what you should see.

@@ -1,5 +1,5 @@
 /*
- * TARS: Arduino Uno wheel/arm/sensor/IO co-processor.
+ * QNXplorer: Arduino Uno wheel/arm/sensor/IO co-processor.
  *
  *   Pi 5 (QNX tars_motor -b uno) --USB serial 115200 8N1--> this Uno
  *     CAR = CAR_SM11 (default): Kuman SM11 smart car kit, DC TT gearmotors on the
@@ -91,7 +91,7 @@
 
 // ---- Which robot ----------------------------------------------------------------
 //   CAR_SM11   : Kuman SM11 kit (the default). Sets WHEEL_TYPE, DRIVER_TYPE, pins.
-//   CAR_CUSTOM : the hand-built TARS; pick WHEEL_TYPE / DRIVER_TYPE below
+//   CAR_CUSTOM : the hand-built QNXplorer; pick WHEEL_TYPE / DRIVER_TYPE below
 //                (default: 28BYJ-48 stepper wheels).
 // Passing -DWHEEL_TYPE=... or -DDRIVER_TYPE=... (the host tests do) means CUSTOM.
 #define WHEELS_DC      1

@@ -1,6 +1,6 @@
-# Building TARS (wheeled, stands on its own, stepper arms)
+# Building QNXplorer (wheeled, stands on its own, stepper arms)
 
-A desk-scale TARS: four tall foam-board slabs. The **two middle slabs** are the
+A desk-scale QNXplorer: four tall foam-board slabs. The **two middle slabs** are the
 body and sit on a base with two drive wheels and a caster, so it stands on its
 own with no balancing loop. The **two outer slabs** are the arms. Each one hangs
 from a 28BYJ-48 stepper and swings forward/back for gestures (wave, point,
@@ -25,7 +25,7 @@ shrug, nod, the split "stance", fold).
 | Middle slabs (×2) | 30 × 7.5 cm, 5 mm foam board | glue them together **with a 2–3 cm spacer box between them** to hold the electronics |
 | Outer slabs / arms (×2) | 26 × 7.5 cm | shorter so they clear the floor when they swing |
 | Base plate | ~12 × 10 cm, stiff cardboard or 2 layers of foam board | under the middle slabs, carries motors, caster, battery |
-| Depth of all slabs | 3–4 cm boxes (fold foam board into a hollow box) or flat 5 mm boards | hollow boxes look more like TARS but weigh more |
+| Depth of all slabs | 3–4 cm boxes (fold foam board into a hollow box) or flat 5 mm boards | hollow boxes look more like QNXplorer but weigh more |
 
 Keep the **arm slabs light** (see the torque section). A flat 26 × 7.5 cm piece of
 5 mm foam board weighs about 6–8 g. Paint and tape add more than you'd think.
@@ -68,7 +68,7 @@ Keep the **arm slabs light** (see the torque section). A flat 26 × 7.5 cm piece
   needs 10 g × 13 cm = 0.13 kg·cm just to hold it horizontal, and any decoration
   makes the motor skip steps. **Keep arms light and pivot them near their centre of mass.**
 - **Speed:** about 60°/s at most (the firmware caps it at 60°/s, default 45°/s).
-  A wave takes ~6.5 s. That's slow, but in character for TARS.
+  A wave takes ~6.5 s. That's slow, but in character for QNXplorer.
 - **Zero:** the steppers have no end-stop. Before powering up, hang both arms
   straight (flush with the body). Power-up position = 0°. If they drift, move
   them back by hand and send `ZERO`. Do the same if the Uno ever reboots (the
@@ -163,7 +163,7 @@ boot line `# adxl345 at 0x53` or `# mpu6050 at 0x68` says which it found:
 | MPU6050 / GY-521 | 0x68 (AD0 low), 0x69 | ±8 g |
 
 Mount it **flat on the base plate or low on the body**, not on an arm, or arm
-swings will register as bumps. Boot TARS **standing upright**: the firmware
+swings will register as bumps. Boot QNXplorer **standing upright**: the firmware
 takes the boot orientation as "upright". Otherwise send `LEVEL` once it's standing.
 
 **ULN2003 boards:** `+` to the separate 5 V, `-` to common GND. The 5-pin
