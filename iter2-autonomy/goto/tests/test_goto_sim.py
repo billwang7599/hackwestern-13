@@ -577,7 +577,7 @@ def test_scenarios(exe: str, scale: float) -> None:
 
     r = drive_scene(exe, scale, 3, 1.5, 0.0, label="trash can", say="door", distractor=False, timeout=120)
     turns = [l for _, l in r["log"] if l.startswith("TURN")]
-    check(r["result"] == "failed:not_found" and len(turns) == 12 and 3 in r["beeps"],
+    check(r["result"] in ("failed:not_found", "failed:not_found_no_memory") and len(turns) == 12 and 3 in r["beeps"],
           f"object not in the room: 12 x 30 deg then give up + BEEP 3 ({r['result']}, {len(turns)} turns)")
 
     r = drive_scene(exe, scale, 4, 2.5, 20.0, obj_h=1.7, obj_r=0.2, label="person", say="me")

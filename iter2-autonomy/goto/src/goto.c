@@ -444,10 +444,10 @@ static void nav_snapshot(int fd)
         "{\"source\":\"native-nav\",\"instance\":%ld,\"epoch\":%u,\"version\":%u,"
         "\"session\":\"%s\",\"size\":%d,\"resolution\":%.2f,\"origin\":[%.2f,%.2f],"
         "\"live\":%s,\"feed_age_s\":%.3f,\"floor_ready\":%s,\"floor_y\":%.4f,"
-        "\"pose\":[%.4f,%.4f,%.4f,%.5f],\"robot_radius\":%.2f,\"grid\":\"",
+        "\"pose\":[%.4f,%.4f,%.4f,%.5f],\"robot_radius\":%.3f,\"guard_half_width\":%.3f,\"guard_stop\":%.3f,\"grid\":\"",
         (long)getpid(), nav_generation(nav), nav_version(nav), nav_session, NAV_SIZE, NAV_RES,
         NAV_ORIGIN_X, NAV_ORIGIN_Z, live ? "true" : "false", age, have_floor ? "true" : "false",
-        floor, x, cy, z, yaw, NAV_DEFAULT_ROBOT_RADIUS);
+        floor, x, cy, z, yaw, nav_robot_radius(nav), cfg.nav_guard_half_w, cfg.nav_guard_stop_m);
     for (int iz = 0; iz < NAV_SIZE; iz++)
         for (int ix = 0; ix < NAV_SIZE; ix++) out[o++] = (char)('0' + nav_cell_at(nav, ix, iz));
     o += (size_t)snprintf(out + o, cap - o, "\",\"path\":[");
@@ -598,10 +598,12 @@ static void handle_ctl(conn *c, char *line)
         float x = 0, z = 0, yaw = 0;
         int src = nav ? nav_get_pose(nav, &x, &z, &yaw) : NAV_POSE_NONE;
         static const char *sn[] = {"none", "arkit", "dr", "stale"};
-        snprintf(reply, sizeof reply, "OK pose=%s,%.2f,%.2f,%.1f free=%d occ=%d version=%u packets=%ld bad=%ld feed_age=%.2f\n",
+        snprintf(reply, sizeof reply, "OK pose=%s,%.2f,%.2f,%.1f free=%d occ=%d version=%u packets=%ld bad=%ld feed_age=%.2f"
+                 " robot_radius=%.3f guard_half_width=%.3f guard_stop=%.3f blocked_cells=%d\n",
                  sn[src & 3], x, z, yaw * 180 / M_PI, nav ? nav_count(nav, NAV_FREE) : 0,
                  nav ? nav_count(nav, NAV_OCC) : 0, nav ? nav_version(nav) : 0, nav_pkts, nav_bad,
-                 nav_last_pkt < 0 ? -1.0 : (now_s() - nav_last_pkt) / time_scale);
+                 nav_last_pkt < 0 ? -1.0 : (now_s() - nav_last_pkt) / time_scale,
+                 nav ? nav_robot_radius(nav) : 0.0f, cfg.nav_guard_half_w, cfg.nav_guard_stop_m, nav ? nav_temp_count(nav) : 0);
         send_str(c->fd, reply);
     } else if (!strcasecmp(cmd, "SCAN")) {
         if (!motor_ready(c)) return;
@@ -806,7 +808,11 @@ int main(int argc, char **argv)
     /* logs go to files under run_sim / the bench: line-buffer both so the tail survives a kill */
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
-    while ((opt = getopt(argc, argv, "m:p:u:n:ic:o:M:r:vT:h")) != -1) {
+    int guard_flags = 0;
+    /* --guard-flags: print the lidar_guard flags that match goto.conf's car size, then exit */
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--guard-flags")) { guard_flags = 1; argv[i] = "-G"; }
+    while ((opt = getopt(argc, argv, "m:p:u:n:ic:o:M:r:vT:hG")) != -1) {
         switch (opt) {
         case 'm': {
             char *colon = strrchr(optarg, ':');
@@ -824,6 +830,7 @@ int main(int argc, char **argv)
         case 'r': rt_prio = atoi(optarg); break;
         case 'v': verbose++; break;
         case 'T': time_scale = atof(optarg); if (time_scale <= 0) time_scale = 1; break;
+        case 'G': guard_flags = 1; break;
         default: usage(argv[0]); return opt == 'h' ? 0 : 2;
         }
     }
@@ -837,12 +844,20 @@ int main(int argc, char **argv)
         if (goto_cfg_load(&cfg, cfg_path, err, sizeof err) < 0) { fprintf(stderr, "goto: can't read %s\n", cfg_path); return 1; }
         if (err[0]) fprintf(stderr, "goto: %s: %s (ignored)\n", cfg_path, err);
     }
+    if (guard_flags) {
+        printf("--half-width %.3f --stop-distance %.3f\n", cfg.nav_guard_half_w, cfg.nav_guard_stop_m);
+        return 0;
+    }
+    fprintf(stderr, "goto: car %s: robot_radius=%.3f m (nav inflation) guard half_width=%.3f m stop=%.3f m hfov=%.0f"
+            " -> lidar_guard --half-width %.3f --stop-distance %.3f%s\n",
+            cfg.car_derived ? "from car_length_m/car_width_m/safety_margin_m" : "legacy (car_* unset)",
+            cfg.robot_radius_m, cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_hfov_deg,
+            cfg.nav_guard_half_w, cfg.nav_guard_stop_m, cfg.nav_guard_plan > 0 ? "" : " (guard-aware planning OFF)");
     goto_objects_defaults(&objs);
     if (obj_path && goto_objects_load(&objs, obj_path) < 0) { fprintf(stderr, "goto: can't read %s\n", obj_path); return 1; }
     goto_sm_init(&sm, &cfg, &objs);
     nav = nav_new();
-    if (nav && cfg.robot_radius_m > 0) nav_set_robot_radius(nav, (float)cfg.robot_radius_m);
-    if (!nav) { fprintf(stderr, "goto: out of memory for the nav grid\n"); return 1; }
+    if (!nav) { fprintf(stderr, "goto: out of memory for the nav grid\n"); return 1; }   /* set_nav: radius + guard box */
     goto_sm_set_nav(&sm, nav);
 
     /* memory file: -M, else memory_path; relative paths sit next to goto.conf */

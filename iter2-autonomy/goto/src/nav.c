@@ -35,6 +35,16 @@ struct nav {
     unsigned char frame[N_CELLS], clear_hits[N_CELLS];
     uint64_t clear_since[N_CELLS], clear_last[N_CELLS];
     double robot_radius;
+    /* guard-aware planning (nav_set_guard_box) */
+    double guard_stop, guard_half_w, guard_hfov;
+    int    guard_on;
+    int    guard_n[8];
+    int16_t guard_off[8][640][2];
+    unsigned short gmemo[N_CELLS];  /* bit k: dir k computed, bit 8+k: dir k blocked */
+    unsigned char tblock[N_CELLS];
+    int    n_tblock;
+    int    ign_on;
+    double ign_x, ign_z, ign_r;
     int    have_floor;
     double floor_y;
 
@@ -106,6 +116,8 @@ void nav_reset(nav_t *n)
     n->generation++;
     n->have_floor = 0;
     n->ark_ok = n->have_ark = n->have_dr = n->have_anchor = n->have_lost = 0;
+    memset(n->tblock, 0, sizeof n->tblock);
+    n->n_tblock = 0;
     n->version++;
 }
 
@@ -117,6 +129,113 @@ void nav_set_robot_radius(nav_t *n, float metres)
     double r = round((double)metres * 1e6) / 1e6;
     if (n->robot_radius != r) { n->robot_radius = r; n->version++; }
 }
+
+float nav_robot_radius(const nav_t *n) { return n ? (float)n->robot_radius : (float)NAV_DEFAULT_ROBOT_RADIUS; }
+
+/* the 8 A* directions, same order as the planner */
+static const int GDX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
+static const int GDZ[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+
+/* Offsets (cells) of lidar_guard's box from a cell centre along grid direction k, stretched by
+ * one step: an obstacle in any of them stops a robot driving that step. Half a cell of slack on
+ * every test (an obstacle is anywhere inside its cell). */
+static void guard_offsets(nav_t *n)
+{
+    const double m = 0.5 * NAV_RES;
+    double ta = n->guard_hfov >= 180 ? 1e9 : tan(n->guard_hfov / 2 * M_PI / 180.0);
+    for (int k = 0; k < 8; k++) {
+        double L = hypot(GDX[k], GDZ[k]), ux = GDX[k] / L, uz = GDZ[k] / L;
+        double reach = n->guard_stop + L * NAV_RES + m;
+        int R = (int)ceil(reach / NAV_RES) + 1, c = 0;
+        for (int i = -R; i <= R; i++)
+            for (int j = -R; j <= R; j++) {
+                double dx = i * NAV_RES, dz = j * NAV_RES;
+                double f = ux * dx + uz * dz, side = fabs(uz * dx - ux * dz);
+                if (f <= 0 || f > reach || side >= n->guard_half_w + m || side >= f * ta + m) continue;
+                if (c < 640) { n->guard_off[k][c][0] = (int16_t)i; n->guard_off[k][c][1] = (int16_t)j; c++; }
+            }
+        n->guard_n[k] = c;
+    }
+}
+
+void nav_set_guard_box(nav_t *n, float stop_m, float half_w, float hfov_deg)
+{
+    if (!n) return;
+    if (!isfinite(stop_m) || !isfinite(half_w) || !isfinite(hfov_deg) || stop_m <= 0 || half_w <= 0 ||
+        stop_m > 1.5f || half_w > 1.0f) {
+        n->guard_stop = 0; n->guard_on = 0; return;
+    }
+    n->guard_stop = round((double)stop_m * 1e6) / 1e6;
+    n->guard_half_w = round((double)half_w * 1e6) / 1e6;
+    n->guard_hfov = hfov_deg > 0 ? hfov_deg : 180;
+    n->guard_on = 1;
+    guard_offsets(n);
+    n->version++;
+}
+
+void nav_set_guard_active(nav_t *n, int on) { if (n) n->guard_on = on && n->guard_stop > 0; }
+int  nav_guard_active(const nav_t *n) { return n && n->guard_on; }
+
+static int blocked_idx(const nav_t *n, int idx) { return n->grid[idx] == NAV_OCC || n->tblock[idx]; }
+
+/* 1 if stepping from (x, z) in direction k keeps the guard's box clear */
+static int guard_step_ok(nav_t *n, int x, int z, int k)
+{
+    int idx = z * NAV_SIZE + x;
+    unsigned short g = n->gmemo[idx];
+    if (g & (1u << k)) return !(g & (1u << (8 + k)));
+    int ok = 1;
+    for (int i = 0; i < n->guard_n[k] && ok; i++) {
+        int cx = x + n->guard_off[k][i][0], cz = z + n->guard_off[k][i][1];
+        if (cx < 0 || cz < 0 || cx >= NAV_SIZE || cz >= NAV_SIZE) continue;
+        if (!blocked_idx(n, cz * NAV_SIZE + cx)) continue;
+        if (n->ign_on) {
+            double wx = NAV_ORIGIN_X + (cx + 0.5) * NAV_RES, wz = NAV_ORIGIN_Z + (cz + 0.5) * NAV_RES;
+            if (hypot(wx - n->ign_x, wz - n->ign_z) <= n->ign_r) continue;
+        }
+        ok = 0;
+    }
+    n->gmemo[idx] = (unsigned short)(g | (1u << k) | (ok ? 0 : 1u << (8 + k)));
+    return ok;
+}
+
+int nav_guard_clear(const nav_t *n, float x, float z, float yaw, float ix, float iz, float ignore_r)
+{
+    int cx, cz;
+    if (!n || n->guard_stop <= 0 || !nav_world_to_cell(x, z, &cx, &cz)) return 1;
+    const double m = 0.5 * NAV_RES;
+    double ta = n->guard_hfov >= 180 ? 1e9 : tan(n->guard_hfov / 2 * M_PI / 180.0);
+    double fx = sin(yaw), fz = cos(yaw);
+    int r = (int)ceil((n->guard_stop + m) / NAV_RES) + 1;
+    for (int i = -r; i <= r; i++)
+        for (int k = -r; k <= r; k++) {
+            int ax = cx + i, az = cz + k;
+            if (ax < 0 || az < 0 || ax >= NAV_SIZE || az >= NAV_SIZE || !blocked_idx(n, az * NAV_SIZE + ax)) continue;
+            double wx = NAV_ORIGIN_X + (ax + 0.5) * NAV_RES, wz = NAV_ORIGIN_Z + (az + 0.5) * NAV_RES;
+            if (ignore_r > 0 && hypot(wx - ix, wz - iz) <= ignore_r) continue;
+            double dx = wx - x, dz = wz - z, f = fx * dx + fz * dz, side = fabs(fz * dx - fx * dz);
+            if (f > -m && f <= n->guard_stop + m && side < n->guard_half_w + m && side < f * ta + m) return 0;
+        }
+    return 1;
+}
+
+void nav_temp_block(nav_t *n, float x, float z)
+{
+    int ix, iz;
+    if (!n || !nav_world_to_cell(x, z, &ix, &iz)) return;
+    int idx = iz * NAV_SIZE + ix;
+    if (!n->tblock[idx]) { n->tblock[idx] = 1; n->n_tblock++; n->version++; }
+}
+
+void nav_temp_clear(nav_t *n)
+{
+    if (!n || !n->n_tblock) return;
+    memset(n->tblock, 0, sizeof n->tblock);
+    n->n_tblock = 0;
+    n->version++;
+}
+
+int nav_temp_count(const nav_t *n) { return n ? n->n_tblock : 0; }
 
 int nav_cell_at(const nav_t *n, int ix, int iz)
 {
@@ -488,7 +607,7 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
     for (int z = 0; z < NAV_SIZE; z++) {
         int32_t row = 0;
         for (int x = 0; x < NAV_SIZE; x++) {
-            row += n->grid[z * NAV_SIZE + x] == NAV_FREE;
+            row += n->grid[z * NAV_SIZE + x] == NAV_FREE && !n->tblock[z * NAV_SIZE + x];
             n->prefix[(z + 1) * STRIDE + x + 1] = n->prefix[z * STRIDE + x + 1] + row;
         }
     }
@@ -522,6 +641,12 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
     if (!n_goals) return NAV_ERR_NO_GOAL;
 
     for (int i = 0; i < N_CELLS; i++) { n->g[i] = INFINITY; n->pos[i] = -1; n->parent[i] = -1; }
+    int guard = n->guard_on && n->guard_stop > 0;
+    if (guard) {
+        memset(n->gmemo, 0, sizeof n->gmemo);
+        n->ign_on = ring_min >= 0.3;          /* an object goal: stopping in front of it is docking */
+        n->ign_x = tx; n->ign_z = tz; n->ign_r = NAV_GUARD_IGNORE_R;
+    }
     int start = s_z * NAV_SIZE + s_x, size = 0, end = -1;
     n->g[start] = 0.0;
     n->f[start] = heuristic(start, t_x, t_z, span);
@@ -539,6 +664,7 @@ static int nav_plan_ring_d(nav_t *n, float sx, float sz, float tx, float tz, dou
             if (!is_clear(n, nx, nz)) continue;
             /* never cut diagonally between blocked or unknown cells */
             if (DX[k] && DZ[k] && (!is_clear(n, x + DX[k], z) || !is_clear(n, x, z + DZ[k]))) continue;
+            if (guard && !guard_step_ok(n, x, z, k)) continue;
             double ng = n->g[cur] + (DX[k] && DZ[k] ? sqrt(2.0) : 1.0);
             int nxt = nz * NAV_SIZE + nx;
             if (ng < n->g[nxt]) {

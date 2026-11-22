@@ -90,6 +90,31 @@ nav_t *nav_new(void);                     /* ~2.2 MiB, all scratch preallocated;
 void   nav_free(nav_t *n);
 void   nav_reset(nav_t *n);               /* all cells UNKNOWN, pose/anchor/floor forgotten */
 void   nav_set_robot_radius(nav_t *n, float metres);  /* footprint for inflation (default 0.35) */
+float  nav_robot_radius(const nav_t *n);
+
+/* Guard-aware planning (off by default, so plans match mapping.py exactly).
+ * lidar_guard refuses a forward move while an obstacle is within stop_m ahead and
+ * |side| < half_w (inside the phone LiDAR's hfov cone). With a box set, an A* step from a cell
+ * in one of the 8 grid directions is only allowed if that box, from the cell centre along that
+ * direction and stretched by the step length, holds no OCC (or temporarily blocked) cell, with
+ * half a cell of slack. Corners are kept, so every route leg is a grid direction, and the route
+ * is one the guard lets through as far as the map knows. For object goals (ring_min >= 0.3)
+ * obstacles within NAV_GUARD_IGNORE_R of the target are ignored: stopping in front of the
+ * target is docking. stop_m <= 0 turns it off. nav_set_guard_active() switches it off/on for
+ * one plan (goto's relaxed fallback) without forgetting the box. */
+#define NAV_GUARD_IGNORE_R 0.35
+void   nav_set_guard_box(nav_t *n, float stop_m, float half_w, float hfov_deg);
+void   nav_set_guard_active(nav_t *n, int on);
+int    nav_guard_active(const nav_t *n);
+/* The same box test for one pose (x, z, yaw; forward = (sin yaw, cos yaw)): 1 clear, 0 an
+ * OCC/temporarily blocked cell in it. ignore_r > 0: cells within ignore_r of (ix, iz) don't count. */
+int    nav_guard_clear(const nav_t *n, float x, float z, float yaw, float ix, float iz, float ignore_r);
+
+/* Temporarily blocked cells (a guard refusal the map can't explain): planned around like OCC
+ * (inflation and guard box) but never written into the map. The caller decays them. */
+void   nav_temp_block(nav_t *n, float x, float z);
+void   nav_temp_clear(nav_t *n);
+int    nav_temp_count(const nav_t *n);
 
 void nav_set_pose(nav_t *n, float x, float z, float yaw_rad, int tracking_ok);
 void nav_note_dr(nav_t *n, float dr_x, float dr_z, float dr_yaw_rad);   /* dead reckoning, its own frame, same yaw convention */

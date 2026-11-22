@@ -106,6 +106,43 @@ The phone's LDR1 feed on 5572 builds `nav.c`'s grid and gives an ARKit pose. Whe
 - **Pose rule** (nav.h): ARKit while LDR1 packets say tracking + heading OK and the last one is < `nav_pose_fresh_s` (0.5 s) old. Otherwise dead reckoning: `tars_motor` STATUS `pose=` → `nav_note_dr(-y, x, -hdg)` in metres/radians, carried into the ARKit frame from the last tracked moment. Stale/none → no map driving.
 - **Stop wins**: `CANCEL`, or any `S` (the `stops=` counter), from any state including mid-leg and PLAN wait. Tip/bump/watchdog/guard live in `tars_motor` underneath all of it.
 
+### Car size, the guard's box and getting unstuck
+
+**One source of truth.** `goto.conf` holds the car's size: `car_length_m`, `car_width_m`,
+`safety_margin_m`, `guard_stop_m`. goto derives the nav inflation radius (half the diagonal + margin),
+the guard corridor half-width (width / 2 + margin) and the stop distance, and prints them at startup,
+in `NAV` (`robot_radius= guard_half_width= guard_stop= blocked_cells=`) and in `NAV SNAPSHOT`.
+`goto -c goto.conf --guard-flags` prints the lidar_guard flags that match, e.g.
+`--half-width 0.167 --stop-distance 0.300` for the SM11 guess (0.20 x 0.175 m, margin 0.08, stop 0.30).
+`iter2-autonomy/dashboard/service.py` passes them to `lidar_guard`. `car_* = 0` keeps the legacy
+0.35 / 0.45 / 0.6 (lidar_guard's own defaults). The SM11 values are guesses from a photo: measure the car.
+
+**The planner never plans a leg the guard would stop** (`nav_guard_plan = 1`). A* only takes a step in a
+grid direction if lidar_guard's box (stop distance x half-width, inside the phone's 60° cone, half a
+cell of slack) holds no mapped obstacle. Obstacles within 0.35 m of an object goal don't count:
+stopping in front of the target is docking. If the box leaves no route at all, the old plan
+(inflation only) is used and the event says `route ... relaxed`. A route that passed the check is
+re-planned the moment the map shows something new in its box. `STATUS` counts
+`guard_refusals=` (ERR when asked) and `guard_aborts=` (stopped while running) with a fresh
+guard_blocked on goto's own motions. On a known map both must be 0 (full-stack `check_no_refusals`).
+`guard_stops_other=` counts stale/missing guard stops (a sensor timing hiccup, not the planner).
+
+**Stuck recovery: backtracking** (`nav_backtrack = 1`). goto keeps a breadcrumb trail of where it drove
+(every ~0.1 m and at each leg start). "Stuck" means: a fresh guard_blocked refused or stopped a forward
+leg (its zone's far edge is then marked blocked for `nav_block_s`), the re-plan gives the same first leg
+again, two TURNs in a row are stopped by the guard, or there's no route. Each stuck event climbs one
+rung, and a finished path leg resets the ladder: (a) reverse ~0.25 m along the trail, then re-plan;
+(b) reverse to the previous leg start; (c) reverse along the rest of the trail; (d) the old wait,
+re-plan and `failed:blocked`. Reverses re-aim at each trail point (TURN so the back faces it, then
+`MOVE -mm` at speed 0.5). tars_motor allows a reverse MOVE under a fresh guard_blocked (*pending
+Andrew*). S, CANCEL, ✋, bump and tip stop it like any move. EVENT `backtrack <a|b|c> <mm>`.
+
+**Not there means seen-not-there.** A guard stop on a route or detour leg is never "not there": a failed
+re-plan to a vantage cell tries another stand-off cell or the approach ring first. A LOOK that fails
+while the map says a wall hides the spot reports `occluded` and leaves the memory alone. A search spin
+only starts from a cell with line of sight to the remembered spot, else goto first goes to a stand-off
+cell that has one (`standoff_search`).
+
 ### Assumptions (made without asking; change them here if wrong)
 
 1. **Ports**: ours move to 5570/5571/5572 to clear Andrew's 5557/5558 (phone motion, preview). *Needs Andrew's sign-off.* The LDR1 copy for `goto` comes on 5572 (TCP length-prefixed, or one UDP datagram ≤ ~9 KB on macOS). Who sends it (the phone directly, or Andrew's service teeing what it gets on 5562) isn't built yet; the sim plays the phone.

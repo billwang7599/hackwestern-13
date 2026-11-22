@@ -117,21 +117,22 @@ class World:
         x1, y1 = x0 + size, y0 + size
         self.walls += [((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))]
         self.cans: list[list[float]] = []      # [x, y]
+        self.glass: list = []                  # walls only the guard sees (not the phone map, not YOLO)
         self.lock = threading.Lock()
 
-    def segments(self, with_cans=True):
-        segs = list(self.walls)
+    def segments(self, with_cans=True, glass=False):
+        segs = list(self.walls) + (list(self.glass) if glass else [])
         if with_cans:
             for c in self.cans:
                 segs += box(c[0], c[1], CAN_R, CAN_R)
         return segs
 
-    def ray(self, px, py, ang, maxd=4.0, with_cans=True):
+    def ray(self, px, py, ang, maxd=4.0, with_cans=True, glass=False):
         dx, dy = math.cos(ang), math.sin(ang)
         best = maxd
         hit = False
         with self.lock:
-            segs = self.segments(with_cans)
+            segs = self.segments(with_cans, glass)
         for a, b in segs:
             t = seg_hit(px, py, dx, dy, a, b)
             if t is not None and t < best:
@@ -260,7 +261,7 @@ class Sensors:
             blocked = False
             for k in range(GUARD_RAYS):
                 a = -GUARD_HFOV / 2 + GUARD_HFOV * k / (GUARD_RAYS - 1)
-                t, hit = self.w.ray(x, y, h + a, GUARD_M / math.cos(a) + 1e-6)
+                t, hit = self.w.ray(x, y, h + a, GUARD_M / math.cos(a) + 1e-6, glass=True)
                 if hit and t * math.cos(a) <= GUARD_M and abs(t * math.sin(a)) < GUARD_HALF_W:
                     blocked = True
                     break
@@ -458,9 +459,20 @@ class Stack:
     def dump(self, name):
         if VERBOSE or True:
             print(f"    [{name}] events: {' | '.join(self.goto.events)[:900]}")
+            st = self.goto.status()
+            print(f"    [{name}] guard_refusals={st.get('guard_refusals')} guard_aborts={st.get('guard_aborts')} "
+                  f"guard_stops_other={st.get('guard_stops_other')} backtracks={st.get('backtracks')} replans={st.get('replans')}")
             g = self.sens.guard_gaps
             if g:
                 print(f"    [{name}] fake guard: max gap {1000 * max(g):.0f} ms, {sum(x >= 0.1 for x in g)} gaps >= 100 ms (tars_motor TTL)")
+
+
+def check_no_refusals(st: "Stack", s: dict, name: str) -> None:
+    """The map knows every obstacle in this room, so the planner must never pick a leg the guard
+    then stops: zero refusals (ERR when asked) and zero aborts (stopped while running) on path legs
+    with a fresh guard_blocked. A refusal is only allowed for something the map doesn't hold."""
+    r, a = int(s.get("guard_refusals", -1)), int(s.get("guard_aborts", -1))
+    check(r == 0 and a == 0, f"{name}: known map, no guard refusals on path legs (refused {r}, aborted {a})")
 
 
 # ------------------------------------------------------------------ scenarios
@@ -483,6 +495,7 @@ def sc_obstacle():
         check(d < 0.95, f"stopped next to the bin ({d:.2f} m centre to centre)")
         check(st.min_wall_clearance() > 0.2, f"never closer than 0.2 m to a wall ({st.min_wall_clearance():.2f} m)")
         check(not any(p[0] > 1.15 and p[0] < 1.45 and abs(p[1]) < 0.6 for p in st.sens.trace), "never drove through the wall")
+        check_no_refusals(st, s, "obstacle")
     finally:
         st.close()
 
@@ -604,6 +617,7 @@ def sc_wallmem():
         inside = any(1.25 - 0.05 < p[0] < 1.55 + 0.05 and -0.2 - 0.05 < p[1] < 1.0 + 0.05 for p in st.sens.trace)
         check(not inside, "never drove through the wall")
         check(s["result"] == "arrived" and d < 0.95, f"routed round the wall and docked at the bin ({s['result']}, {d:.2f} m)")
+        check_no_refusals(st, s, "wallmem")
     finally:
         st.close()
 
@@ -631,6 +645,7 @@ def sc_wallmem_search():
         inside = any(1.25 - 0.05 < p[0] < 1.55 + 0.05 and -0.2 - 0.05 < p[1] < 1.0 + 0.05 for p in st.sens.trace)
         check(not inside, "never drove through the wall")
         check(s["result"] == "arrived" and d < 0.95, f"arrived at the bin ({s['result']}, {d:.2f} m)")
+        check_no_refusals(st, s, "wallmem_search")
     finally:
         st.close()
 
@@ -659,6 +674,7 @@ def sc_diagwall():
         d = math.hypot(x - 2.0, y - 0.3)
         check(not any(e.startswith("no_route") for e in st.goto.events), "no no_route while the room is open round the wall")
         check(s["result"] == "arrived" and d < 0.95, f"routed round the diagonal wall and docked ({s['result']}, {d:.2f} m)")
+        check_no_refusals(st, s, "diagwall")
     finally:
         st.close()
 
@@ -680,6 +696,145 @@ def sc_shortwall():
         inside = any(0.35 < p[0] < 0.55 and abs(p[1]) < 0.55 for p in st.sens.trace)
         check(not inside, "never drove through the wall")
         check(s["result"] == "arrived" and d < 0.95, f"got round the short wall and docked ({s['result']}, {d:.2f} m)")
+        check_no_refusals(st, s, "shortwall")
+    finally:
+        st.close()
+
+
+def sc_offsetwall():
+    """user's third demo: a short wall ~0.5 m ahead, off to one side, open floor everywhere else.
+    The guard refused the first 130-160 mm MOVE 7 times; every re-plan gave the same route."""
+    print("full-stack: OFFSETWALL: a short wall 0.5 m ahead, off to one side, remembered bin behind it")
+    w = World(size=7.0, x0=-2.0, y0=-3.5)
+    w.cans.append([2.4, 0.3])
+    w.walls.extend(box(0.55, 0.35, 0.05, 0.4))         # face 0.5 m ahead, y -0.05 .. 0.75
+    st = Stack(w, mem_file([(2.4, 0.3)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("offsetwall")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 2.4, y - 0.3)
+        inside = any(0.45 < p[0] < 0.65 and -0.1 < p[1] < 0.8 for p in st.sens.trace)
+        check(not inside, "never drove through the wall")
+        check(s["result"] == "arrived" and d < 0.95, f"got round the offset wall and docked ({s['result']}, {d:.2f} m)")
+        check_no_refusals(st, s, "offsetwall")
+    finally:
+        st.close()
+
+
+def sc_openbin():
+    """bench open_bin (10 x 8 m, start at the origin, bin at (2.0, 0.3), water bottle at (1.2, -1.2))"""
+    print("full-stack: OPENBIN: the bench's open_bin room, remembered bin")
+    w = World(size=10.0, x0=-3.0, y0=-5.0)
+    w.cans.append([2.0, 0.3])
+    w.walls.extend(box(1.2, -1.2, 0.04, 0.04))          # the water bottle
+    st = Stack(w, mem_file([(2.0, 0.3)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(200)
+        st.dump("openbin")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 2.0, y - 0.3)
+        check(s["result"] == "arrived" and d < 0.95, f"open_bin: docked at the bin ({s['result']}, {d:.2f} m)")
+        check_no_refusals(st, s, "openbin")
+    finally:
+        st.close()
+
+
+def sc_lpocket():
+    """user's 4th demo (bench open_bin, kothar/bench f64db61): the bin sits in a pocket behind an
+    L-shaped wall, the memory spot is right. Main's goto: detour, a guard stop on a detour leg went
+    straight to next_candidate, then a 360 search from the wrong side of the wall: failed:not_found.
+    Must: route round the L's open end into the pocket, zero guard refusals on the mapped walls,
+    never a not_there for the hidden spot, arrived."""
+    print("full-stack: LPOCKET: remembered bin in a pocket behind an L-shaped wall")
+    w = World(size=7.0, x0=-2.0, y0=-3.5)
+    w.cans.append([2.6, 0.1])
+    w.walls.extend(box(1.8, 0.0, 0.05, 0.8))           # the L's long bar, between the robot and the bin
+    w.walls.extend(box(2.55, 0.85, 0.8, 0.05))         # the L's foot along the pocket's far side
+    st = Stack(w, mem_file([(2.6, 0.1)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("lpocket")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 2.6, y - 0.1)
+        ev = st.goto.events
+        inside = any((1.7 < p[0] < 1.9 and -0.85 < p[1] < 0.85) or (1.7 < p[0] < 3.4 and 0.75 < p[1] < 0.95)
+                     for p in st.sens.trace)
+        check(not inside, "never drove through the L")
+        check(not any(e.startswith("not_there") for e in ev), "no not_there for a spot the wall hides")
+        check(s["result"] == "arrived" and d < 0.95, f"routed into the pocket and docked ({s['result']}, {d:.2f} m)")
+        check_no_refusals(st, s, "lpocket")
+    finally:
+        st.close()
+
+
+def glass_world():
+    w = World(size=7.0, x0=-2.0, y0=-3.5)
+    w.cans.append([2.6, 0.0])
+    # a glass pane across the straight line to the bin: the guard sees it, the phone map and YOLO don't
+    w.glass.extend(box(1.3, 0.0, 0.03, 0.45))
+    return w
+
+
+def sc_glass():
+    """something the map can't hold (glass: lidar_guard stops on it, the phone's map never gets it).
+    The planner's straight route is stopped by the guard; goto marks the zone, backtracks along the
+    trail and re-plans round it."""
+    print("full-stack: GLASS: an obstacle only the guard sees -> refused leg, backtrack, re-plan round it")
+    w = glass_world()
+    st = Stack(w, mem_file([(2.6, 0.0)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(300)
+        st.dump("glass")
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - 2.6, y)
+        ev = st.goto.events
+        inside = any(1.24 < p[0] < 1.36 and abs(p[1]) < 0.48 for p in st.sens.trace)
+        check(not inside, "never drove through the glass")
+        check(any(e.startswith("backtrack") for e in ev), "stopped by the guard on the unmapped pane -> backtrack event")
+        check(s["result"] == "arrived" and d < 0.95, f"backtracked, re-planned round it and docked ({s['result']}, {d:.2f} m)")
+        check(int(s.get("guard_aborts", 0)) + int(s.get("guard_refusals", 0)) <= 3,
+              f"few guard stops for the one unmapped pane ({s.get('guard_refusals')} refused, {s.get('guard_aborts')} aborted)")
+    finally:
+        st.close()
+
+
+def sc_stop_backtrack():
+    """S (voice 'stop' / hand) in the middle of a backtrack reverse: wheels stop at once, goto cancels"""
+    print("full-stack: STOP mid-backtrack: S from another client while goto reverses along its trail")
+    w = glass_world()
+    st = Stack(w, mem_file([(2.6, 0.0)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        end = time.monotonic() + 120
+        hit = False
+        while time.monotonic() < end and not hit:
+            hit = any(e.startswith("backtrack") for e in st.goto.events)
+            time.sleep(0.01)
+        check(hit, "a backtrack started")
+        v = socket.create_connection(("127.0.0.1", st.motor.port))
+        vf = v.makefile("rw", encoding="ascii", newline="\n")
+        vf.write("WHO voice\nS\n"); vf.flush(); vf.readline(); r = vf.readline().strip()
+        t_stop = time.monotonic()
+        g = socket.create_connection(("127.0.0.1", st.goto.ctl))
+        g.sendall(b"CANCEL\n")
+        mv = "running"
+        while time.monotonic() - t_stop < 0.2 and mv == "running":     # tars_motor aborts on its next 20 ms tick
+            _, _, _, mv, _ = st.motor.pose()
+        check(r == "OK" and mv != "running", f"S answered, the reverse is stopped within 200 ms ({r}, {mv}, {1000 * (time.monotonic() - t_stop):.0f} ms)")
+        time.sleep(0.6)
+        s = st.goto.status()
+        p0 = st.sens.pose
+        time.sleep(1.5)
+        p1 = st.sens.pose
+        st.dump("stop_backtrack")
+        check(s["state"] == "idle" and s["result"].startswith("cancelled"), f"goto cancelled ({s['result']})")
+        check(math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 0.005 and abs(p1[2] - p0[2]) < 0.01, "wheels stay stopped")
+        v.close(); g.close()
     finally:
         st.close()
 
@@ -700,6 +855,7 @@ def sc_moved():
               f"searched, found it at B and docked ({s['result']}, {math.hypot(x - 0.3, y - 1.4):.2f} m)")
         mem = st.goto.cmd("MEMORY")
         check("trash can#1 stale" in mem or "trash can#1 gone" in mem, "old spot A downgraded in memory")
+        check_no_refusals(st, s, "moved")
     finally:
         st.close()
 
@@ -845,11 +1001,12 @@ def sc_voice():
 
 SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion,
              "occlusion_close": lambda: sc_occlusion(ahead=0.39), "dropbox": sc_dropbox, "wallmem": sc_wallmem, "wallmem_search": sc_wallmem_search, "diagwall": sc_diagwall, "moved": sc_moved, "stop": sc_stop,
-             "visual": sc_visual_only, "voice": sc_voice}
+             "visual": sc_visual_only, "voice": sc_voice, "shortwall": sc_shortwall, "offsetwall": sc_offsetwall,
+             "openbin": sc_openbin, "lpocket": sc_lpocket, "glass": sc_glass, "stop_backtrack": sc_stop_backtrack}
 
 
 # known failures, run with --only NAME (not in the default run until fixed)
-EXTRA = {"shortwall": sc_shortwall}
+EXTRA: dict = {}
 
 
 def run_scenario(name: str) -> None:
@@ -869,7 +1026,7 @@ def main() -> int:
             return 2
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
     t0 = time.monotonic()
-    names = [only] if only else list(SCENARIOS)
+    names = only.split(",") if only else list(SCENARIOS)
     threads = []
     for n in names:                       # independent stacks on their own ports: run them together
         t = threading.Thread(target=run_scenario, args=(n,))

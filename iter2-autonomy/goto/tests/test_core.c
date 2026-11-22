@@ -1163,6 +1163,68 @@ static void test_map_occluded_detour(void)
     CHECK(had_event("not_there trash can #1", EV), "nothing from the vantage either -> not_there");
 }
 
+/* Regression (bench L-pocket): the guard stopped a leg of the DETOUR to a vantage cell. Main's goto
+ * re-planned to the vantage, failed and went straight to next_candidate + a 360 search from behind the
+ * occluder. A guard stop is never "not there": the refused zone is marked, the robot backs out and
+ * re-plans (another stand-off cell / the approach ring); only a clear line of sight that sees nothing is. */
+static void test_map_detour_guard_stop(void)
+{
+    map_setup();
+    nav_set_robot_radius(N, 0.25f);
+    set_free_rect(0, 0, 4, 4, NAV_FREE);
+    put_robot(2.05, 0.85, 0);
+    add_inst(2.05, 1.65, MEM_FRESH);
+    EV[0] = 0;
+    start("trash can");
+    grab_events();
+    run_legs_ev(10);
+    set_free_rect(1.9, 1.2, 2.2, 1.3, NAV_OCC);
+    advance(0.4);
+    clear();
+    look_empty(4);
+    grab_events();
+    CHECK(S.st == ST_FOLLOW_PATH && S.vantage, "detour to a vantage cell (%s)", goto_state_name(S.st));
+    int k = 0;
+    while (k++ < 6 && !find(ACT_MOVE) && find(ACT_TURN)) run_legs_ev(1);
+    CHECK(find(ACT_MOVE) != NULL, "a detour MOVE leg is asked for");
+    clear();
+    goto_sm_move_started(&S, T, 990, 1.0);
+    goto_sm_guard_reason(&S, "guard_blocked");          /* the guard saw something the map doesn't have */
+    goto_sm_move_status(&S, T, 990, "aborted", "lidar_guard");
+    grab_events();
+    CHECK(S.guard_aborts == 1, "counted as a guard abort on a path leg (%d)", S.guard_aborts);
+    goto_sm_guard_reason(&S, "clear");
+    for (int i = 0; i < 12 && S.st == ST_PLAN; i++) { advance(0.1); frame(NULL, 0, 0, 0); }
+    run_legs_ev(60);
+    grab_events();
+    CHECK(!had_event("next_candidate", EV) && !had_event("not_there", EV),
+          "guard stop on the detour: no next_candidate / not_there (%.300s)", EV);
+    CHECK(S.st == ST_LOOK, "re-planned and reached a view of the spot (%s)", goto_state_name(S.st));
+    CHECK(MM.e[goto_mem_find_id(&MM, "trash can", 1)].status == MEM_FRESH, "instance not downgraded");
+    goto_sm_cancel(&S, T, "x");
+}
+
+/* the search must not spin where a mapped wall hides the spot: it moves to a cell that sees it */
+static void test_map_search_needs_line_of_sight(void)
+{
+    map_setup();
+    set_free_rect(0, 0, 5, 5, NAV_FREE);
+    set_free_rect(1.0, 2.0, 4.0, 2.1, NAV_OCC);           /* a wall between the robot and the spot */
+    put_robot(2.55, 1.05, 0);
+    add_inst(2.55, 3.4, MEM_FRESH);
+    S.have_goal = 1; S.goal_x = 2.55; S.goal_z = 3.4;
+    EV[0] = 0;
+    start("trash can");
+    S.have_goal = 1; S.goal_x = 2.55; S.goal_z = 3.4;
+    S.map_mode = 1; S.mem_id = 1;
+    clear();
+    search_fallback_for_test(&S);
+    grab_events();
+    CHECK(had_event("standoff_search", EV) && S.st == ST_FOLLOW_PATH,
+          "wall hides the spot: go to a stand-off cell with a line of sight, don't spin here (%s, %.200s)", goto_state_name(S.st), EV);
+    goto_sm_cancel(&S, T, "x");
+}
+
 /* distance from (px,pz) to an axis-aligned rectangle */
 static double rect_dist(double px, double pz, double x0, double z0, double x1, double z1)
 {
@@ -1388,8 +1450,10 @@ static void box_ahead_setup(void)
 
 static void test_map_guard_escape(void)
 {
-    /* before: escape off = the old behaviour */
+    /* before: escape off and A* blind to the guard's box = the old behaviour */
     C.nav_escape_mm = 0;
+    C.nav_guard_plan = 0;
+    C.nav_backtrack = 0;
     box_ahead_setup();
     EV[0] = 0;
     start("trash can");
@@ -1399,13 +1463,26 @@ static void test_map_guard_escape(void)
     C = (goto_cfg){0};
     goto_cfg_defaults(&C);
 
-    /* after */
+    /* the escape alone (A* still blind to the guard's box) */
+    C.nav_guard_plan = 0;
     box_ahead_setup();
     EV[0] = 0;
     start("trash can");
     moves = 0;
     refused = run_legs_guarded(60, &moves);
     CHECK(had_event("escape trash can #1", EV), "escape: pivot clear of the guard zone first (%.160s)", EV);
+    CHECK(refused == 0, "escape: no MOVE ever refused by the guard (%d)", refused);
+    CHECK(S.st == ST_LOOK && PZ > 2.4, "escape: got round the box (%s, z=%.2f)", goto_state_name(S.st), PZ);
+    goto_sm_cancel(&S, T, "x");
+    C = (goto_cfg){0};
+    goto_cfg_defaults(&C);
+
+    /* after: the default, A* only plans legs the guard's box allows (no escape needed) */
+    box_ahead_setup();
+    EV[0] = 0;
+    start("trash can");
+    moves = 0;
+    refused = run_legs_guarded(60, &moves);
     CHECK(refused == 0, "no MOVE ever refused by the guard (%d)", refused);
     CHECK(crossed_occ == 0, "never drove through the box");
     CHECK(S.st == ST_LOOK && PZ > 2.4, "got round the box and reached the spot (%s, z=%.2f)", goto_state_name(S.st), PZ);
@@ -1573,6 +1650,7 @@ static void test_map_guard_and_replan(void)
     CHECK(S.st == ST_FOLLOW_PATH, "following");
     clear();
     goto_sm_move_started(&S, T, 900, 2.0);
+    goto_sm_guard_reason(&S, "guard_stale");            /* a guard hiccup, not an obstacle (that backtracks) */
     goto_sm_guard(&S, T, 0, 6);                         /* lidar_guard denies ... */
     goto_sm_move_status(&S, T, 900, "aborted", "lidar_guard");   /* ... and tars_motor aborts the leg */
     CHECK(S.st == ST_PLAN && S.replans == 1, "guard-aborted leg -> PLAN, waiting (%s)", goto_state_name(S.st));
@@ -1856,6 +1934,8 @@ int main(void)
     test_map_explore_sees_the_goal();
     test_map_gone_then_check_others();
     test_map_occluded_detour();
+    test_map_detour_guard_stop();
+    test_map_search_needs_line_of_sight();
     test_map_occluder_inside_footprint();
     test_map_no_route_fails();
     test_map_reveal_measured();
