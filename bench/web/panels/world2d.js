@@ -248,15 +248,18 @@
         } catch (e) { B.log('world', 'world control failed: ' + e.message); return {ok: false}; }
       }
       // two separate resets: the car's position, and the room + goto's map
-      const carStartBtn = () => h('button', {onclick: () => act('car_to_start', {}),
-        title: 'Stop, then put the car back at the room\'s start. Keeps everything else: things and walls you added, ' +
-               'and goto\'s map and memory (goto is not restarted).'}, '🚗 Car to start');
-      const resetMapBtn = () => h('button', {class: 'danger', onclick: () => {
+      // function declarations (hoisted): the room bar and the Things panel call these before this line runs
+      function carStartBtn() {
+        return h('button', {onclick: () => act('car_to_start', {}),
+          title: 'Stop, then put the car back at the room\'s start. Keeps everything else: things and walls you added, ' +
+                 'and goto\'s map and memory (goto is not restarted).'}, '🚗 Car to start');
+      }
+      function resetMapBtn() { return h('button', {class: 'danger', onclick: () => {
           if (confirm('Reset map?\n\nThe room goes back to how it was loaded or saved: walls and things you added are removed. ' +
                       'goto restarts with an empty map and the room\'s memory. The car stays where it is.')) act('reset_map', {});
         },
         title: 'Put the room back as loaded/saved (removes walls and things you added) and clear goto\'s map and memory ' +
-               '(goto restarts). The car stays where it is.'}, '🗺 Reset map');
+               '(goto restarts). The car stays where it is.'}, '🗺 Reset map'); }
       async function act(what, body) {
         try {
           const r = await B.api('world/' + what, body);
