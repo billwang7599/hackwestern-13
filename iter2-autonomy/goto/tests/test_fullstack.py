@@ -771,6 +771,54 @@ def sc_lpocket():
         st.close()
 
 
+def wall_moved_world(hidden: bool):
+    w = World(size=7.0, x0=-2.0, y0=-3.5)
+    w.walls.extend(box(1.3, 0.0, 0.05, 0.6))           # wall between the start and spot A
+    if hidden:
+        w.cans.append([2.6, 2.3])                       # B, behind a second wall
+        w.walls.extend(box(2.6, 1.5, 1.0, 0.05))        # x 1.6..3.6 at y 1.5: hides B from A's side
+    else:
+        w.cans.append([3.0, 1.3])                       # B, in view from A
+    return w
+
+
+def sc_wall_moved(hidden: bool = False):
+    """memory says A (behind a wall), the bin was moved to B. hidden=False: B is in view from A:
+    route round the wall (no guard refusals), clear view at A, not_there, search/find B, dock, A
+    downgraded. hidden=True: B is behind a second wall, so the spin at A can't see it: no
+    failed:not_found after one spin; a search hop to a cell that sees new floor finds it."""
+    tag = "wall_moved_hidden" if hidden else "wall_moved"
+    print(f"full-stack: {tag.upper()}: wall between the start and remembered A, bin moved to B"
+          + (" behind a second wall" if hidden else " (in view from A)"))
+    w = wall_moved_world(hidden)
+    bx, by = w.cans[0]
+    st = Stack(w, mem_file([(2.5, 0.0)]))
+    try:
+        st.goto.cmd("GOTO trash can")
+        s = st.goto.wait_idle(360)
+        st.dump(tag)
+        x, y, _ = st.sens.pose
+        d = math.hypot(x - bx, y - by)
+        ev = st.goto.events
+        inside = any(1.2 < p[0] < 1.4 and abs(p[1]) < 0.7 for p in st.sens.trace)
+        check(not inside, f"{tag}: never drove through the wall")
+        check(any(e.startswith("route trash can #1") for e in ev), f"{tag}: routed over the map to A")
+        check(any(e.startswith("not_there trash can #1") for e in ev), f"{tag}: clear view at A, nothing -> not_there")
+        check(not any(e.startswith("occluded trash can #1") for e in ev), f"{tag}: A not reported occluded")
+        check(s["result"] == "arrived" and d < 0.95, f"{tag}: found B and docked ({s['result']}, {d:.2f} m from B)")
+        if hidden:
+            check(any(e.startswith("search_hop") for e in ev), f"{tag}: spin at A saw nothing -> search hop to a new view")
+        mem = st.goto.cmd("MEMORY")
+        # A is downgraded: no fresh bin remembered near A any more (#1 may be stale/gone, or re-anchored
+        # at B when goto docked there: arrived() refreshes the instance it was looking for)
+        fresh_at_a = [m for m in re.finditer(r"trash can#(\d+) (\w+) x=(-?\d+) y=(-?\d+)", mem)
+                      if m.group(2) == "fresh" and math.hypot(int(m.group(3)) / 1000 - 2.5, int(m.group(4)) / 1000) < 0.5]
+        check(not fresh_at_a, f"{tag}: A downgraded in memory (no fresh bin at A: {mem[:220]})")
+        check_no_refusals(st, s, tag)
+    finally:
+        st.close()
+
+
 def glass_world():
     w = World(size=7.0, x0=-2.0, y0=-3.5)
     w.cans.append([2.6, 0.0])
@@ -1002,7 +1050,8 @@ def sc_voice():
 SCENARIOS = {"obstacle": sc_obstacle, "occlusion": sc_occlusion,
              "occlusion_close": lambda: sc_occlusion(ahead=0.39), "dropbox": sc_dropbox, "wallmem": sc_wallmem, "wallmem_search": sc_wallmem_search, "diagwall": sc_diagwall, "moved": sc_moved, "stop": sc_stop,
              "visual": sc_visual_only, "voice": sc_voice, "shortwall": sc_shortwall, "offsetwall": sc_offsetwall,
-             "openbin": sc_openbin, "lpocket": sc_lpocket, "glass": sc_glass, "stop_backtrack": sc_stop_backtrack}
+             "openbin": sc_openbin, "lpocket": sc_lpocket, "wall_moved": sc_wall_moved,
+             "wall_moved_hidden": lambda: sc_wall_moved(hidden=True), "glass": sc_glass, "stop_backtrack": sc_stop_backtrack}
 
 
 # known failures, run with --only NAME (not in the default run until fixed)

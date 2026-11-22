@@ -1175,6 +1175,16 @@ static void next_leg(goto_sm *s)
         else { s->leg = 1; start_leg(s, ACT_MOVE, leg_move_mm(s, d)); }
         return;
     }
+    if (s->search_hop) {                        /* search hop done: spin and look from here */
+        s->search_hop = 0;
+        s->vantage = 0;
+        s->map_mode = 0;
+        s->mem_phase = 3;
+        s->searched_deg = 0;
+        map_event(s, "search_here");
+        search_step(s, s->now);
+        return;
+    }
     if (s->exploring) {                         /* explore hop done: the phone has seen more, re-plan */
         s->exploring = 0;
         s->vantage = 0;
@@ -1255,6 +1265,7 @@ static void check_others(goto_sm *s, int downgrade)
     if (downgrade) {
         goto_mem_miss(s->mem, goto_mem_find_id(s->mem, target_name(s), s->mem_id));
         map_event(s, "not_there");
+        if (s->n_gone < 8) s->gone_ids[s->n_gone++] = s->mem_id;
     }
     int dir = s->search_dir;
     if (mem_try_next(s)) return;
@@ -1847,6 +1858,15 @@ static void do_plan(goto_sm *s)
         return;
     }
     if (n == NAV_ERR_NO_GOAL || n == NAV_ERR_NO_PATH || n == NAV_ERR_TOO_LONG) {
+        if (s->vantage && s->search_hop) {      /* can't reach the search hop any more: search here */
+            s->search_hop = 0;
+            s->vantage = 0;
+            s->map_mode = 0;
+            s->mem_phase = 3;
+            s->searched_deg = 0;
+            search_step(s, s->now);
+            return;
+        }
         if (s->vantage) {
             /* can't reach that view (e.g. the guard stopped the detour and marked its way blocked):
              * NOT evidence the object is gone. Another stand-off cell, else the approach ring,
@@ -2137,6 +2157,7 @@ static void look_failed(goto_sm *s, double now)
         } else {
             int i = goto_mem_find_id(s->mem, s->objs->obj[s->target], s->mem_id);
             goto_mem_miss(s->mem, i);
+            if (s->n_gone < 8) s->gone_ids[s->n_gone++] = s->mem_id;
             snprintf(t, sizeof t, "not_there %s #%d", s->objs->obj[s->target], s->mem_id);
         }
         emit(s, ACT_EVENT, 0, 0, t);
@@ -2165,6 +2186,8 @@ static void mem_goal(goto_sm *s, int i, double *gx, double *gz)
  * the SHORTEST ROUTE over the map (not straight-line), whatever its age or status and even if it
  * was tried already this GOTO (a wall may hide it from every spot the robot looked from). Once
  * per GOTO. Returns 1 if it started a route; else fails with why: no memory / no map / no route. */
+static int search_hop(goto_sm *s);
+
 static int search_failed_memory(goto_sm *s, double now)
 {
     goto_mem *m = s->mem;
@@ -2172,6 +2195,7 @@ static int search_failed_memory(goto_sm *s, double now)
     int n_mem = 0;
     for (int k = 0; m && k < m->n; k++) n_mem += !strcmp(m->e[k].label, lab);
     if (s->mem_fallback || !n_mem) {
+        if (search_hop(s)) return 0;             /* floor this spot can't see: search from there first */
         goto_sm_fail(s, now, !n_mem ? "not found no memory" : s->fallback_noroute ? "no route" : "not found");
         return 0;
     }
@@ -2186,6 +2210,9 @@ static int search_failed_memory(goto_sm *s, double now)
     double best_len = 1e18, bgx = 0, bgz = 0;
     for (int k = 0; k < m->n; k++) {
         if (strcmp(m->e[k].label, lab)) continue;
+        int gone = 0;                           /* looked at it this GOTO, clear view, nothing: don't go back */
+        for (int j = 0; j < s->n_gone; j++) gone |= s->gone_ids[j] == m->e[k].id;
+        if (gone) continue;
         double gx, gz;
         mem_goal(s, k, &gx, &gz);
         /* route length over the map; a spot the phone hasn't mapped a way to yet (behind the
@@ -2200,7 +2227,11 @@ static int search_failed_memory(goto_sm *s, double now)
         else continue;
         if (len < best_len) { best_len = len; best = k; bgx = gx; bgz = gz; }
     }
-    if (best < 0) { goto_sm_fail(s, now, "no route"); return 0; }
+    if (best < 0) {
+        if (search_hop(s)) return 0;
+        goto_sm_fail(s, now, s->n_gone ? "not found" : "no route");
+        return 0;
+    }
     s->mem_id = m->e[best].id;
     s->mem_phase = 1;
     goto_mem_relative(m, best, &s->mem_bearing, &s->mem_dist);
@@ -2218,6 +2249,61 @@ static int search_failed_memory(goto_sm *s, double now)
     emit(s, ACT_EVENT, 0, 0, t);
     set_state(s, ST_RECALL);
     do_plan(s);
+    return 1;
+}
+
+/* Unseen floor (UNKNOWN cells, up to 3 m) a 360 spin at (px,pz) would bring into view: rays every
+ * 10 deg, stopped by mapped obstacles. */
+static int unseen_from(const goto_sm *s, double px, double pz)
+{
+    int n = 0;
+    for (int k = 0; k < 36; k++) {
+        double a = k * M_PI / 18, dx = sin(a), dz = cos(a);
+        for (double r = 0.3; r <= 3.0; r += 0.1) {
+            int v = nav_cell(s->nav, (float)(px + r * dx), (float)(pz + r * dz));
+            if (v == NAV_OCC) break;
+            n += v == NAV_UNKNOWN;
+        }
+    }
+    return n;
+}
+
+/* A full spin here saw nothing. If the map shows floor this spot can't see (behind a wall: bench
+ * wall_moved_hidden), drive to the reachable cell whose spin would see the most of it and search
+ * again there, at most twice per GOTO. Only then the remembered-spot fallback / give up. */
+static int search_hop(goto_sm *s)
+{
+    double x, z, yaw;
+    if (!s->nav || s->search_hops >= 2 || !nav_pose(s, &x, &z, &yaw) || nav_count(s->nav, NAV_FREE) == 0) return 0;
+    int here = unseen_from(s, x, z);
+    double bx = 0, bz = 0, best = 0;
+    for (double r = 1.0; r <= 3.01; r += 0.5)
+        for (int k = 0; k < 24; k++) {
+            double a = k * 2 * M_PI / 24, px = x + r * sin(a), pz = z + r * cos(a);
+            if (nav_cell(s->nav, (float)px, (float)pz) != NAV_FREE || !foot_clear(s, px, pz)) continue;
+            double gain = unseen_from(s, px, pz) - here - 10.0 * r;   /* new view, not too far */
+            if (gain > best) { best = gain; bx = px; bz = pz; }
+        }
+    if (best < 40) return 0;                     /* nothing much more to see anywhere near */
+    mark_footprint_free(s, x, z);
+    int n = plan_from_robot(s, x, z, bx, bz, 0);
+    if (n <= 0) return 0;
+    s->search_hops++;
+    s->search_hop = 1;
+    s->vantage = 1;
+    s->map_mode = 1;
+    s->vx = bx;
+    s->vz = bz;
+    s->path_n = n;
+    s->path_i = 0;
+    s->plan_sx = x;
+    s->plan_sz = z;
+    s->route_guard_ok = !s->relaxed && route_guard_clear(s, x, z, 0);
+    s->path_ver = nav_version(s->nav);
+    char t[96];
+    snprintf(t, sizeof t, "search_hop %s %d %.0f", target_name(s), s->search_hops, best);
+    emit(s, ACT_EVENT, 0, 0, t);
+    next_leg(s);
     return 1;
 }
 
@@ -2266,6 +2352,8 @@ void goto_sm_goto(goto_sm *s, double now, int target)
     s->ref_valid = s->turn_stops = 0;
     s->relaxed = s->route_guard_ok = 0;
     s->have_goal = s->los_standoffs = s->plan_depth = 0;
+    s->search_hops = s->search_hop = 0;
+    s->n_gone = 0;
     if (s->nav) nav_temp_clear(s->nav);
     crumb_note(s, 1, 1);
     if (mem_try_next(s)) return;

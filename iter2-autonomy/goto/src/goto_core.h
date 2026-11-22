@@ -347,6 +347,8 @@ typedef struct {
     int have_goal;                    /* goal_x/z is a remembered spot of this GOTO (map frame) */
     int los_standoffs;                /* searches moved to a cell that can see the spot, this GOTO */
     int plan_depth;                   /* do_plan nesting guard */
+    int search_hops, search_hop;      /* search relocations this GOTO; 1 = driving to one, spin on arrival */
+    int gone_ids[8], n_gone;          /* instances looked at this GOTO with a clear view: not there */
     /* lidar_guard via tars_motor STATUS */
     int guard_known, guard_ok;
     char guard_reason[24];            /* STATUS guard_reason= (clear|guard_blocked|guard_stale|...); "" = never reported */
