@@ -248,7 +248,7 @@ def main() -> int:
         pj = b.get("/panels.json")
         check(pj["target"]["name"] == "pi" and pj["real"] is True, "panels.json: target pi, real=true (badge says REAL ROBOT)")
         check("mission.js" in pj["panels"] and "car.js" not in pj["panels"] and "world2d.js" not in pj["panels"]
-              and set(pj["hidden"]) == {"car.js", "world2d.js"}, f"pi: sim-only panels hidden ({pj['hidden']}), mission panels on")
+              and set(pj["hidden"]) == {"car.js", "world2d.js", "gotomem.js"}, f"pi: sim-only panels hidden ({pj['hidden']}), mission panels on")
         check(all(p in pj["panels"] for p in ("drive.js", "status.js", "voice.js", "map3d.js")), "pi: drive, status, voice, map panels kept")
         shell = b.get("/shell.js").decode()
         check("REAL ROBOT (Pi)" in shell and "'SIM'" in shell, "shell.js labels the badge SIM / REAL ROBOT")
